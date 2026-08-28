@@ -1,0 +1,13 @@
+.window-tools { display:flex; align-items:center; gap:8px; }
+.window-tools button { border:1px solid var(--line); background:#19171f; color:var(--muted); padding:6px 10px; border-radius:8px; font-size:11px; }
+.window-tools button:hover,.window-tools button.active { border-color:var(--accent2); color:var(--text); background:#2a2138; }
+.status.starting i { background:#d7a458; box-shadow:0 0 8px #d7a458; animation:pulse 1s infinite; }
+.mini { grid-template-columns:1fr; }
+.mini .sidebar { display:none; }
+.mini header { padding:0 14px; }
+.mini header small,.mini .status { display:none; }
+.mini .messages { padding:22px 14px 140px; }
+.mini .welcome { margin-top:4vh; }
+.mini .welcome h1 { font-size:24px; }
+.mini .composer { width:calc(100% - 20px); bottom:10px; }
+@media(max-width:520px){.window-tools{gap:4px}.window-tools button{padding:6px 8px}}

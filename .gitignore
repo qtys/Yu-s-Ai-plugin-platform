@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+backend/data/
+frontend/node_modules/
+frontend/dist/
+frontend/src-tauri/target/
+frontend/src-tauri/binaries/*.exe
+build/
+.env
+.DS_Store
