@@ -18,7 +18,7 @@
 Windows 安装包生成在：
 
 ```text
-frontend\src-tauri\target\release\bundle\nsis\Yus AI_0.1.0_x64-setup.exe
+frontend\src-tauri\target\release\bundle\nsis\Yus AI_0.1.4_x64-setup.exe
 ```
 
 安装后直接启动即可，不需要打开终端。应用支持窗口置顶、迷你模式和系统托盘；点击关闭按钮会隐藏到托盘，通过托盘菜单可以重新显示或彻底退出。运行日志优先保存在安装位置的 `logs` 文件夹。

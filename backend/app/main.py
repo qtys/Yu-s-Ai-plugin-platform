@@ -202,6 +202,15 @@ def create_conversation(payload: ConversationCreate):
         return dict(db.execute("SELECT * FROM conversations WHERE id=?", (conversation_id,)).fetchone())
 
 
+@app.delete("/api/conversations/{conversation_id}")
+def delete_conversation(conversation_id: int):
+    with connect() as db:
+        cursor = db.execute("DELETE FROM conversations WHERE id=?", (conversation_id,))
+        if cursor.rowcount == 0:
+            raise HTTPException(404, "会话不存在")
+    return {"ok": True}
+
+
 @app.get("/api/conversations/{conversation_id}/messages")
 def list_messages(conversation_id: int):
     return rows("SELECT * FROM messages WHERE conversation_id=? ORDER BY id", (conversation_id,))

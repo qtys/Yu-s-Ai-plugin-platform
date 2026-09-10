@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Yus AI",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "identifier": "com.qtys.yus-ai",
   "build": {
     "frontendDist": "../dist",
@@ -29,6 +29,11 @@
     "active": true,
     "externalBin": ["binaries/yus-ai-backend"],
     "targets": "all",
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/installer-hooks.nsh"
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

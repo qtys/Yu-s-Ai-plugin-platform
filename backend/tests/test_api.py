@@ -16,6 +16,9 @@ def test_character_conversation_and_messages():
             character = client.post("/api/characters", json={"name": "测试角色"}).json()
             conversation = client.post("/api/conversations", json={"character_id": character["id"]}).json()
             assert client.get(f"/api/conversations/{conversation['id']}/messages").json() == []
+            assert client.delete(f"/api/conversations/{conversation['id']}").json() == {"ok": True}
+            assert client.get(f"/api/conversations/{conversation['id']}/messages").json() == []
+            assert client.delete(f"/api/conversations/{conversation['id']}").status_code == 404
             status = client.get("/api/diagnostics/status").json()
             assert status["database"]["characters"] == 1
             check = client.post("/api/diagnostics/commands", json={"command": "database_check"}).json()

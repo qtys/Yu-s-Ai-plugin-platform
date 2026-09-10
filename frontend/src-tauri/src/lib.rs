@@ -1,6 +1,7 @@
 use std::{fs::OpenOptions, io::Write, sync::Mutex};
 
 use tauri::{
+  AppHandle,
   menu::{Menu, MenuItem},
   tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
   LogicalSize, Manager, RunEvent, State, WebviewWindow, WindowEvent,
@@ -11,6 +12,14 @@ struct DesktopState {
   backend: Mutex<Option<CommandChild>>,
   always_on_top: Mutex<bool>,
   mini_mode: Mutex<bool>,
+}
+
+fn stop_backend(app: &AppHandle) {
+  if let Ok(mut backend) = app.state::<DesktopState>().backend.lock() {
+    if let Some(child) = backend.take() {
+      let _ = child.kill();
+    }
+  }
 }
 
 #[tauri::command]
@@ -57,6 +66,7 @@ pub fn run() {
       let (mut output, child) = app.shell().sidecar("yus-ai-backend")?
         .env("YUS_AI_DATA_DIR", &data_dir)
         .env("YUS_AI_LOG_DIR", &log_dir)
+        .env("YUS_AI_PARENT_PID", std::process::id().to_string())
         .spawn()?;
       *app.state::<DesktopState>().backend.lock().unwrap() = Some(child);
       tauri::async_runtime::spawn(async move {
@@ -89,7 +99,10 @@ pub fn run() {
             let state = app.state::<DesktopState>();
             if let Ok(mut pinned) = state.always_on_top.lock() { *pinned = !*pinned; let _ = window.set_always_on_top(*pinned); };
           },
-          "quit" => app.exit(0),
+          "quit" => {
+            stop_backend(app);
+            app.exit(0);
+          },
           _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -107,10 +120,8 @@ pub fn run() {
     .expect("无法启动 Yu's AI");
 
   application.run(|app, event| {
-    if let RunEvent::Exit = event {
-      if let Ok(mut backend) = app.state::<DesktopState>().backend.lock() {
-        if let Some(child) = backend.take() { let _ = child.kill(); }
-      }
+    if matches!(event, RunEvent::Exit | RunEvent::ExitRequested { .. }) {
+      stop_backend(app);
     }
   });
 }

@@ -1,6 +1,50 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&display=swap');
-:root { font-family: 'DM Sans','Noto Sans SC',sans-serif; color:#e9e7ed; background:#0c0b10; font-synthesis:none; text-rendering:optimizeLegibility; }
-* { box-sizing:border-box; }
-body { margin:0; min-width:320px; min-height:100vh; }
-button,input,textarea { font:inherit; }
-button { cursor:pointer; }
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&display=swap");
+:root {
+  font-family: "DM Sans", "Noto Sans SC", sans-serif;
+  color: #e9e7ed;
+  background: #0c0b10;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  overflow: hidden;
+}
+#root {
+  min-height: 100vh;
+}
+button,
+input,
+textarea {
+  font: inherit;
+}
+button {
+  cursor: pointer;
+}
+textarea {
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent2) transparent;
+}
+textarea::-webkit-scrollbar {
+  width: 7px;
+}
+textarea::-webkit-scrollbar-track {
+  background: transparent;
+  margin-block: 4px;
+}
+textarea::-webkit-scrollbar-thumb {
+  background: var(--accent2);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+textarea::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
