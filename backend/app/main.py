@@ -24,17 +24,46 @@ class SettingsUpdate(BaseModel):
     model: str = "gpt-4o-mini"
     temperature: float = Field(0.8, ge=0, le=2)
     max_tokens: int = Field(2048, ge=1, le=128000)
+    context_message_limit: int = Field(20, ge=2, le=200)
+    memory_limit: int = Field(5, ge=0, le=50)
 
 
 class CharacterCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     description: str = ""
     system_prompt: str = ""
+    avatar_data: str = Field(default="", max_length=2_000_000)
+    greeting: str = ""
+    background: str = ""
+    personality: str = ""
+    speaking_style: str = ""
+    relationship: str = ""
+    boundaries: str = ""
+    example_dialogue: str = ""
+
+
+class CharacterUpdate(CharacterCreate):
+    pass
+
+
+def compile_character_prompt(character) -> str:
+    fields = [
+        ("角色名称", character["name"]), ("角色简介", character["description"]),
+        ("身份背景", character["background"]), ("性格", character["personality"]),
+        ("说话方式", character["speaking_style"]), ("与用户的关系", character["relationship"]),
+        ("行为边界", character["boundaries"]), ("示例对话", character["example_dialogue"]),
+        ("补充指令", character["system_prompt"]),
+    ]
+    return "\n\n".join(f"【{label}】\n{value.strip()}" for label, value in fields if value.strip())
 
 
 class ConversationCreate(BaseModel):
     character_id: int
     title: str = "新对话"
+
+
+class ConversationRename(BaseModel):
+    title: str = Field(min_length=1, max_length=80)
 
 
 class ChatRequest(BaseModel):
@@ -169,8 +198,8 @@ def update_settings(payload: SettingsUpdate):
         current_key = db.execute("SELECT api_key FROM settings WHERE id = 1").fetchone()[0]
         api_key = current_key if payload.api_key == "••••••••" else payload.api_key
         db.execute(
-            "UPDATE settings SET base_url=?, api_key=?, model=?, temperature=?, max_tokens=? WHERE id=1",
-            (payload.base_url.rstrip("/"), api_key, payload.model, payload.temperature, payload.max_tokens),
+            "UPDATE settings SET base_url=?, api_key=?, model=?, temperature=?, max_tokens=?, context_message_limit=?, memory_limit=? WHERE id=1",
+            (payload.base_url.rstrip("/"), api_key, payload.model, payload.temperature, payload.max_tokens, payload.context_message_limit, payload.memory_limit),
         )
     return {"ok": True}
 
@@ -226,11 +255,31 @@ def list_characters():
 def create_character(payload: CharacterCreate):
     with connect() as db:
         cursor = db.execute(
-            "INSERT INTO characters(name, description, system_prompt) VALUES (?, ?, ?)",
-            (payload.name, payload.description, payload.system_prompt),
+            """INSERT INTO characters(name, description, system_prompt, avatar_data, greeting, background,
+            personality, speaking_style, relationship, boundaries, example_dialogue) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            tuple(getattr(payload, key) for key in ("name", "description", "system_prompt", "avatar_data", "greeting", "background", "personality", "speaking_style", "relationship", "boundaries", "example_dialogue")),
         )
         character_id = cursor.lastrowid
         return dict(db.execute("SELECT * FROM characters WHERE id=?", (character_id,)).fetchone())
+
+
+@app.put("/api/characters/{character_id}")
+def update_character(character_id: int, payload: CharacterUpdate):
+    keys = ("name", "description", "system_prompt", "avatar_data", "greeting", "background", "personality", "speaking_style", "relationship", "boundaries", "example_dialogue")
+    with connect() as db:
+        cursor = db.execute(f"UPDATE characters SET {', '.join(f'{key}=?' for key in keys)} WHERE id=?", tuple(getattr(payload, key) for key in keys) + (character_id,))
+        if cursor.rowcount == 0:
+            raise HTTPException(404, "角色不存在")
+        return dict(db.execute("SELECT * FROM characters WHERE id=?", (character_id,)).fetchone())
+
+
+@app.delete("/api/characters/{character_id}")
+def delete_character(character_id: int):
+    with connect() as db:
+        cursor = db.execute("DELETE FROM characters WHERE id=?", (character_id,))
+        if cursor.rowcount == 0:
+            raise HTTPException(404, "角色不存在")
+    return {"ok": True}
 
 
 @app.get("/api/conversations")
@@ -253,6 +302,9 @@ def create_conversation(payload: ConversationCreate):
             (payload.character_id, payload.title),
         )
         conversation_id = cursor.lastrowid
+        greeting = db.execute("SELECT greeting FROM characters WHERE id=?", (payload.character_id,)).fetchone()[0]
+        if greeting.strip():
+            db.execute("INSERT INTO messages(conversation_id, role, content) VALUES (?, 'assistant', ?)", (conversation_id, greeting.strip()))
         return dict(db.execute("SELECT * FROM conversations WHERE id=?", (conversation_id,)).fetchone())
 
 
@@ -265,6 +317,30 @@ def delete_conversation(conversation_id: int):
     return {"ok": True}
 
 
+@app.put("/api/conversations/{conversation_id}/title")
+def rename_conversation(conversation_id: int, payload: ConversationRename):
+    with connect() as db:
+        cursor = db.execute("UPDATE conversations SET title=? WHERE id=?", (payload.title.strip(), conversation_id))
+        if cursor.rowcount == 0:
+            raise HTTPException(404, "会话不存在")
+    return {"ok": True, "title": payload.title.strip()}
+
+
+def relevant_memories(db, character_id: int, query: str, limit: int) -> list[str]:
+    if limit <= 0:
+        return []
+    candidates = db.execute("SELECT content FROM memories WHERE character_id=? ORDER BY id DESC LIMIT 200", (character_id,)).fetchall()
+    query_chars = set(query.lower().replace(" ", ""))
+    ranked = sorted(candidates, key=lambda row: len(query_chars & set(row["content"].lower().replace(" ", ""))), reverse=True)
+    return [row["content"] for row in ranked[:limit]]
+
+
+def maybe_store_memory(db, character_id: int, message_id: int, content: str) -> None:
+    markers = ("请记住", "记住我", "我叫", "我是", "我喜欢", "我不喜欢", "我的生日", "我的工作", "我住在")
+    if any(marker in content for marker in markers) and len(content) <= 500:
+        db.execute("INSERT OR IGNORE INTO memories(character_id, content, source_message_id) VALUES (?, ?, ?)", (character_id, content.strip(), message_id))
+
+
 @app.get("/api/conversations/{conversation_id}/messages")
 def list_messages(conversation_id: int):
     return rows("SELECT * FROM messages WHERE conversation_id=? ORDER BY id", (conversation_id,))
@@ -274,7 +350,7 @@ def list_messages(conversation_id: int):
 async def chat(conversation_id: int, payload: ChatRequest):
     with connect() as db:
         conversation = db.execute(
-            "SELECT c.*, ch.system_prompt FROM conversations c JOIN characters ch ON ch.id=c.character_id WHERE c.id=?",
+            "SELECT c.*, ch.* FROM conversations c JOIN characters ch ON ch.id=c.character_id WHERE c.id=?",
             (conversation_id,),
         ).fetchone()
         if not conversation:
@@ -282,17 +358,31 @@ async def chat(conversation_id: int, payload: ChatRequest):
         setting = db.execute("SELECT * FROM settings WHERE id=1").fetchone()
         if not setting["api_key"]:
             raise HTTPException(400, "请先在设置中填写 API Key")
-        history = [dict(row) for row in db.execute(
+        all_history = [dict(row) for row in db.execute(
             "SELECT role, content FROM messages WHERE conversation_id=? ORDER BY id", (conversation_id,)
         ).fetchall()]
-        db.execute("INSERT INTO messages(conversation_id, role, content) VALUES (?, 'user', ?)", (conversation_id, payload.content))
-        if not history:
+        context_limit = setting["context_message_limit"]
+        history = all_history[-context_limit:]
+        older = all_history[:-context_limit]
+        summary = conversation["summary"]
+        if older:
+            summary = "\n".join(f"{item['role']}: {item['content']}" for item in older)[-4000:]
+            db.execute("UPDATE conversations SET summary=? WHERE id=?", (summary, conversation_id))
+        cursor = db.execute("INSERT INTO messages(conversation_id, role, content) VALUES (?, 'user', ?)", (conversation_id, payload.content))
+        maybe_store_memory(db, conversation["character_id"], cursor.lastrowid, payload.content)
+        memories = relevant_memories(db, conversation["character_id"], payload.content, setting["memory_limit"])
+        if not any(message["role"] == "user" for message in all_history):
             title = payload.content.strip().replace("\n", " ")[:30] or "新对话"
             db.execute("UPDATE conversations SET title=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (title, conversation_id))
 
     model_messages = []
-    if conversation["system_prompt"]:
-        model_messages.append({"role": "system", "content": conversation["system_prompt"]})
+    prompt = compile_character_prompt(conversation)
+    if prompt:
+        model_messages.append({"role": "system", "content": prompt})
+    if summary:
+        model_messages.append({"role": "system", "content": f"【较早对话摘要】\n{summary}"})
+    if memories:
+        model_messages.append({"role": "system", "content": "【与当前话题相关的长期记忆】\n- " + "\n- ".join(memories)})
     model_messages.extend(history)
     model_messages.append({"role": "user", "content": payload.content})
 

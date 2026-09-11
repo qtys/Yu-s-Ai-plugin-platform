@@ -19,7 +19,7 @@
 Windows 安装包生成在：
 
 ```text
-frontend\src-tauri\target\release\bundle\nsis\Yus AI_0.3.1_x64-setup.exe
+frontend\src-tauri\target\release\bundle\nsis\Yus AI_0.5.2_x64-setup.exe
 ```
 
 安装后直接启动即可，不需要打开终端。应用默认显示蓝色雨滴桌宠；单击桌宠可展开圆形功能入口，选择“对话”后显示聊天气泡，拖动桌宠可调整并保存位置。关闭主窗口会切换回桌宠，通过系统托盘可以显示主界面、显示或隐藏桌宠以及彻底退出。数据库保存在安装位置的 `data` 文件夹，运行日志优先保存在安装位置的 `logs` 文件夹；覆盖升级不会删除这两个运行时目录。

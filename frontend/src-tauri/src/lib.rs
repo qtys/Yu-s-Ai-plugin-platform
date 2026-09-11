@@ -1,4 +1,5 @@
 use std::{fs::OpenOptions, io::Write, sync::Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::{
   AppHandle,
@@ -75,7 +76,7 @@ fn set_mini_mode(window: WebviewWindow, enabled: bool, state: State<DesktopState
 #[tauri::command]
 fn enter_pet_mode(app: AppHandle) -> Result<(), String> {
   let pet = app.get_webview_window("pet").ok_or("找不到桌宠窗口")?;
-  resize_pet_window(&pet, false, 1.0, false, "above-right")?;
+  let _ = app.emit_to("pet", "pet-reset", ());
   pet.show().map_err(|error| error.to_string())?;
   let _ = pet.set_always_on_top(true);
   let _ = pet.set_focus();
@@ -160,8 +161,26 @@ fn hide_pet_window(window: WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn export_character_card(character_name: String, content: String) -> Result<String, String> {
+  let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+  let install_dir = executable.parent().ok_or("无法确定软件安装目录")?;
+  let export_dir = install_dir.join("data").join("character-exports");
+  std::fs::create_dir_all(&export_dir).map_err(|error| error.to_string())?;
+  let safe_name: String = character_name.chars()
+    .map(|character| if r#"<>:"/\|?*"#.contains(character) || character.is_control() { '_' } else { character })
+    .collect();
+  let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|error| error.to_string())?.as_secs();
+  let path = export_dir.join(format!("{}-{}.yus-character.json", safe_name.trim(), timestamp));
+  std::fs::write(&path, content).map_err(|error| error.to_string())?;
+  Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
 fn show_main_window(app: AppHandle) -> Result<(), String> {
-  if let Some(pet) = app.get_webview_window("pet") { let _ = pet.hide(); }
+  let _ = app.emit_to("pet", "pet-reset", ());
+  if let Some(pet) = app.get_webview_window("pet") {
+    let _ = pet.hide();
+  }
   let main = app.get_webview_window("main").ok_or("找不到主窗口")?;
   main.show().map_err(|error| error.to_string())?;
   main.set_focus().map_err(|error| error.to_string())?;
@@ -178,7 +197,7 @@ pub fn run() {
       always_on_top: Mutex::new(false),
       mini_mode: Mutex::new(false),
     })
-    .invoke_handler(tauri::generate_handler![set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, start_pet_drag, get_pet_position, set_pet_position, hide_pet_window])
+    .invoke_handler(tauri::generate_handler![set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, start_pet_drag, get_pet_position, set_pet_position, hide_pet_window, export_character_card])
     .setup(|app| {
       let legacy_data_dir = app.path().app_data_dir()?;
       let data_dir = prepare_install_data_dir(app.handle())?;
@@ -232,7 +251,10 @@ pub fn run() {
         .menu(&menu)
         .on_menu_event(|app, event| match event.id.as_ref() {
           "show" => {
-            if let Some(pet) = app.get_webview_window("pet") { let _ = pet.hide(); }
+            let _ = app.emit_to("pet", "pet-reset", ());
+            if let Some(pet) = app.get_webview_window("pet") {
+              let _ = pet.hide();
+            }
             if let Some(window) = app.get_webview_window("main") { let _ = window.show(); let _ = window.set_focus(); }
           },
           "pet_toggle" => if let Some(pet) = app.get_webview_window("pet") {
@@ -255,6 +277,8 @@ pub fn run() {
         })
         .on_tray_icon_event(|tray, event| {
           if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+            let _ = tray.app_handle().emit_to("pet", "pet-reset", ());
+            if let Some(pet) = tray.app_handle().get_webview_window("pet") { let _ = pet.hide(); }
             if let Some(window) = tray.app_handle().get_webview_window("main") { let _ = window.show(); let _ = window.set_focus(); }
           }
         })
@@ -267,6 +291,7 @@ pub fn run() {
         let _ = window.hide();
         if window.label() == "main" {
           if let Some(pet) = window.app_handle().get_webview_window("pet") {
+            let _ = window.app_handle().emit_to("pet", "pet-reset", ());
             let _ = pet.show();
             let _ = pet.set_always_on_top(true);
           }

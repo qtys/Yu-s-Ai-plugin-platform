@@ -80,21 +80,25 @@ header small {
 }
 .conversation-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 30px;
+  grid-template-columns: minmax(0, 1fr) 30px 30px;
   align-items: center;
   border-radius: 10px;
 }
 .conversation-row .conversation-open,
-.conversation-row .conversation-delete {
+.conversation-row .conversation-delete,
+.conversation-row .conversation-rename {
   min-width: 0;
 }
-.conversation-row .conversation-delete {
+.conversation-row .conversation-delete,
+.conversation-row .conversation-rename {
   padding: 6px;
   text-align: center;
   opacity: 0.55;
 }
 .conversation-row:hover .conversation-delete,
-.conversation-row .conversation-delete:focus-visible {
+.conversation-row:hover .conversation-rename,
+.conversation-row .conversation-delete:focus-visible,
+.conversation-row .conversation-rename:focus-visible {
   opacity: 1;
 }
 .character-row,
@@ -124,6 +128,15 @@ nav button,
   border-radius: 10px;
   flex: 0 0 auto;
 }
+.conversation-rename { color:var(--muted); }
+.avatar img { width:100%; height:100%; object-fit:cover; border-radius:inherit; }
+.character-manager { display:grid; gap:10px; margin-bottom:18px; }
+.character-card { display:grid; grid-template-columns:120px 1fr auto; gap:12px; align-items:center; padding:12px 14px; border:1px solid var(--line); border-radius:12px; background:var(--panel); }
+.character-card div,.form-actions { display:flex; gap:8px; }
+.character-card button,.import-character { border:1px solid var(--line); border-radius:8px; padding:7px 10px; background:transparent; color:var(--text); cursor:pointer; }
+.character-card .danger { color:#e87383; }
+.import-character { width:max-content; }
+.import-character input { display:none; }
 .selected,
 .character-row:hover,
 .conversation-list button:hover,

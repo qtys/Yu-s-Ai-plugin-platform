@@ -13,9 +13,12 @@ def test_character_conversation_and_messages():
         database.DB_PATH = database.DATA_DIR / "test.db"
         with TestClient(app) as client:
             assert client.get("/api/health").json() == {"status": "ok"}
-            character = client.post("/api/characters", json={"name": "测试角色"}).json()
+            character = client.post("/api/characters", json={"name": "测试角色", "greeting": "你好呀", "personality": "温柔"}).json()
+            assert character["personality"] == "温柔"
+            character = client.put(f"/api/characters/{character['id']}", json={**character, "speaking_style": "简洁"}).json()
+            assert character["speaking_style"] == "简洁"
             conversation = client.post("/api/conversations", json={"character_id": character["id"]}).json()
-            assert client.get(f"/api/conversations/{conversation['id']}/messages").json() == []
+            assert client.get(f"/api/conversations/{conversation['id']}/messages").json()[0]["content"] == "你好呀"
             assert client.delete(f"/api/conversations/{conversation['id']}").json() == {"ok": True}
             assert client.get(f"/api/conversations/{conversation['id']}/messages").json() == []
             assert client.delete(f"/api/conversations/{conversation['id']}").status_code == 404

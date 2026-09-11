@@ -145,6 +145,7 @@ export default function Pet() {
     if (!desktop) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    let unlistenReset: (() => void) | undefined;
     void listen<string>("pet-control", (event) => {
       if (event.payload === "size-up" || event.payload === "size-down") {
         setPetSize((current) => {
@@ -161,7 +162,21 @@ export default function Pet() {
       if (event.payload === "opacity-up") setPetOpacity((current) => Math.min(100, current + 10));
       if (event.payload === "opacity-down") setPetOpacity((current) => Math.max(30, current - 10));
     }).then((stop) => { if (disposed) stop(); else unlisten = stop; });
-    return () => { disposed = true; unlisten?.(); };
+    void listen("pet-reset", () => {
+      if (openRef.current) {
+        void invoke<string>("set_pet_layout", {
+          expanded: false,
+          scale: petSizeRef.current / 100,
+          currentExpanded: true,
+          currentPlacement: placementRef.current,
+        }).then(setPlacement);
+      }
+      setOpen(false);
+      setTranslationOpen(false);
+      setMenuOpen(false);
+      setShowControls(false);
+    }).then((stop) => { if (disposed) stop(); else unlistenReset = stop; });
+    return () => { disposed = true; unlisten?.(); unlistenReset?.(); };
   }, [desktop]);
 
   async function toggleBubble() {

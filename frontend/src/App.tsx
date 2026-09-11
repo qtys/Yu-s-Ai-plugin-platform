@@ -11,7 +11,10 @@ type Character = {
   name: string;
   description: string;
   system_prompt: string;
+  avatar_data: string; greeting: string; background: string; personality: string;
+  speaking_style: string; relationship: string; boundaries: string; example_dialogue: string;
 };
+const emptyCharacter = { name: "", description: "", system_prompt: "", avatar_data: "", greeting: "", background: "", personality: "", speaking_style: "", relationship: "", boundaries: "", example_dialogue: "" };
 type Conversation = { id: number; character_id: number; title: string };
 type Message = { role: "user" | "assistant"; content: string };
 type Settings = {
@@ -20,6 +23,8 @@ type Settings = {
   model: string;
   temperature: number;
   max_tokens: number;
+  context_message_limit: number;
+  memory_limit: number;
 };
 type Theme = "violet" | "midnight" | "sand" | "paper";
 const themes: { id: Theme; name: string; description: string }[] = [
@@ -65,12 +70,11 @@ export default function App() {
     model: "gpt-4o-mini",
     temperature: 0.8,
     max_tokens: 2048,
+    context_message_limit: 20,
+    memory_limit: 5,
   });
-  const [draft, setDraft] = useState({
-    name: "",
-    description: "",
-    system_prompt: "",
-  });
+  const [draft, setDraft] = useState(emptyCharacter);
+  const [editingCharacter, setEditingCharacter] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const skipMessageLoadRef = useRef<number | null>(null);
@@ -189,17 +193,47 @@ export default function App() {
       return;
     }
     try {
-      const value = await request<Character>("/characters", {
-        method: "POST",
+      const value = await request<Character>(editingCharacter ? `/characters/${editingCharacter}` : "/characters", {
+        method: editingCharacter ? "PUT" : "POST",
         body: JSON.stringify(draft),
       });
-      setCharacters((c) => [value, ...c]);
+      setCharacters((c) => editingCharacter ? c.map((item) => item.id === value.id ? value : item) : [value, ...c]);
       setActiveCharacter(value.id);
-      setDraft({ name: "", description: "", system_prompt: "" });
+      setDraft(emptyCharacter);
+      setEditingCharacter(null);
       setPanel("chat");
     } catch (e) {
       setError((e as Error).message);
     }
+  }
+  function editCharacter(item: Character) {
+    setEditingCharacter(item.id);
+    setDraft({ ...emptyCharacter, ...item });
+    setPanel("characters");
+  }
+  async function deleteCharacter(item: Character) {
+    if (!window.confirm(`确定删除角色“${item.name}”吗？该角色的全部对话也会删除。`)) return;
+    await request(`/characters/${item.id}`, { method: "DELETE" });
+    const remaining = characters.filter((x) => x.id !== item.id);
+    setCharacters(remaining); setActiveCharacter(remaining[0]?.id ?? null); setActiveConversation(null); setMessages([]); setConversations([]);
+  }
+  async function exportCharacter(item: Character) {
+    try {
+      const { id: _id, ...character } = item;
+      const content = JSON.stringify({ format: "yus-ai-character", version: 1, character }, null, 2);
+      if (desktop) {
+        const path = await invoke<string>("export_character_card", { characterName: item.name, content });
+        window.alert(`角色卡已导出到：\n${path}`);
+      } else {
+        const blob = new Blob([content], { type: "application/json" });
+        const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `${item.name}.yus-character.json`; link.click(); URL.revokeObjectURL(url);
+      }
+    } catch (e) { setError(`角色导出失败：${String(e)}`); }
+  }
+  async function importCharacter(file?: File) {
+    if (!file) return;
+    try { const data = JSON.parse(await file.text()); const value = await request<Character>("/characters", { method: "POST", body: JSON.stringify({ ...emptyCharacter, ...(data.character ?? data) }) }); setCharacters((items) => [value, ...items]); setActiveCharacter(value.id); }
+    catch (e) { setError(`角色导入失败：${(e as Error).message}`); }
   }
   async function createConversation() {
     if (!activeCharacter) {
@@ -232,6 +266,27 @@ export default function App() {
     } catch (e) {
       setError((e as Error).message);
     }
+  }
+  async function selectCharacter(characterId: number) {
+    setPanel("chat");
+    if (activeCharacter === characterId) {
+      try {
+        setConversations(await request<Conversation[]>(`/conversations?character_id=${characterId}`));
+      } catch (e) { setError((e as Error).message); }
+      return;
+    }
+    setActiveCharacter(characterId);
+    setActiveConversation(null);
+    setMessages([]);
+    setConversations([]);
+  }
+  async function renameConversation(item: Conversation) {
+    const title = window.prompt("输入新的对话名称", item.title)?.trim();
+    if (!title || title === item.title) return;
+    try {
+      await request(`/conversations/${item.id}/title`, { method: "PUT", body: JSON.stringify({ title }) });
+      setConversations((items) => items.map((value) => value.id === item.id ? { ...value, title } : value));
+    } catch (e) { setError((e as Error).message); }
   }
   async function saveSettings(event: FormEvent) {
     event.preventDefault();
@@ -279,6 +334,7 @@ export default function App() {
         skipMessageLoadRef.current = id;
         setActiveConversation(id);
         setConversations((c) => [value, ...c]);
+        setMessages(await request<Message[]>(`/conversations/${id}/messages`));
       }
       setInput("");
       if (inputRef.current) inputRef.current.style.height = "auto";
@@ -361,15 +417,9 @@ export default function App() {
                   ? "selected character-row"
                   : "character-row"
               }
-              onClick={() => {
-                setActiveCharacter(x.id);
-                setActiveConversation(null);
-                setMessages([]);
-                setConversations([]);
-                setPanel("chat");
-              }}
+              onClick={() => void selectCharacter(x.id)}
             >
-              <span className="avatar">{x.name[0]}</span>
+              <span className="avatar">{x.avatar_data ? <img src={x.avatar_data} alt="" /> : x.name[0]}</span>
               <span>
                 <strong>{x.name}</strong>
                 <small>{x.description || "私人角色"}</small>
@@ -406,6 +456,11 @@ export default function App() {
               >
                 {x.title}
               </button>
+              <button
+                className="conversation-rename"
+                title={`重命名对话：${x.title}`}
+                onClick={() => void renameConversation(x)}
+              >✎</button>
               <button
                 className="conversation-delete"
                 title={`删除对话：${x.title}`}
@@ -558,6 +613,18 @@ export default function App() {
                   />
                 </Field>
               </div>
+              <div className="form-section-title">
+                <strong>上下文与记忆</strong>
+                <small>数值越大，角色了解的信息越多，但会增加模型输入量</small>
+              </div>
+              <div className="form-grid">
+                <Field label="最近上下文消息数">
+                  <input type="number" min="2" max="200" value={settings.context_message_limit} onChange={(e) => setSettings({...settings, context_message_limit:Number(e.target.value)})} />
+                </Field>
+                <Field label="相关长期记忆条数">
+                  <input type="number" min="0" max="50" value={settings.memory_limit} onChange={(e) => setSettings({...settings, memory_limit:Number(e.target.value)})} />
+                </Field>
+              </div>
               <button className="primary">保存设置</button>
             </form>
           </section>
@@ -566,10 +633,15 @@ export default function App() {
           <section className="form-page">
             <Heading
               eyebrow="角色卡"
-              title="创造一个对话角色"
-              text="角色提示词会作为每次对话的行为基础。"
+              title={editingCharacter ? "编辑角色卡" : "创造一个对话角色"}
+              text="结构化设定会自动组合为模型每次对话使用的系统提示词。"
             />
+            <div className="character-manager">
+              {characters.map((item) => <div className="character-card" key={item.id}><strong>{item.name}</strong><span>{item.description || "暂无简介"}</span><div><button onClick={() => editCharacter(item)}>编辑</button><button onClick={() => void exportCharacter(item)}>导出</button><button className="danger" onClick={() => void deleteCharacter(item)}>删除</button></div></div>)}
+              <label className="import-character">导入角色卡<input type="file" accept="application/json,.json" onChange={(e) => void importCharacter(e.target.files?.[0])} /></label>
+            </div>
             <form onSubmit={createCharacter}>
+              <Field label="角色头像"><input type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => { const file=e.target.files?.[0]; if (!file) return; const reader=new FileReader(); reader.onload=()=>setDraft({...draft,avatar_data:String(reader.result)}); reader.readAsDataURL(file); }} /></Field>
               <Field label="角色名称">
                 <input
                   required
@@ -578,6 +650,11 @@ export default function App() {
                   placeholder="例如：雨"
                 />
               </Field>
+              <Field label="开场白"><textarea rows={3} value={draft.greeting} onChange={(e) => setDraft({...draft,greeting:e.target.value})} placeholder="新对话开始时，角色主动说的第一句话" /></Field>
+              <Field label="身份背景"><textarea rows={4} value={draft.background} onChange={(e) => setDraft({...draft,background:e.target.value})} /></Field>
+              <div className="form-grid"><Field label="性格"><textarea rows={4} value={draft.personality} onChange={(e) => setDraft({...draft,personality:e.target.value})} /></Field><Field label="说话方式"><textarea rows={4} value={draft.speaking_style} onChange={(e) => setDraft({...draft,speaking_style:e.target.value})} /></Field></div>
+              <div className="form-grid"><Field label="与用户的关系"><textarea rows={4} value={draft.relationship} onChange={(e) => setDraft({...draft,relationship:e.target.value})} /></Field><Field label="行为边界"><textarea rows={4} value={draft.boundaries} onChange={(e) => setDraft({...draft,boundaries:e.target.value})} /></Field></div>
+              <Field label="示例对话"><textarea rows={5} value={draft.example_dialogue} onChange={(e) => setDraft({...draft,example_dialogue:e.target.value})} placeholder={'用户：你好\n角色：……'} /></Field>
               <Field label="一句话介绍">
                 <input
                   value={draft.description}
@@ -597,7 +674,7 @@ export default function App() {
                   placeholder="描述性格、背景、说话方式和边界……"
                 />
               </Field>
-              <button className="primary">创建角色</button>
+              <div className="form-actions"><button className="primary">{editingCharacter ? "保存角色" : "创建角色"}</button>{editingCharacter && <button type="button" onClick={() => {setEditingCharacter(null);setDraft(emptyCharacter)}}>取消编辑</button>}</div>
             </form>
           </section>
         )}

@@ -1,17 +1,26 @@
 import sqlite3
 import os
+from contextlib import contextmanager
 from pathlib import Path
 
 DATA_DIR = Path(os.environ.get("YUS_AI_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
 DB_PATH = DATA_DIR / "yus_ai.db"
 
 
-def connect() -> sqlite3.Connection:
+@contextmanager
+def connect():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DB_PATH)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
-    return connection
+    try:
+        yield connection
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 def init_db() -> None:
@@ -60,3 +69,25 @@ def init_db() -> None:
             INSERT OR IGNORE INTO pet_state (id) VALUES (1);
             """
         )
+        existing = {row[1] for row in db.execute("PRAGMA table_info(characters)")}
+        for name in ("avatar_data", "greeting", "background", "personality", "speaking_style", "relationship", "boundaries", "example_dialogue"):
+            if name not in existing:
+                db.execute(f"ALTER TABLE characters ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+        setting_columns = {row[1] for row in db.execute("PRAGMA table_info(settings)")}
+        if "context_message_limit" not in setting_columns:
+            db.execute("ALTER TABLE settings ADD COLUMN context_message_limit INTEGER NOT NULL DEFAULT 20")
+        if "memory_limit" not in setting_columns:
+            db.execute("ALTER TABLE settings ADD COLUMN memory_limit INTEGER NOT NULL DEFAULT 5")
+        conversation_columns = {row[1] for row in db.execute("PRAGMA table_info(conversations)")}
+        if "summary" not in conversation_columns:
+            db.execute("ALTER TABLE conversations ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS memories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+                content TEXT NOT NULL,
+                source_message_id INTEGER,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(character_id, content)
+            );
+        """)
