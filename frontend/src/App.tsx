@@ -16,7 +16,7 @@ type Character = {
 };
 const emptyCharacter = { name: "", description: "", system_prompt: "", avatar_data: "", greeting: "", background: "", personality: "", speaking_style: "", relationship: "", boundaries: "", example_dialogue: "" };
 type Conversation = { id: number; character_id: number; title: string };
-type Message = { role: "user" | "assistant"; content: string };
+type Message = { id?: number; conversation_id?: number; role: "user" | "assistant"; content: string };
 type Settings = {
   base_url: string;
   api_key: string;
@@ -75,6 +75,8 @@ export default function App() {
   });
   const [draft, setDraft] = useState(emptyCharacter);
   const [editingCharacter, setEditingCharacter] = useState<number | null>(null);
+  const [editingMessage, setEditingMessage] = useState<number | null>(null);
+  const [messageDraft, setMessageDraft] = useState("");
   const abortRef = useRef<AbortController | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const skipMessageLoadRef = useRef<number | null>(null);
@@ -288,6 +290,25 @@ export default function App() {
       setConversations((items) => items.map((value) => value.id === item.id ? { ...value, title } : value));
     } catch (e) { setError((e as Error).message); }
   }
+  function beginMessageEdit(message: Message) {
+    if (!message.id || busy) return;
+    setEditingMessage(message.id);
+    setMessageDraft(message.content);
+  }
+  async function saveMessageEdit(message: Message) {
+    const content = messageDraft.trim();
+    if (!message.id || !content) return;
+    try {
+      const updated = await request<Message>(`/messages/${message.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ content }),
+      });
+      setMessages((items) => items.map((item) => item.id === updated.id ? updated : item));
+      setEditingMessage(null);
+      setMessageDraft("");
+      setError("");
+    } catch (e) { setError((e as Error).message); }
+  }
   async function saveSettings(event: FormEvent) {
     event.preventDefault();
     try {
@@ -381,6 +402,7 @@ export default function App() {
             );
         }
       }
+      setMessages(await request<Message[]>(`/conversations/${id}/messages`));
       setConversations(
         await request(`/conversations?character_id=${activeCharacter}`),
       );
@@ -705,15 +727,29 @@ export default function App() {
                 </div>
               )}
               {messages.map((m, i) => (
-                <article key={i} className={m.role}>
+                <article key={m.id ?? `pending-${i}`} className={m.role}>
                   <div className="message-avatar">
                     {m.role === "user" ? "你" : character?.name[0] || "AI"}
                   </div>
-                  <div>
-                    <strong>
-                      {m.role === "user" ? "你" : character?.name || "助手"}
-                    </strong>
-                    <p>{m.content || <span className="typing">思考中</span>}</p>
+                  <div className="message-body">
+                    <div className="message-heading">
+                      <strong>{m.role === "user" ? "你" : character?.name || "助手"}</strong>
+                      {m.id && editingMessage !== m.id && (
+                        <button className="message-edit" type="button" onClick={() => beginMessageEdit(m)} disabled={busy}>编辑</button>
+                      )}
+                    </div>
+                    {editingMessage === m.id ? (
+                      <div className="message-editor">
+                        <textarea value={messageDraft} onChange={(e) => setMessageDraft(e.target.value)} autoFocus />
+                        <div>
+                          <button className="primary" type="button" onClick={() => void saveMessageEdit(m)} disabled={!messageDraft.trim()}>保存修改</button>
+                          <button type="button" onClick={() => { setEditingMessage(null); setMessageDraft(""); }}>取消</button>
+                        </div>
+                        <small>保存后，下一次对话将使用修改后的内容作为上下文。</small>
+                      </div>
+                    ) : (
+                      <p>{m.content || <span className="typing">思考中</span>}</p>
+                    )}
                   </div>
                 </article>
               ))}

@@ -18,7 +18,14 @@ def test_character_conversation_and_messages():
             character = client.put(f"/api/characters/{character['id']}", json={**character, "speaking_style": "简洁"}).json()
             assert character["speaking_style"] == "简洁"
             conversation = client.post("/api/conversations", json={"character_id": character["id"]}).json()
-            assert client.get(f"/api/conversations/{conversation['id']}/messages").json()[0]["content"] == "你好呀"
+            greeting = client.get(f"/api/conversations/{conversation['id']}/messages").json()[0]
+            assert greeting["content"] == "你好呀"
+            edited = client.put(f"/api/messages/{greeting['id']}", json={"content": "修改后的问候"})
+            assert edited.status_code == 200
+            assert edited.json()["content"] == "修改后的问候"
+            assert client.get(f"/api/conversations/{conversation['id']}/messages").json()[0]["content"] == "修改后的问候"
+            assert client.put("/api/messages/999999", json={"content": "不存在"}).status_code == 404
+            assert client.put(f"/api/messages/{greeting['id']}", json={"content": "   "}).status_code == 422
             assert client.delete(f"/api/conversations/{conversation['id']}").json() == {"ok": True}
             assert client.get(f"/api/conversations/{conversation['id']}/messages").json() == []
             assert client.delete(f"/api/conversations/{conversation['id']}").status_code == 404

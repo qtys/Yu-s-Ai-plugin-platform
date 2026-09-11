@@ -2,7 +2,7 @@
 
 Yu's AI 是一款本地优先的 Windows 私人 AI 聊天工具。它将角色扮演、多模型 API、长期记忆、离线翻译和桌面宠物整合在同一个应用中，并为后续插件能力预留扩展空间。
 
-当前版本：**0.5.2**
+当前版本：**0.6.0**
 
 ## 主要功能
 
@@ -12,6 +12,7 @@ Yu's AI 是一款本地优先的 Windows 私人 AI 聊天工具。它将角色�
 - 支持流式回复、停止生成、多会话和本地历史记录
 - 可配置 API 地址、API Key、模型名称、温度和最大输出长度
 - 最近对话支持重命名和删除
+- 用户消息与 AI 回复均可修改，后续对话会使用修改后的内容作为上下文
 - 提供暮紫、午夜蓝、暖砂和纸墨四套界面主题
 
 ### 角色卡与记忆
@@ -44,7 +45,7 @@ Yu's AI 是一款本地优先的 Windows 私人 AI 聊天工具。它将角色�
 项目当前提供 Windows NSIS 安装包。自行构建后，安装包位于：
 
 ```text
-frontend\src-tauri\target\release\bundle\nsis\Yus AI_0.5.2_x64-setup.exe
+frontend\src-tauri\target\release\bundle\nsis\Yus AI_0.6.0_x64-setup.exe
 ```
 
 安装后无需打开终端，直接启动 **Yus AI** 即可：

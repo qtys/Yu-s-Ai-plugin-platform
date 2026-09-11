@@ -70,6 +70,10 @@ class ChatRequest(BaseModel):
     content: str = Field(min_length=1)
 
 
+class MessageUpdate(BaseModel):
+    content: str = Field(min_length=1, max_length=200000)
+
+
 class PetStateUpdate(BaseModel):
     position_x: float
     position_y: float
@@ -95,12 +99,12 @@ def rows(query: str, params: tuple = ()) -> list[dict]:
 async def lifespan(_: FastAPI):
     configure_logging()
     init_db()
-    logger.info("backend_started version=0.1.0")
+    logger.info("backend_started version=0.6.0")
     yield
     logger.info("backend_stopped")
 
 
-app = FastAPI(title="Yu's AI API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Yu's AI API", version="0.6.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://tauri.localhost", "tauri://localhost"],
@@ -344,6 +348,30 @@ def maybe_store_memory(db, character_id: int, message_id: int, content: str) -> 
 @app.get("/api/conversations/{conversation_id}/messages")
 def list_messages(conversation_id: int):
     return rows("SELECT * FROM messages WHERE conversation_id=? ORDER BY id", (conversation_id,))
+
+
+@app.put("/api/messages/{message_id}")
+def update_message(message_id: int, payload: MessageUpdate):
+    content = payload.content.strip()
+    if not content:
+        raise HTTPException(422, "消息内容不能为空")
+    with connect() as db:
+        message = db.execute(
+            """SELECT m.*, c.character_id FROM messages m
+            JOIN conversations c ON c.id=m.conversation_id WHERE m.id=?""",
+            (message_id,),
+        ).fetchone()
+        if not message:
+            raise HTTPException(404, "消息不存在")
+        db.execute("UPDATE messages SET content=? WHERE id=?", (content, message_id))
+        db.execute(
+            "UPDATE conversations SET summary='', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (message["conversation_id"],),
+        )
+        if message["role"] == "user":
+            db.execute("DELETE FROM memories WHERE source_message_id=?", (message_id,))
+            maybe_store_memory(db, message["character_id"], message_id, content)
+        return dict(db.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone())
 
 
 @app.post("/api/conversations/{conversation_id}/chat")

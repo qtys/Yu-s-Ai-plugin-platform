@@ -282,6 +282,46 @@ article {
 article strong {
   font-size: 13px;
 }
+.message-body { min-width: 0; }
+.message-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 24px;
+}
+.message-edit {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 3px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+  opacity: 0;
+  transition: opacity .16s ease, color .16s ease, background .16s ease;
+}
+article:hover .message-edit,
+.message-edit:focus-visible { opacity: 1; }
+.message-edit:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.message-editor textarea {
+  width: 100%;
+  min-height: 100px;
+  margin-top: 8px;
+  resize: vertical;
+}
+.message-editor > div {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.message-editor button { padding: 8px 12px; }
+.message-editor small {
+  display: block;
+  margin-top: 8px;
+  color: var(--muted);
+}
 article p {
   white-space: pre-wrap;
   line-height: 1.75;
