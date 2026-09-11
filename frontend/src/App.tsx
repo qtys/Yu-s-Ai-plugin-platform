@@ -139,6 +139,48 @@ export default function App() {
       delete document.documentElement.dataset.theme;
     };
   }, [theme]);
+  useEffect(() => {
+    if (activeCharacter)
+      localStorage.setItem("yus-ai-character", String(activeCharacter));
+  }, [activeCharacter]);
+  useEffect(() => {
+    if (activeConversation)
+      localStorage.setItem("yus-ai-conversation", String(activeConversation));
+    else localStorage.removeItem("yus-ai-conversation");
+  }, [activeConversation]);
+  useEffect(() => {
+    let cancelled = false;
+    async function syncPetConversation() {
+      const characterId = Number(localStorage.getItem("yus-ai-character"));
+      const conversationId = Number(localStorage.getItem("yus-ai-conversation"));
+      if (!characterId) return;
+      try {
+        const conversationData = await request<Conversation[]>(
+          `/conversations?character_id=${characterId}`,
+        );
+        if (cancelled) return;
+        setActiveCharacter(characterId);
+        setConversations(conversationData);
+        if (conversationId) {
+          const messageData = await request<Message[]>(
+            `/conversations/${conversationId}/messages`,
+          );
+          if (!cancelled) {
+            skipMessageLoadRef.current = conversationId;
+            setActiveConversation(conversationId);
+            setMessages(messageData);
+          }
+        }
+      } catch (e) {
+        if (!cancelled) setError((e as Error).message);
+      }
+    }
+    window.addEventListener("focus", syncPetConversation);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", syncPetConversation);
+    };
+  }, []);
 
   async function createCharacter(event: FormEvent) {
     event.preventDefault();
@@ -215,10 +257,8 @@ export default function App() {
   }
   async function toggleMini() {
     try {
-      const value = !mini;
-      await invoke("set_mini_mode", { enabled: value });
-      setMini(value);
-      if (value) setPinned(true);
+      await invoke("enter_pet_mode");
+      setMini(false);
     } catch (e) {
       setError(String(e));
     }
@@ -409,11 +449,10 @@ export default function App() {
                   <span>◆</span> 置顶
                 </button>
                 <button
-                  className={mini ? "active" : ""}
                   onClick={toggleMini}
-                  title="切换迷你窗口"
+                  title="进入桌面宠物模式"
                 >
-                  {mini ? "展开" : "迷你"}
+                  桌宠
                 </button>
               </>
             )}

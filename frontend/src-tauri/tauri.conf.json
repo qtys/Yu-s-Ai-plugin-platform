@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Yus AI",
-  "version": "0.1.4",
+  "version": "0.3.1",
   "identifier": "com.qtys.yus-ai",
   "build": {
     "frontendDist": "../dist",
@@ -18,7 +18,24 @@
         "minWidth": 420,
         "minHeight": 560,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "visible": false
+      },
+      {
+        "label": "pet",
+        "title": "Yu's AI 桌宠",
+        "url": "pet.html",
+        "width": 250,
+        "height": 320,
+        "minWidth": 250,
+        "minHeight": 320,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": true,
+        "shadow": false
       }
     ],
     "security": {

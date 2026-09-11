@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from .database import connect, init_db
 from .logging_config import LOG_FILE, configure_logging
+from .translation import install_package, package_status, translate_text
 
 logger = logging.getLogger("yus_ai.api")
 
@@ -38,6 +39,17 @@ class ConversationCreate(BaseModel):
 
 class ChatRequest(BaseModel):
     content: str = Field(min_length=1)
+
+
+class PetStateUpdate(BaseModel):
+    position_x: float
+    position_y: float
+
+
+class TranslationRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=20000)
+    source: Literal["zh", "en"]
+    target: Literal["zh", "en"]
 
 
 class DiagnosticCommand(BaseModel):
@@ -161,6 +173,48 @@ def update_settings(payload: SettingsUpdate):
             (payload.base_url.rstrip("/"), api_key, payload.model, payload.temperature, payload.max_tokens),
         )
     return {"ok": True}
+
+
+@app.get("/api/pet/state")
+def get_pet_state():
+    return rows("SELECT position_x, position_y FROM pet_state WHERE id = 1")[0]
+
+
+@app.put("/api/pet/state")
+def update_pet_state(payload: PetStateUpdate):
+    with connect() as db:
+        db.execute(
+            "UPDATE pet_state SET position_x=?, position_y=? WHERE id=1",
+            (payload.position_x, payload.position_y),
+        )
+    return {"ok": True}
+
+
+@app.get("/api/translation/packages")
+def translation_packages():
+    return package_status()
+
+
+@app.post("/api/translation/packages/{source}/{target}")
+async def download_translation_package(source: str, target: str):
+    try:
+        await install_package(source, target)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except httpx.HTTPError as exc:
+        logger.warning("translation_model_download_failed pair=%s-%s error=%s", source, target, type(exc).__name__)
+        raise HTTPException(502, f"语言包下载失败：{type(exc).__name__}") from exc
+    return {"ok": True}
+
+
+@app.post("/api/translation")
+def translate(payload: TranslationRequest):
+    if payload.source == payload.target:
+        return {"translation": payload.text}
+    try:
+        return {"translation": translate_text(payload.text, payload.source, payload.target)}
+    except LookupError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @app.get("/api/characters")

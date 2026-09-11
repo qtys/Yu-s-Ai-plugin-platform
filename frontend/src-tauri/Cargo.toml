@@ -1,6 +1,6 @@
 [package]
 name = "yus-ai"
-version = "0.1.4"
+version = "0.3.1"
 description = "A local-first personal AI desktop companion"
 authors = ["qtys"]
 license = "MIT"

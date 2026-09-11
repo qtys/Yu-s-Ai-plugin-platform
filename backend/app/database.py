@@ -51,5 +51,12 @@ def init_db() -> None:
                 content TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS pet_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                position_x REAL,
+                position_y REAL
+            );
+            INSERT OR IGNORE INTO pet_state (id) VALUES (1);
             """
         )

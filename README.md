@@ -10,6 +10,7 @@
 - 多会话与 SQLite 本地持久化
 - 模型地址、密钥及生成参数配置
 - 桌面和手机宽度的响应式界面
+- 蓝色雨滴桌宠、漫画回复气泡和桌宠快捷输入
 
 产品范围见 [MVP 规格](docs/MVP.md)，当前完成度见 [项目进度](docs/PROGRESS.md)，版本变化见 [修改记录](CHANGELOG.md)，技术边界见 [架构说明](docs/ARCHITECTURE.md)，本地排错方式见 [调试接口](docs/DEBUG_API.md)。
 
@@ -18,10 +19,10 @@
 Windows 安装包生成在：
 
 ```text
-frontend\src-tauri\target\release\bundle\nsis\Yus AI_0.1.4_x64-setup.exe
+frontend\src-tauri\target\release\bundle\nsis\Yus AI_0.3.1_x64-setup.exe
 ```
 
-安装后直接启动即可，不需要打开终端。应用支持窗口置顶、迷你模式和系统托盘；点击关闭按钮会隐藏到托盘，通过托盘菜单可以重新显示或彻底退出。运行日志优先保存在安装位置的 `logs` 文件夹。
+安装后直接启动即可，不需要打开终端。应用默认显示蓝色雨滴桌宠；单击桌宠可展开圆形功能入口，选择“对话”后显示聊天气泡，拖动桌宠可调整并保存位置。关闭主窗口会切换回桌宠，通过系统托盘可以显示主界面、显示或隐藏桌宠以及彻底退出。数据库保存在安装位置的 `data` 文件夹，运行日志优先保存在安装位置的 `logs` 文件夹；覆盖升级不会删除这两个运行时目录。
 
 ## 开发模式
 
@@ -78,4 +79,4 @@ cd ..\backend
 ..\.venv\Scripts\python -m pytest -q
 ```
 
-网页开发模式的数据写入 `backend/data/yus_ai.db`。桌面版数据写入 Windows 用户应用数据目录，两者都不会提交到 Git。
+网页开发模式的数据写入 `backend/data/yus_ai.db`。桌面版数据写入软件安装目录的 `data/yus_ai.db`，两者都不会提交到 Git。首次运行新版桌面端时，如果安装目录还没有数据库，会自动从旧版的 Windows 用户应用数据目录复制现有数据，旧文件暂时保留作为备份。

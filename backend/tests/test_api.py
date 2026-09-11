@@ -29,3 +29,7 @@ def test_character_conversation_and_messages():
             ).json()
             assert marker["ok"] is True
             assert client.get("/api/diagnostics/logs?lines=20").status_code == 200
+            assert client.post(
+                "/api/translation",
+                json={"text": "保持原文", "source": "zh", "target": "zh"},
+            ).json() == {"translation": "保持原文"}
