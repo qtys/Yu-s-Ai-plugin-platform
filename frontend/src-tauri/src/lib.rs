@@ -139,6 +139,41 @@ fn start_pet_drag(window: WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn snap_pet_to_edge(window: WebviewWindow, threshold: f64, expanded: bool, current_placement: String) -> Result<String, String> {
+  if expanded {
+    return Ok(current_placement);
+  }
+  let dpi_scale = window.scale_factor().map_err(|error| error.to_string())?;
+  let position = window.outer_position().map_err(|error| error.to_string())?.to_logical::<f64>(dpi_scale);
+  let size = window.outer_size().map_err(|error| error.to_string())?.to_logical::<f64>(dpi_scale);
+  let Some(monitor) = window.current_monitor().map_err(|error| error.to_string())? else {
+    return Ok(current_placement);
+  };
+  let monitor_scale = monitor.scale_factor();
+  let monitor_position = monitor.position().to_logical::<f64>(monitor_scale);
+  let monitor_size = monitor.size().to_logical::<f64>(monitor_scale);
+  let monitor_right = monitor_position.x + monitor_size.width;
+  let monitor_bottom = monitor_position.y + monitor_size.height;
+  let snap_distance = threshold.clamp(12.0, 96.0);
+  let mut next = position;
+  if (position.x - monitor_position.x).abs() <= snap_distance {
+    next.x = monitor_position.x;
+  } else if (monitor_right - position.x - size.width).abs() <= snap_distance {
+    next.x = monitor_right - size.width;
+  }
+  if (position.y - monitor_position.y).abs() <= snap_distance {
+    next.y = monitor_position.y;
+  } else if (monitor_bottom - position.y - size.height).abs() <= snap_distance {
+    next.y = monitor_bottom - size.height;
+  }
+  if next.x != position.x || next.y != position.y {
+    window.set_position(next).map_err(|error| error.to_string())?;
+  }
+  let horizontal = if next.x <= monitor_position.x + snap_distance { "left" } else { "right" };
+  Ok(format!("above-{horizontal}"))
+}
+
+#[tauri::command]
 fn get_pet_position(window: WebviewWindow, expanded: bool, scale: f64, placement: String) -> Result<PetPosition, String> {
   let dpi_scale = window.scale_factor().map_err(|error| error.to_string())?;
   let position = window.outer_position().map_err(|error| error.to_string())?.to_logical::<f64>(dpi_scale);
@@ -285,7 +320,7 @@ pub fn run() {
       always_on_top: Mutex::new(false),
       mini_mode: Mutex::new(false),
     })
-    .invoke_handler(tauri::generate_handler![set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, start_pet_drag, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, get_autostart_status, set_autostart, export_character_card])
+    .invoke_handler(tauri::generate_handler![set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, start_pet_drag, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, get_autostart_status, set_autostart, export_character_card])
     .setup(|app| {
       let legacy_data_dir = app.path().app_data_dir()?;
       let data_dir = prepare_install_data_dir(app.handle())?;

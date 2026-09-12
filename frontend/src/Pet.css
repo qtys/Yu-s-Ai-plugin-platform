@@ -10,8 +10,18 @@ button,input { font:inherit; }
 .pet-stage.open.above-right .pet-character,.pet-stage.open.above-left .pet-character { top:286px; bottom:auto; }
 .pet-stage.open.below-right .pet-character,.pet-stage.open.below-left .pet-character { top:12px; bottom:auto; }
 .pet-character:active { cursor:grabbing; }
-.pet-character img { width:100%; height:100%; object-fit:contain; pointer-events:none; }
+.pet-character img { width:100%; height:100%; object-fit:contain; pointer-events:none; transform:translate(calc(var(--gaze-x, 0) * 3px),calc(var(--gaze-y, 0) * 2px)) rotate(calc(var(--gaze-x, 0) * 1.6deg)); transition:transform .16s ease-out; }
 .pet-character.thinking { animation:pet-think .75s ease-in-out infinite alternate; }
+.pet-character.dragging img { transform:scaleX(1.09) scaleY(.92) rotate(calc(var(--gaze-x, 0) * 3deg)); transition:transform .08s ease; }
+.pet-character.mood-tap img { animation:pet-tap .42s ease-out; }
+.pet-character.mood-happy img { animation:pet-happy .65s ease-in-out 2; }
+.pet-character.mood-confused img { animation:pet-confused .45s ease-in-out 3; }
+.pet-character.idle-squish img { animation:pet-squish .9s ease-in-out; }
+.pet-character.idle-wiggle img { animation:pet-wiggle 1s ease-in-out; }
+.pet-character.idle-sleepy img { animation:pet-sleepy 2.2s ease-in-out; }
+.pet-ripple { position:absolute; left:50%; top:58%; width:70px; height:45px; border:3px solid rgba(105,211,255,.8); border-radius:50%; opacity:0; pointer-events:none; transform:translate(-50%,-50%) scale(.45); }
+.mood-tap .pet-ripple { animation:pet-ripple .55s ease-out; }
+.pet-emote { position:absolute; z-index:2; top:20px; right:5px; color:#147fc4; font-size:20px; font-weight:800; text-shadow:0 2px 6px white; pointer-events:none; animation:emote-float .8s ease-in-out infinite alternate; }
 .speech-bubble { position:absolute; z-index:2; left:12px; right:12px; max-height:270px; padding:14px; color:#113452; background:rgba(248,253,255,.96); border:2px solid #62b8ef; border-radius:22px; box-shadow:0 12px 35px rgba(3,70,132,.25); }
 .above-right .speech-bubble,.above-left .speech-bubble { top:auto; bottom:254px; }
 .below-right .speech-bubble,.below-left .speech-bubble { top:222px; }
@@ -54,6 +64,10 @@ button,input { font:inherit; }
 .pet-controls label { display:grid; grid-template-columns:66px 1fr 38px; align-items:center; gap:7px; font-size:11px; color:#35657f; }
 .pet-controls input { width:100%; accent-color:#168bd0; }
 .pet-controls span { text-align:right; }
+.pet-controls .proactive-toggle input { width:18px; height:18px; justify-self:start; }
+.proactive-bubble { position:absolute; z-index:4; top:10px; right:18px; width:205px; padding:11px 30px 11px 13px; border:2px solid #79c9f1; border-radius:17px; color:#17445f; background:rgba(248,253,255,.97); box-shadow:0 8px 24px rgba(3,70,132,.2); font-size:12px; line-height:1.45; user-select:text; animation:bubble-arrive .24s ease-out; }
+.above-left .proactive-bubble,.below-left .proactive-bubble { left:18px; right:auto; }
+.proactive-bubble button { position:absolute; top:4px; right:6px; width:22px; height:22px; padding:0; border:0; border-radius:50%; color:#a34255; background:#ffe9ed; cursor:pointer; }
 .pet-reply { min-height:52px; max-height:130px; overflow:auto; white-space:pre-wrap; line-height:1.55; font-size:calc(13px * var(--dialog-font-scale, 1)); user-select:text; }
 .pet-reply p { margin:0; }
 .pet-reply .markdown-content { color:inherit; line-height:1.55; }
@@ -70,3 +84,12 @@ button,input { font:inherit; }
 @keyframes pet-float { 0%,100%{transform:translateY(0) rotate(-1deg)} 50%{transform:translateY(-8px) rotate(1deg)} }
 @keyframes pet-think { from{transform:translateY(-3px) scale(1)} to{transform:translateY(-10px) scale(1.035)} }
 @keyframes orb-pop { from{opacity:0; transform:scale(.55)} to{opacity:1; transform:scale(1)} }
+@keyframes pet-tap { 0%,100%{transform:scale(1)} 35%{transform:scaleX(1.1) scaleY(.87)} 70%{transform:scaleX(.95) scaleY(1.08)} }
+@keyframes pet-happy { 0%,100%{transform:translateY(0) rotate(0)} 45%{transform:translateY(-12px) rotate(-3deg)} 70%{transform:translateY(-5px) rotate(3deg)} }
+@keyframes pet-confused { 0%,100%{transform:rotate(0)} 30%{transform:rotate(-5deg)} 70%{transform:rotate(5deg)} }
+@keyframes pet-squish { 0%,100%{transform:scale(1)} 45%{transform:scaleX(1.06) scaleY(.94)} }
+@keyframes pet-wiggle { 0%,100%{transform:rotate(0)} 25%{transform:rotate(-4deg)} 75%{transform:rotate(4deg)} }
+@keyframes pet-sleepy { 0%,100%{transform:translateY(0) scaleY(1)} 50%{transform:translateY(4px) scaleY(.96)} }
+@keyframes pet-ripple { 0%{opacity:.9;transform:translate(-50%,-50%) scale(.45)} 100%{opacity:0;transform:translate(-50%,-50%) scale(1.7)} }
+@keyframes emote-float { from{transform:translateY(2px)} to{transform:translateY(-4px)} }
+@keyframes bubble-arrive { from{opacity:0;transform:translateY(8px) scale(.96)} to{opacity:1;transform:translateY(0) scale(1)} }

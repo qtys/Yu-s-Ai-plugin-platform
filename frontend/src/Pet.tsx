@@ -15,6 +15,8 @@ type PetState = { position_x: number | null; position_y: number | null };
 type DisplaySettings = { message_display_mode: MessageDisplayMode };
 type TranslationPackage = { from_code: "zh" | "en"; to_code: "zh" | "en"; name: string; size_mb: number; installed: boolean };
 type PetFeature = "chat" | "translation" | "settings";
+type PetMood = "idle" | "tap" | "happy" | "confused";
+type IdleAction = "none" | "squish" | "wiggle" | "sleepy";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API}${path}`, {
@@ -35,6 +37,14 @@ export default function Pet() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [layoutChanging, setLayoutChanging] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [mood, setMood] = useState<PetMood>("idle");
+  const [idleAction, setIdleAction] = useState<IdleAction>("none");
+  const [gaze, setGaze] = useState({ x: 0, y: 0 });
+  const [proactiveMessage, setProactiveMessage] = useState("");
+  const [proactiveEnabled, setProactiveEnabled] = useState(
+    () => localStorage.getItem("yus-ai-proactive-enabled") !== "false",
+  );
   const [placement, setPlacement] = useState("above-right");
   const [busy, setBusy] = useState(false);
   const [input, setInput] = useState("");
@@ -72,12 +82,37 @@ export default function Pet() {
   const openRef = useRef(expanded);
   const placementRef = useRef(placement);
   const petSizeRef = useRef(petSize);
+  const moodTimerRef = useRef<number | undefined>(undefined);
 
   useEffect(() => { openRef.current = expanded; }, [expanded]);
   useEffect(() => { placementRef.current = placement; }, [placement]);
   useEffect(() => { petSizeRef.current = petSize; }, [petSize]);
   useEffect(() => { continuousTranslationRef.current = continuousTranslation; }, [continuousTranslation]);
   useEffect(() => () => window.clearTimeout(menuClickTimerRef.current), []);
+  useEffect(() => { localStorage.setItem("yus-ai-proactive-enabled", String(proactiveEnabled)); }, [proactiveEnabled]);
+
+  useEffect(() => {
+    if (expanded || dragging || busy) return;
+    const actions: IdleAction[] = ["squish", "wiggle", "sleepy"];
+    const timer = window.setInterval(() => {
+      const action = actions[Math.floor(Math.random() * actions.length)];
+      setIdleAction(action);
+      window.setTimeout(() => setIdleAction("none"), action === "sleepy" ? 2400 : 1100);
+    }, 11000);
+    return () => window.clearInterval(timer);
+  }, [expanded, dragging, busy]);
+
+  useEffect(() => {
+    if (!proactiveEnabled || expanded) return;
+    const greetings = ["要记得喝水呀。", "坐久了吗？起来伸个懒腰吧。", "我一直在这里，需要时点点我。", "今天也要对自己温柔一点。"];
+    const showGreeting = () => {
+      setProactiveMessage(greetings[Math.floor(Math.random() * greetings.length)]);
+      window.setTimeout(() => setProactiveMessage(""), 9000);
+    };
+    const first = window.setTimeout(showGreeting, 120000);
+    const recurring = window.setInterval(showGreeting, 240000);
+    return () => { window.clearTimeout(first); window.clearInterval(recurring); };
+  }, [proactiveEnabled, expanded]);
 
   useEffect(() => {
     let disposed = false;
@@ -250,6 +285,12 @@ export default function Pet() {
     localStorage.setItem("yus-ai-last-pet-feature", feature);
   }
 
+  function showMood(nextMood: PetMood, duration = 900) {
+    window.clearTimeout(moodTimerRef.current);
+    setMood(nextMood);
+    moodTimerRef.current = window.setTimeout(() => setMood("idle"), duration);
+  }
+
   async function toggleBubble() {
     const nextOpen = !open;
     if (nextOpen) rememberFeature("chat");
@@ -324,21 +365,43 @@ export default function Pet() {
     dragStartRef.current = { x: event.screenX, y: event.screenY };
     draggingRef.current = false;
     didDragRef.current = false;
+    showMood("tap", 500);
   }
 
   async function continueDrag(event: React.PointerEvent<HTMLButtonElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    setGaze({
+      x: Math.max(-1, Math.min(1, (event.clientX - bounds.left) / bounds.width * 2 - 1)),
+      y: Math.max(-1, Math.min(1, (event.clientY - bounds.top) / bounds.height * 2 - 1)),
+    });
     const start = dragStartRef.current;
     if (!desktop || !start || draggingRef.current) return;
     if (Math.hypot(event.screenX - start.x, event.screenY - start.y) < 6) return;
     draggingRef.current = true;
     didDragRef.current = true;
-    await invoke("start_pet_drag");
-    dragStartRef.current = null;
-    window.setTimeout(() => { draggingRef.current = false; }, 0);
+    setDragging(true);
+    try {
+      await invoke("start_pet_drag");
+      const snappedPlacement = await invoke<string>("snap_pet_to_edge", {
+        threshold: 42,
+        expanded,
+        currentPlacement: placement,
+      });
+      setPlacement(snappedPlacement);
+      showMood("happy", 900);
+    } finally {
+      dragStartRef.current = null;
+      setDragging(false);
+      window.setTimeout(() => { draggingRef.current = false; }, 0);
+    }
   }
 
   function finishDrag() {
     dragStartRef.current = null;
+  }
+
+  function stopLooking() {
+    setGaze({ x: 0, y: 0 });
   }
 
   function toggleMenu() {
@@ -442,7 +505,8 @@ export default function Pet() {
         body: JSON.stringify({ text, source: translationSource, target }),
       });
       setTranslationOutput(result.translation);
-    } catch (error) { setTranslationOutput((error as Error).message); }
+      showMood("happy", 1200);
+    } catch (error) { setTranslationOutput((error as Error).message); showMood("confused", 1400); }
     finally { setTranslationBusy(false); }
   }
 
@@ -499,8 +563,10 @@ export default function Pet() {
           }
         }
       }
+      showMood("happy", 1800);
     } catch (error) {
       setReply((error as Error).message);
+      showMood("confused", 1800);
     } finally {
       setBusy(false);
     }
@@ -568,21 +634,31 @@ export default function Pet() {
             <label>桌宠大小 <input type="range" min="70" max="125" value={petSize} onChange={(event) => updatePetSize(Number(event.target.value))} /><span>{petSize}%</span></label>
             <label>透明度 <input type="range" min="30" max="100" value={petOpacity} onChange={(event) => setPetOpacity(Number(event.target.value))} /><span>{petOpacity}%</span></label>
             <label>对话文字 <input type="range" min="80" max="160" step="5" value={dialogFontSize} onChange={(event) => setDialogFontSize(Number(event.target.value))} /><span>{dialogFontSize}%</span></label>
+            <label className="proactive-toggle">主动冒泡 <input type="checkbox" checked={proactiveEnabled} onChange={(event) => setProactiveEnabled(event.target.checked)} /><span>{proactiveEnabled ? "开启" : "关闭"}</span></label>
           </div>
         </section>
       )}
+      {proactiveMessage && !expanded && !menuOpen && (
+        <aside className="proactive-bubble" aria-live="polite">
+          <button onClick={() => setProactiveMessage("")} aria-label="关闭主动提醒">×</button>
+          {proactiveMessage}
+        </aside>
+      )}
       <button
-        className={`pet-character ${busy ? "thinking" : ""}`}
-        style={{ opacity: petOpacity / 100 }}
+        className={`pet-character ${busy ? "thinking" : ""} mood-${mood} idle-${idleAction} ${dragging ? "dragging" : ""}`}
+        style={{ opacity: petOpacity / 100, "--gaze-x": gaze.x, "--gaze-y": gaze.y } as React.CSSProperties}
         onPointerDown={beginDrag}
         onPointerMove={continueDrag}
         onPointerUp={finishDrag}
         onPointerCancel={finishDrag}
+        onPointerLeave={stopLooking}
         onClick={toggleMenu}
         onDoubleClick={() => { if (open) void toggleBubble(); else if (translationOpen) void toggleTranslation(); else if (settingsOpen) void toggleSettings(); else openLastFeature(); }}
         aria-label="蓝色雨滴史莱姆，拖动移动，点击打开功能菜单"
       >
         <img src="/assets/blue-slime-pet.png" alt="蓝色雨滴史莱姆" draggable={false} />
+        <span className="pet-ripple" />
+        <span className="pet-emote" aria-hidden="true">{busy ? "…" : mood === "happy" ? "♥" : mood === "confused" ? "?" : idleAction === "sleepy" ? "Zzz" : ""}</span>
       </button>
       {menuOpen && !expanded && (
         <nav className="pet-plugin-menu" aria-label="桌宠功能">
