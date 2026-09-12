@@ -9,7 +9,10 @@ import type { MessageDisplayMode } from "./MessageContent";
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:8000/api";
 const WAITING_MESSAGE = "本地服务还没准备好，请稍后再点我。";
 const READY_MESSAGE = "点点我，我们来聊天吧。";
-type Character = { id: number; name: string };
+type Character = {
+  id: number; name: string; greeting?: string; personality?: string;
+  speaking_style?: string; relationship?: string;
+};
 type Conversation = { id: number; character_id: number; title: string };
 type PetState = { position_x: number | null; position_y: number | null };
 type DisplaySettings = { message_display_mode: MessageDisplayMode };
@@ -17,6 +20,38 @@ type TranslationPackage = { from_code: "zh" | "en"; to_code: "zh" | "en"; name: 
 type PetFeature = "chat" | "translation" | "settings";
 type PetMood = "idle" | "tap" | "happy" | "confused";
 type IdleAction = "none" | "squish" | "wiggle" | "sleepy";
+type DayPeriod = "morning" | "daytime" | "evening" | "night";
+const PERIOD_LABELS: Record<DayPeriod, string> = { morning: "早晨", daytime: "白天", evening: "傍晚", night: "深夜" };
+
+function getDayPeriod(date = new Date()): DayPeriod {
+  const hour = date.getHours();
+  if (hour >= 5 && hour < 10) return "morning";
+  if (hour >= 10 && hour < 17) return "daytime";
+  if (hour >= 17 && hour < 22) return "evening";
+  return "night";
+}
+
+function roleAwareGreeting(character: Character | null, period: DayPeriod) {
+  const timeLines: Record<DayPeriod, string[]> = {
+    morning: ["早上好，新的一天慢慢开始吧。", "醒来了吗？先喝一点水吧。"],
+    daytime: ["忙碌的时候，也别忘了让眼睛休息一下。", "坐久了吗？起来活动一下吧。"],
+    evening: ["辛苦一天了，记得给自己留一点休息时间。", "晚上好，今天过得怎么样？"],
+    night: ["已经很晚了，剩下的事情明天再做也可以。", "夜深了，别让自己太累。"],
+  };
+  const profile = `${character?.personality ?? ""} ${character?.speaking_style ?? ""}`;
+  let ending = "我会待在这里，需要时就叫我。";
+  if (/温柔|体贴|治愈|耐心/.test(profile)) ending = "慢慢来，我会陪着你的。";
+  else if (/活泼|开朗|元气|可爱/.test(profile)) ending = "打起精神，我们一起加油！";
+  else if (/冷静|理性|沉稳|严谨/.test(profile)) ending = "按自己的节奏处理就好。";
+  else if (/傲娇/.test(profile)) ending = "我只是顺便提醒你，可别想多了。";
+  const relation = character?.relationship ?? "";
+  const address = ["主人", "朋友", "搭档", "老师", "同学", "前辈"].find((item) => relation.includes(item));
+  const lead = address ? `${address}，` : "";
+  const characterGreeting = character?.greeting?.trim().split(/\r?\n/)[0]?.slice(0, 72);
+  if (characterGreeting && Math.random() < 0.25) return `${lead}${characterGreeting}`;
+  const options = timeLines[period];
+  return `${lead}${options[Math.floor(Math.random() * options.length)]}${ending}`;
+}
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API}${path}`, {
@@ -45,6 +80,13 @@ export default function Pet() {
   const [proactiveEnabled, setProactiveEnabled] = useState(
     () => localStorage.getItem("yus-ai-proactive-enabled") !== "false",
   );
+  const [timeAwareEnabled, setTimeAwareEnabled] = useState(
+    () => localStorage.getItem("yus-ai-time-aware-enabled") !== "false",
+  );
+  const [roleAwareEnabled, setRoleAwareEnabled] = useState(
+    () => localStorage.getItem("yus-ai-role-aware-enabled") !== "false",
+  );
+  const [dayPeriod, setDayPeriod] = useState<DayPeriod>(() => getDayPeriod());
   const [placement, setPlacement] = useState("above-right");
   const [busy, setBusy] = useState(false);
   const [input, setInput] = useState("");
@@ -66,6 +108,12 @@ export default function Pet() {
   const [dialogFontSize, setDialogFontSize] = useState(
     () => Number(localStorage.getItem("yus-ai-dialog-font-size")) || 100,
   );
+  const [dialogWidth, setDialogWidth] = useState(
+    () => Number(localStorage.getItem("yus-ai-dialog-width")) || 430,
+  );
+  const [dialogHeight, setDialogHeight] = useState(
+    () => Number(localStorage.getItem("yus-ai-dialog-height")) || 520,
+  );
   const conversationRef = useRef<number | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const draggingRef = useRef(false);
@@ -82,37 +130,60 @@ export default function Pet() {
   const openRef = useRef(expanded);
   const placementRef = useRef(placement);
   const petSizeRef = useRef(petSize);
+  const dialogWidthRef = useRef(dialogWidth);
+  const dialogHeightRef = useRef(dialogHeight);
   const moodTimerRef = useRef<number | undefined>(undefined);
+  const dialogResizeTimerRef = useRef<number | undefined>(undefined);
+  const dialogResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const dialogHeightResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
 
   useEffect(() => { openRef.current = expanded; }, [expanded]);
   useEffect(() => { placementRef.current = placement; }, [placement]);
   useEffect(() => { petSizeRef.current = petSize; }, [petSize]);
+  useEffect(() => { dialogWidthRef.current = dialogWidth; }, [dialogWidth]);
+  useEffect(() => { dialogHeightRef.current = dialogHeight; }, [dialogHeight]);
   useEffect(() => { continuousTranslationRef.current = continuousTranslation; }, [continuousTranslation]);
-  useEffect(() => () => window.clearTimeout(menuClickTimerRef.current), []);
+  useEffect(() => () => {
+    window.clearTimeout(menuClickTimerRef.current);
+    window.clearTimeout(dialogResizeTimerRef.current);
+  }, []);
   useEffect(() => { localStorage.setItem("yus-ai-proactive-enabled", String(proactiveEnabled)); }, [proactiveEnabled]);
+  useEffect(() => { localStorage.setItem("yus-ai-time-aware-enabled", String(timeAwareEnabled)); }, [timeAwareEnabled]);
+  useEffect(() => { localStorage.setItem("yus-ai-role-aware-enabled", String(roleAwareEnabled)); }, [roleAwareEnabled]);
+  useEffect(() => {
+    const timer = window.setInterval(() => setDayPeriod(getDayPeriod()), 60000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (expanded || dragging || busy) return;
-    const actions: IdleAction[] = ["squish", "wiggle", "sleepy"];
+    const actions: IdleAction[] = dayPeriod === "night"
+      ? ["sleepy", "sleepy", "squish"]
+      : ["squish", "wiggle", "sleepy"];
     const timer = window.setInterval(() => {
       const action = actions[Math.floor(Math.random() * actions.length)];
       setIdleAction(action);
       window.setTimeout(() => setIdleAction("none"), action === "sleepy" ? 2400 : 1100);
     }, 11000);
     return () => window.clearInterval(timer);
-  }, [expanded, dragging, busy]);
+  }, [expanded, dragging, busy, dayPeriod]);
 
   useEffect(() => {
-    if (!proactiveEnabled || expanded) return;
-    const greetings = ["要记得喝水呀。", "坐久了吗？起来伸个懒腰吧。", "我一直在这里，需要时点点我。", "今天也要对自己温柔一点。"];
+    if (!proactiveEnabled || expanded || (timeAwareEnabled && dayPeriod === "night")) return;
     const showGreeting = () => {
-      setProactiveMessage(greetings[Math.floor(Math.random() * greetings.length)]);
+      setProactiveMessage(roleAwareGreeting(roleAwareEnabled ? character : null, timeAwareEnabled ? dayPeriod : "daytime"));
       window.setTimeout(() => setProactiveMessage(""), 9000);
     };
-    const first = window.setTimeout(showGreeting, 120000);
-    const recurring = window.setInterval(showGreeting, 240000);
+    const today = new Date().toISOString().slice(0, 10);
+    const greetingKey = `${today}-${dayPeriod}-${character?.id ?? 0}`;
+    const greeted = localStorage.getItem("yus-ai-last-time-greeting") === greetingKey;
+    const first = greeted ? undefined : window.setTimeout(() => {
+      localStorage.setItem("yus-ai-last-time-greeting", greetingKey);
+      showGreeting();
+    }, 15000);
+    const recurring = window.setInterval(showGreeting, 30 * 60 * 1000);
     return () => { window.clearTimeout(first); window.clearInterval(recurring); };
-  }, [proactiveEnabled, expanded]);
+  }, [proactiveEnabled, timeAwareEnabled, roleAwareEnabled, dayPeriod, character, expanded]);
 
   useEffect(() => {
     let disposed = false;
@@ -200,6 +271,12 @@ export default function Pet() {
   useEffect(() => {
     localStorage.setItem("yus-ai-dialog-font-size", String(dialogFontSize));
   }, [dialogFontSize]);
+  useEffect(() => {
+    localStorage.setItem("yus-ai-dialog-width", String(dialogWidth));
+  }, [dialogWidth]);
+  useEffect(() => {
+    localStorage.setItem("yus-ai-dialog-height", String(dialogHeight));
+  }, [dialogHeight]);
 
   useEffect(() => {
     if (!desktop) return;
@@ -216,6 +293,8 @@ export default function Pet() {
             scale: next / 100,
             currentExpanded: openRef.current,
             currentPlacement: placementRef.current,
+            dialogWidth: dialogWidthRef.current,
+            dialogHeight: dialogHeightRef.current,
           }).then(setPlacement);
           return next;
         });
@@ -233,6 +312,8 @@ export default function Pet() {
           scale: petSizeRef.current / 100,
           currentExpanded: true,
           currentPlacement: placementRef.current,
+          dialogWidth: dialogWidthRef.current,
+          dialogHeight: dialogHeightRef.current,
         }).then(setPlacement);
       }
       setOpen(false);
@@ -301,6 +382,8 @@ export default function Pet() {
         scale: petSize / 100,
         currentExpanded: expanded,
         currentPlacement: placement,
+        dialogWidth,
+        dialogHeight,
       });
       setPlacement(nextPlacement);
     }
@@ -326,6 +409,8 @@ export default function Pet() {
         scale: petSize / 100,
         currentExpanded: expanded,
         currentPlacement: placement,
+        dialogWidth,
+        dialogHeight,
       });
       setPlacement(nextPlacement);
     }
@@ -350,6 +435,8 @@ export default function Pet() {
         scale: petSize / 100,
         currentExpanded: expanded,
         currentPlacement: placement,
+        dialogWidth,
+        dialogHeight,
       });
       setPlacement(nextPlacement);
     }
@@ -432,6 +519,8 @@ export default function Pet() {
         scale: value / 100,
         currentExpanded: expanded,
         currentPlacement: placement,
+        dialogWidth,
+        dialogHeight,
       }).then(setPlacement);
   }
 
@@ -440,7 +529,7 @@ export default function Pet() {
     setContinuousTranslation(false);
     if (desktop) await invoke("set_continuous_translation", { enabled: false });
     if (desktop)
-      await invoke("set_pet_layout", { expanded: false, scale: petSize / 100, currentExpanded: expanded, currentPlacement: placement });
+      await invoke("set_pet_layout", { expanded: false, scale: petSize / 100, currentExpanded: expanded, currentPlacement: placement, dialogWidth, dialogHeight });
     setOpen(false);
     setTranslationOpen(false);
     setSettingsOpen(false);
@@ -474,6 +563,74 @@ export default function Pet() {
     } catch (error) {
       setTranslationOutput((error as Error).message);
     } finally { setTranslationBusy(false); }
+  }
+
+  function updateDialogWidth(value: number) {
+    setDialogWidth(value);
+    dialogWidthRef.current = value;
+    if (!desktop || !expanded) return;
+    if (dialogResizeTimerRef.current !== undefined) return;
+    dialogResizeTimerRef.current = window.setTimeout(() => {
+      dialogResizeTimerRef.current = undefined;
+      void invoke<string>("resize_pet_dialog", {
+        width: dialogWidthRef.current,
+        height: dialogHeightRef.current,
+        scale: petSizeRef.current / 100,
+        placement: placementRef.current,
+      }).then(setPlacement);
+    }, 32);
+  }
+
+  function beginDialogResize(event: React.PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dialogResizeRef.current = { startX: event.screenX, startWidth: dialogWidth };
+  }
+
+  function continueDialogResize(event: React.PointerEvent<HTMLDivElement>) {
+    const resize = dialogResizeRef.current;
+    if (!resize) return;
+    const direction = placement.endsWith("left") ? 1 : -1;
+    const nextWidth = Math.round(Math.max(430, Math.min(720, resize.startWidth + (event.screenX - resize.startX) * direction)) / 10) * 10;
+    if (nextWidth !== dialogWidthRef.current) updateDialogWidth(nextWidth);
+  }
+
+  function finishDialogResize() {
+    dialogResizeRef.current = null;
+  }
+
+  function updateDialogHeight(value: number) {
+    setDialogHeight(value);
+    dialogHeightRef.current = value;
+    if (!desktop || !expanded) return;
+    if (dialogResizeTimerRef.current !== undefined) return;
+    dialogResizeTimerRef.current = window.setTimeout(() => {
+      dialogResizeTimerRef.current = undefined;
+      void invoke<string>("resize_pet_dialog", {
+        width: dialogWidthRef.current,
+        height: dialogHeightRef.current,
+        scale: petSizeRef.current / 100,
+        placement: placementRef.current,
+      }).then(setPlacement);
+    }, 32);
+  }
+
+  function beginDialogHeightResize(event: React.PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dialogHeightResizeRef.current = { startY: event.screenY, startHeight: dialogHeight };
+  }
+
+  function continueDialogHeightResize(event: React.PointerEvent<HTMLDivElement>) {
+    const resize = dialogHeightResizeRef.current;
+    if (!resize) return;
+    const direction = placement.startsWith("below") ? 1 : -1;
+    const nextHeight = Math.round(Math.max(520, Math.min(760, resize.startHeight + (event.screenY - resize.startY) * direction)) / 10) * 10;
+    if (nextHeight !== dialogHeightRef.current) updateDialogHeight(nextHeight);
+  }
+
+  function finishDialogHeightResize() {
+    dialogHeightResizeRef.current = null;
   }
 
   async function toggleContinuousTranslation() {
@@ -573,13 +730,15 @@ export default function Pet() {
   }
 
   return (
-    <main className={`pet-stage ${expanded ? "open" : ""} ${placement}`}>
+    <main className={`pet-stage ${expanded ? "open" : ""} ${placement} period-${dayPeriod}`}>
       <div
         className={`pet-canvas ${expanded ? "open" : ""} ${layoutChanging ? "layout-changing" : ""}`}
-        style={{ transform: `scale(${petSize / 100})`, "--dialog-font-scale": dialogFontSize / 100 } as React.CSSProperties}
+        style={{ transform: `scale(${petSize / 100})`, "--dialog-font-scale": dialogFontSize / 100, "--dialog-width": `${dialogWidth}px`, "--dialog-height": `${dialogHeight}px` } as React.CSSProperties}
       >
       {open && (
         <section className="speech-bubble">
+          <div className="dialog-resize-handle" role="separator" aria-label="拖动调整对话框宽度" onPointerDown={beginDialogResize} onPointerMove={continueDialogResize} onPointerUp={finishDialogResize} onPointerCancel={finishDialogResize} />
+          <div className="dialog-height-handle" role="separator" aria-label="拖动调整对话框高度" onPointerDown={beginDialogHeightResize} onPointerMove={continueDialogHeightResize} onPointerUp={finishDialogHeightResize} onPointerCancel={finishDialogHeightResize} />
           <div className="speech-head">
             <strong>{character?.name ?? "蓝雨"}</strong>
             <div className="speech-actions">
@@ -598,6 +757,8 @@ export default function Pet() {
       )}
       {translationOpen && (
         <section className="speech-bubble translation-panel">
+          <div className="dialog-resize-handle" role="separator" aria-label="拖动调整翻译框宽度" onPointerDown={beginDialogResize} onPointerMove={continueDialogResize} onPointerUp={finishDialogResize} onPointerCancel={finishDialogResize} />
+          <div className="dialog-height-handle" role="separator" aria-label="拖动调整翻译框高度" onPointerDown={beginDialogHeightResize} onPointerMove={continueDialogHeightResize} onPointerUp={finishDialogHeightResize} onPointerCancel={finishDialogHeightResize} />
           <div className="speech-head">
             <strong>离线翻译</strong>
             <div className="speech-actions">
@@ -626,6 +787,8 @@ export default function Pet() {
       )}
       {settingsOpen && (
         <section className="speech-bubble settings-panel">
+          <div className="dialog-resize-handle" role="separator" aria-label="拖动调整设置框宽度" onPointerDown={beginDialogResize} onPointerMove={continueDialogResize} onPointerUp={finishDialogResize} onPointerCancel={finishDialogResize} />
+          <div className="dialog-height-handle" role="separator" aria-label="拖动调整设置框高度" onPointerDown={beginDialogHeightResize} onPointerMove={continueDialogHeightResize} onPointerUp={finishDialogHeightResize} onPointerCancel={finishDialogHeightResize} />
           <div className="speech-head">
             <strong>桌宠设置</strong>
             <button className="close-bubble" onClick={() => void toggleSettings()} aria-label="关闭设置">×</button>
@@ -634,13 +797,18 @@ export default function Pet() {
             <label>桌宠大小 <input type="range" min="70" max="125" value={petSize} onChange={(event) => updatePetSize(Number(event.target.value))} /><span>{petSize}%</span></label>
             <label>透明度 <input type="range" min="30" max="100" value={petOpacity} onChange={(event) => setPetOpacity(Number(event.target.value))} /><span>{petOpacity}%</span></label>
             <label>对话文字 <input type="range" min="80" max="160" step="5" value={dialogFontSize} onChange={(event) => setDialogFontSize(Number(event.target.value))} /><span>{dialogFontSize}%</span></label>
+            <label>对话框宽度 <input type="range" min="430" max="720" step="10" value={dialogWidth} onChange={(event) => updateDialogWidth(Number(event.target.value))} /><span>{dialogWidth}px</span></label>
+            <label>对话框高度 <input type="range" min="520" max="760" step="10" value={dialogHeight} onChange={(event) => updateDialogHeight(Number(event.target.value))} /><span>{dialogHeight}px</span></label>
             <label className="proactive-toggle">主动冒泡 <input type="checkbox" checked={proactiveEnabled} onChange={(event) => setProactiveEnabled(event.target.checked)} /><span>{proactiveEnabled ? "开启" : "关闭"}</span></label>
+            <label className="proactive-toggle">时间感知 <input type="checkbox" checked={timeAwareEnabled} onChange={(event) => setTimeAwareEnabled(event.target.checked)} /><span>{timeAwareEnabled ? "开启" : "关闭"}</span></label>
+            <label className="proactive-toggle">角色台词 <input type="checkbox" checked={roleAwareEnabled} onChange={(event) => setRoleAwareEnabled(event.target.checked)} /><span>{roleAwareEnabled ? "开启" : "关闭"}</span></label>
           </div>
         </section>
       )}
       {proactiveMessage && !expanded && !menuOpen && (
         <aside className="proactive-bubble" aria-live="polite">
           <button onClick={() => setProactiveMessage("")} aria-label="关闭主动提醒">×</button>
+          <small>{PERIOD_LABELS[dayPeriod]} · {character?.name ?? "蓝雨"}</small>
           {proactiveMessage}
         </aside>
       )}
@@ -658,7 +826,7 @@ export default function Pet() {
       >
         <img src="/assets/blue-slime-pet.png" alt="蓝色雨滴史莱姆" draggable={false} />
         <span className="pet-ripple" />
-        <span className="pet-emote" aria-hidden="true">{busy ? "…" : mood === "happy" ? "♥" : mood === "confused" ? "?" : idleAction === "sleepy" ? "Zzz" : ""}</span>
+        <span className="pet-emote" aria-hidden="true">{busy ? "…" : mood === "happy" ? "♥" : mood === "confused" ? "?" : idleAction === "sleepy" ? "Zzz" : dayPeriod === "night" ? "☾" : ""}</span>
       </button>
       {menuOpen && !expanded && (
         <nav className="pet-plugin-menu" aria-label="桌宠功能">

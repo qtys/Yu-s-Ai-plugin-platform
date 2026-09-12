@@ -89,22 +89,23 @@ fn enter_pet_mode(app: AppHandle) -> Result<(), String> {
   Ok(())
 }
 
-fn resize_pet_window(window: &WebviewWindow, expanded: bool, pet_scale: f64, current_expanded: bool, current_placement: &str) -> Result<String, String> {
+fn resize_pet_window(window: &WebviewWindow, expanded: bool, pet_scale: f64, current_expanded: bool, current_placement: &str, dialog_width: f64, dialog_height: f64) -> Result<String, String> {
   let dpi_scale = window.scale_factor().map_err(|error| error.to_string())?;
   let old_position = window.outer_position().map_err(|error| error.to_string())?.to_logical::<f64>(dpi_scale);
   let old_size = window.outer_size().map_err(|error| error.to_string())?.to_logical::<f64>(dpi_scale);
-  let old_base_size: LogicalSize<f64> = if current_expanded { LogicalSize::new(430.0, 520.0) } else { LogicalSize::new(250.0, 320.0) };
-  let old_factor = old_size.width / old_base_size.width;
+  let old_base_height = if current_expanded { dialog_height.clamp(520.0, 760.0) } else { 320.0 };
+  let old_factor = old_size.height / old_base_height;
+  let old_base_size = LogicalSize::new(old_size.width / old_factor, old_base_height);
   let old_align_left = current_placement.ends_with("left");
   let old_below = current_expanded && current_placement.starts_with("below");
   let old_pet_x = if old_align_left { 21.0 } else { old_base_size.width - 191.0 };
-  let old_pet_y = if current_expanded { if old_below { 12.0 } else { 286.0 } } else { 80.0 };
+  let old_pet_y = if current_expanded { if old_below { 12.0 } else { old_base_height - 234.0 } } else { 80.0 };
   let pet_left = old_position.x + old_pet_x * old_factor;
   let pet_top = old_position.y + old_pet_y * old_factor;
   let pet_right = pet_left + 170.0 * old_factor;
 
   let factor = pet_scale.clamp(0.7, 1.25);
-  let base_size: LogicalSize<f64> = if expanded { LogicalSize::new(430.0, 520.0) } else { LogicalSize::new(250.0, 320.0) };
+  let base_size: LogicalSize<f64> = if expanded { LogicalSize::new(dialog_width.clamp(430.0, 720.0), dialog_height.clamp(520.0, 760.0)) } else { LogicalSize::new(250.0, 320.0) };
   let new_size = LogicalSize::new(base_size.width * factor, base_size.height * factor);
   let mut placement = "above-right".to_string();
   let mut new_position = LogicalPosition::new(pet_right - (base_size.width - 21.0) * factor, pet_top - 80.0 * factor);
@@ -115,13 +116,13 @@ fn resize_pet_window(window: &WebviewWindow, expanded: bool, pet_scale: f64, cur
     let monitor_right = monitor_position.x + monitor_size.width;
     let monitor_bottom = monitor_position.y + monitor_size.height;
     let align_left = pet_right - (base_size.width - 21.0) * factor < monitor_position.x;
-    let below = expanded && pet_top - 286.0 * factor < monitor_position.y;
+    let below = expanded && pet_top - (base_size.height - 234.0) * factor < monitor_position.y;
     placement = format!("{}-{}", if below { "below" } else { "above" }, if align_left { "left" } else { "right" });
     let new_pet_x = if align_left { 21.0 } else { base_size.width - 191.0 };
-    let new_pet_y = if expanded { if below { 12.0 } else { 286.0 } } else { 80.0 };
+    let new_pet_y = if expanded { if below { 12.0 } else { base_size.height - 234.0 } } else { 80.0 };
     new_position = LogicalPosition::new(pet_left - new_pet_x * factor, pet_top - new_pet_y * factor);
-    new_position.x = new_position.x.clamp(monitor_position.x, monitor_right - new_size.width);
-    new_position.y = new_position.y.clamp(monitor_position.y, monitor_bottom - new_size.height);
+    new_position.x = new_position.x.clamp(monitor_position.x, (monitor_right - new_size.width).max(monitor_position.x));
+    new_position.y = new_position.y.clamp(monitor_position.y, (monitor_bottom - new_size.height).max(monitor_position.y));
   }
   window.set_size(new_size).map_err(|error| error.to_string())?;
   window.set_position(new_position).map_err(|error| error.to_string())?;
@@ -129,8 +130,40 @@ fn resize_pet_window(window: &WebviewWindow, expanded: bool, pet_scale: f64, cur
 }
 
 #[tauri::command]
-fn set_pet_layout(window: WebviewWindow, expanded: bool, scale: f64, current_expanded: bool, current_placement: String) -> Result<String, String> {
-  resize_pet_window(&window, expanded, scale, current_expanded, &current_placement)
+fn set_pet_layout(window: WebviewWindow, expanded: bool, scale: f64, current_expanded: bool, current_placement: String, dialog_width: f64, dialog_height: f64) -> Result<String, String> {
+  resize_pet_window(&window, expanded, scale, current_expanded, &current_placement, dialog_width, dialog_height)
+}
+
+#[tauri::command]
+fn resize_pet_dialog(window: WebviewWindow, width: f64, height: f64, scale: f64, placement: String) -> Result<String, String> {
+  let dpi_scale = window.scale_factor().map_err(|error| error.to_string())?;
+  let old_position = window.outer_position().map_err(|error| error.to_string())?.to_logical::<f64>(dpi_scale);
+  let old_size = window.outer_size().map_err(|error| error.to_string())?.to_logical::<f64>(dpi_scale);
+  let factor = scale.clamp(0.7, 1.25);
+  let old_base_width = old_size.width / factor;
+  let old_base_height = old_size.height / factor;
+  let align_left = placement.ends_with("left");
+  let below = placement.starts_with("below");
+  let old_pet_x = if align_left { 21.0 } else { old_base_width - 191.0 };
+  let old_pet_y = if below { 12.0 } else { old_base_height - 234.0 };
+  let pet_left = old_position.x + old_pet_x * factor;
+  let pet_top = old_position.y + old_pet_y * factor;
+  let new_base_width = width.clamp(430.0, 720.0);
+  let new_base_height = height.clamp(520.0, 760.0);
+  let new_size = LogicalSize::new(new_base_width * factor, new_base_height * factor);
+  let new_pet_x = if align_left { 21.0 } else { new_base_width - 191.0 };
+  let new_pet_y = if below { 12.0 } else { new_base_height - 234.0 };
+  let mut new_position = LogicalPosition::new(pet_left - new_pet_x * factor, pet_top - new_pet_y * factor);
+  if let Some(monitor) = window.current_monitor().map_err(|error| error.to_string())? {
+    let monitor_scale = monitor.scale_factor();
+    let monitor_position = monitor.position().to_logical::<f64>(monitor_scale);
+    let monitor_size = monitor.size().to_logical::<f64>(monitor_scale);
+    new_position.x = new_position.x.clamp(monitor_position.x, (monitor_position.x + monitor_size.width - new_size.width).max(monitor_position.x));
+    new_position.y = new_position.y.clamp(monitor_position.y, (monitor_position.y + monitor_size.height - new_size.height).max(monitor_position.y));
+  }
+  window.set_size(new_size).map_err(|error| error.to_string())?;
+  window.set_position(new_position).map_err(|error| error.to_string())?;
+  Ok(placement)
 }
 
 #[tauri::command]
@@ -178,9 +211,14 @@ fn get_pet_position(window: WebviewWindow, expanded: bool, scale: f64, placement
   let dpi_scale = window.scale_factor().map_err(|error| error.to_string())?;
   let position = window.outer_position().map_err(|error| error.to_string())?.to_logical::<f64>(dpi_scale);
   let factor = scale.clamp(0.7, 1.25);
-  let width = if expanded { 430.0 } else { 250.0 };
+  let width = if expanded {
+    window.outer_size().map_err(|error| error.to_string())?.to_logical::<f64>(dpi_scale).width / factor
+  } else { 250.0 };
   let pet_x = if placement.ends_with("left") { 21.0 } else { width - 191.0 };
-  let pet_y = if expanded { if placement.starts_with("below") { 12.0 } else { 286.0 } } else { 80.0 };
+  let height = if expanded {
+    window.outer_size().map_err(|error| error.to_string())?.to_logical::<f64>(dpi_scale).height / factor
+  } else { 320.0 };
+  let pet_y = if expanded { if placement.starts_with("below") { 12.0 } else { height - 234.0 } } else { 80.0 };
   Ok(PetPosition { x: position.x + pet_x * factor, y: position.y + pet_y * factor })
 }
 
@@ -320,7 +358,7 @@ pub fn run() {
       always_on_top: Mutex::new(false),
       mini_mode: Mutex::new(false),
     })
-    .invoke_handler(tauri::generate_handler![set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, start_pet_drag, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, get_autostart_status, set_autostart, export_character_card])
+    .invoke_handler(tauri::generate_handler![set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, resize_pet_dialog, start_pet_drag, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, get_autostart_status, set_autostart, export_character_card])
     .setup(|app| {
       let legacy_data_dir = app.path().app_data_dir()?;
       let data_dir = prepare_install_data_dir(app.handle())?;

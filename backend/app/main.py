@@ -100,12 +100,12 @@ def rows(query: str, params: tuple = ()) -> list[dict]:
 async def lifespan(_: FastAPI):
     configure_logging()
     init_db()
-    logger.info("backend_started version=0.10.0")
+    logger.info("backend_started version=0.11.0")
     yield
     logger.info("backend_stopped")
 
 
-app = FastAPI(title="Yu's AI API", version="0.10.0", lifespan=lifespan)
+app = FastAPI(title="Yu's AI API", version="0.11.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://tauri.localhost", "tauri://localhost"],
