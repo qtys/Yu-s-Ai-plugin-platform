@@ -335,8 +335,50 @@
 .theme-card[data-preview="paper"] .theme-preview {
   background: #ddd3c3;
 }
+.message-plugin-grid {
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:10px;
+}
+.message-plugin {
+  display:grid;
+  grid-template-columns:18px 1fr;
+  gap:5px 7px;
+  min-width:0;
+  padding:12px;
+  border:1px solid var(--line);
+  border-radius:12px;
+  background:var(--surface);
+  color:var(--text);
+  text-align:left;
+  cursor:pointer;
+}
+.message-plugin > span { grid-row:1 / span 2; color:var(--muted); }
+.message-plugin strong { font-size:12px; }
+.message-plugin small { color:var(--muted); font-size:10px; line-height:1.45; }
+.message-plugin.selected {
+  border-color:var(--accent);
+  box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 18%,transparent);
+}
+.message-plugin.selected > span { color:var(--accent); }
+.markdown-content { min-width:0; color:var(--text); line-height:1.75; }
+.markdown-content > :first-child { margin-top:6px; }
+.markdown-content > :last-child { margin-bottom:0; }
+.markdown-content h1,.markdown-content h2,.markdown-content h3 { line-height:1.35; margin:18px 0 8px; }
+.markdown-content h1 { font-size:1.45em; }
+.markdown-content h2 { font-size:1.28em; }
+.markdown-content h3 { font-size:1.12em; }
+.markdown-content ul,.markdown-content ol { padding-left:22px; }
+.markdown-content blockquote { margin:10px 0; padding:4px 12px; border-left:3px solid var(--accent); color:var(--muted); }
+.markdown-content code { padding:2px 5px; border-radius:5px; background:var(--surface-strong); font-family:"Cascadia Code",Consolas,monospace; font-size:.9em; }
+.markdown-content pre { overflow:auto; padding:12px; border:1px solid var(--line); border-radius:10px; background:var(--input); }
+.markdown-content pre code { padding:0; background:transparent; }
+.markdown-content table { display:block; max-width:100%; overflow:auto; border-collapse:collapse; }
+.markdown-content th,.markdown-content td { padding:7px 10px; border:1px solid var(--line); }
+.markdown-content a { color:var(--accent); }
 @media (max-width: 800px) {
   .theme-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+  .message-plugin-grid { grid-template-columns:1fr; }
 }

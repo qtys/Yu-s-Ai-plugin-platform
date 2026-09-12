@@ -26,6 +26,7 @@ class SettingsUpdate(BaseModel):
     max_tokens: int = Field(2048, ge=1, le=128000)
     context_message_limit: int = Field(20, ge=2, le=200)
     memory_limit: int = Field(5, ge=0, le=50)
+    message_display_mode: Literal["markdown", "plain", "raw"] = "markdown"
 
 
 class CharacterCreate(BaseModel):
@@ -99,12 +100,12 @@ def rows(query: str, params: tuple = ()) -> list[dict]:
 async def lifespan(_: FastAPI):
     configure_logging()
     init_db()
-    logger.info("backend_started version=0.8.1")
+    logger.info("backend_started version=0.9.0")
     yield
     logger.info("backend_stopped")
 
 
-app = FastAPI(title="Yu's AI API", version="0.8.1", lifespan=lifespan)
+app = FastAPI(title="Yu's AI API", version="0.9.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://tauri.localhost", "tauri://localhost"],
@@ -202,8 +203,8 @@ def update_settings(payload: SettingsUpdate):
         current_key = db.execute("SELECT api_key FROM settings WHERE id = 1").fetchone()[0]
         api_key = current_key if payload.api_key == "••••••••" else payload.api_key
         db.execute(
-            "UPDATE settings SET base_url=?, api_key=?, model=?, temperature=?, max_tokens=?, context_message_limit=?, memory_limit=? WHERE id=1",
-            (payload.base_url.rstrip("/"), api_key, payload.model, payload.temperature, payload.max_tokens, payload.context_message_limit, payload.memory_limit),
+            "UPDATE settings SET base_url=?, api_key=?, model=?, temperature=?, max_tokens=?, context_message_limit=?, memory_limit=?, message_display_mode=? WHERE id=1",
+            (payload.base_url.rstrip("/"), api_key, payload.model, payload.temperature, payload.max_tokens, payload.context_message_limit, payload.memory_limit, payload.message_display_mode),
         )
     return {"ok": True}
 

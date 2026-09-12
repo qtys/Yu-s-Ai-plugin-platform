@@ -3,6 +3,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
+import MessageContent from "./MessageContent";
+import type { MessageDisplayMode } from "./MessageContent";
 
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:8000/api";
 const WAITING_MESSAGE = "本地服务还没准备好，请稍后再点我。";
@@ -10,7 +12,9 @@ const READY_MESSAGE = "点点我，我们来聊天吧。";
 type Character = { id: number; name: string };
 type Conversation = { id: number; character_id: number; title: string };
 type PetState = { position_x: number | null; position_y: number | null };
+type DisplaySettings = { message_display_mode: MessageDisplayMode };
 type TranslationPackage = { from_code: "zh" | "en"; to_code: "zh" | "en"; name: string; size_mb: number; installed: boolean };
+type PetFeature = "chat" | "translation" | "settings";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API}${path}`, {
@@ -28,7 +32,9 @@ export default function Pet() {
   const desktop = "__TAURI_INTERNALS__" in window;
   const [open, setOpen] = useState(false);
   const [translationOpen, setTranslationOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [layoutChanging, setLayoutChanging] = useState(false);
   const [placement, setPlacement] = useState("above-right");
   const [busy, setBusy] = useState(false);
   const [input, setInput] = useState("");
@@ -40,7 +46,7 @@ export default function Pet() {
   const [translationBusy, setTranslationBusy] = useState(false);
   const [continuousTranslation, setContinuousTranslation] = useState(false);
   const [character, setCharacter] = useState<Character | null>(null);
-  const [showControls, setShowControls] = useState(false);
+  const [messageDisplayMode, setMessageDisplayMode] = useState<MessageDisplayMode>("markdown");
   const [petSize, setPetSize] = useState(
     () => Number(localStorage.getItem("yus-ai-pet-size")) || 100,
   );
@@ -58,7 +64,11 @@ export default function Pet() {
   const startupShownRef = useRef(false);
   const continuousTranslationRef = useRef(false);
   const translationSequenceRef = useRef(0);
-  const expanded = open || translationOpen;
+  const menuClickTimerRef = useRef<number | undefined>(undefined);
+  const lastFeatureRef = useRef<PetFeature>(
+    (localStorage.getItem("yus-ai-last-pet-feature") as PetFeature | null) ?? "chat",
+  );
+  const expanded = open || translationOpen || settingsOpen;
   const openRef = useRef(expanded);
   const placementRef = useRef(placement);
   const petSizeRef = useRef(petSize);
@@ -67,16 +77,19 @@ export default function Pet() {
   useEffect(() => { placementRef.current = placement; }, [placement]);
   useEffect(() => { petSizeRef.current = petSize; }, [petSize]);
   useEffect(() => { continuousTranslationRef.current = continuousTranslation; }, [continuousTranslation]);
+  useEffect(() => () => window.clearTimeout(menuClickTimerRef.current), []);
 
   useEffect(() => {
     let disposed = false;
     let retryTimer: number | undefined;
     async function loadContext() {
       try {
-        const [characters, petState] = await Promise.all([
+        const [characters, petState, displaySettings] = await Promise.all([
           request<Character[]>("/characters"),
           request<PetState>("/pet/state"),
+          request<DisplaySettings>("/settings"),
         ]);
+        setMessageDisplayMode(displaySettings.message_display_mode);
         if (desktop && !positionRestoredRef.current) {
           if (petState.position_x !== null && petState.position_y !== null) {
             const restoredPlacement = await invoke<string>("set_pet_position", {
@@ -189,8 +202,8 @@ export default function Pet() {
       }
       setOpen(false);
       setTranslationOpen(false);
+      setSettingsOpen(false);
       setMenuOpen(false);
-      setShowControls(false);
     }).then((stop) => { if (disposed) stop(); else unlistenReset = stop; });
     void listen<string>("screen-text-selected", (event) => {
       if (!continuousTranslationRef.current || document.hasFocus()) return;
@@ -221,30 +234,51 @@ export default function Pet() {
     };
   }, [desktop]);
 
+  async function beginLayoutChange() {
+    if (!desktop) return;
+    setLayoutChanging(true);
+    await new Promise((resolve) => window.setTimeout(resolve, 85));
+  }
+
+  function finishLayoutChange() {
+    if (!desktop) return;
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => setLayoutChanging(false)));
+  }
+
+  function rememberFeature(feature: PetFeature) {
+    lastFeatureRef.current = feature;
+    localStorage.setItem("yus-ai-last-pet-feature", feature);
+  }
+
   async function toggleBubble() {
-    const expanded = !open;
+    const nextOpen = !open;
+    if (nextOpen) rememberFeature("chat");
+    await beginLayoutChange();
     if (desktop) {
       const nextPlacement = await invoke<string>("set_pet_layout", {
-        expanded,
+        expanded: nextOpen,
         scale: petSize / 100,
-        currentExpanded: open,
+        currentExpanded: expanded,
         currentPlacement: placement,
       });
       setPlacement(nextPlacement);
     }
-    setOpen(expanded);
+    setOpen(nextOpen);
     setTranslationOpen(false);
+    setSettingsOpen(false);
     setMenuOpen(false);
-    if (!expanded) setShowControls(false);
+    finishLayoutChange();
   }
 
   async function toggleTranslation() {
     const nextOpen = !translationOpen;
+    if (nextOpen) rememberFeature("translation");
     if (!nextOpen && continuousTranslationRef.current) {
       continuousTranslationRef.current = false;
       setContinuousTranslation(false);
       if (desktop) await invoke("set_continuous_translation", { enabled: false });
     }
+    await beginLayoutChange();
     if (desktop) {
       const nextPlacement = await invoke<string>("set_pet_layout", {
         expanded: nextOpen,
@@ -256,11 +290,33 @@ export default function Pet() {
     }
     setTranslationOpen(nextOpen);
     setOpen(false);
+    setSettingsOpen(false);
     setMenuOpen(false);
+    finishLayoutChange();
     if (nextOpen) {
       try { setTranslationPackages(await request<TranslationPackage[]>("/translation/packages")); }
       catch (error) { setTranslationOutput((error as Error).message); }
     }
+  }
+
+  async function toggleSettings() {
+    const nextOpen = !settingsOpen;
+    if (nextOpen) rememberFeature("settings");
+    await beginLayoutChange();
+    if (desktop) {
+      const nextPlacement = await invoke<string>("set_pet_layout", {
+        expanded: nextOpen,
+        scale: petSize / 100,
+        currentExpanded: expanded,
+        currentPlacement: placement,
+      });
+      setPlacement(nextPlacement);
+    }
+    setSettingsOpen(nextOpen);
+    setOpen(false);
+    setTranslationOpen(false);
+    setMenuOpen(false);
+    finishLayoutChange();
   }
 
   function beginDrag(event: React.PointerEvent<HTMLButtonElement>) {
@@ -290,7 +346,19 @@ export default function Pet() {
       didDragRef.current = false;
       return;
     }
-    if (!expanded) setMenuOpen((value) => !value);
+    if (!expanded) {
+      window.clearTimeout(menuClickTimerRef.current);
+      menuClickTimerRef.current = window.setTimeout(() => setMenuOpen((value) => !value), 220);
+    }
+  }
+
+  function openLastFeature() {
+    if (expanded || didDragRef.current) return;
+    window.clearTimeout(menuClickTimerRef.current);
+    setMenuOpen(false);
+    if (lastFeatureRef.current === "translation") void toggleTranslation();
+    else if (lastFeatureRef.current === "settings") void toggleSettings();
+    else void toggleBubble();
   }
 
   function updatePetSize(value: number) {
@@ -312,7 +380,7 @@ export default function Pet() {
       await invoke("set_pet_layout", { expanded: false, scale: petSize / 100, currentExpanded: expanded, currentPlacement: placement });
     setOpen(false);
     setTranslationOpen(false);
-    setShowControls(false);
+    setSettingsOpen(false);
     await invoke("show_main_window");
   }
 
@@ -322,8 +390,8 @@ export default function Pet() {
     if (desktop) await invoke("set_continuous_translation", { enabled: false });
     setOpen(false);
     setTranslationOpen(false);
+    setSettingsOpen(false);
     setMenuOpen(false);
-    setShowControls(false);
     if (desktop) await invoke("hide_pet_window");
   }
 
@@ -441,7 +509,7 @@ export default function Pet() {
   return (
     <main className={`pet-stage ${expanded ? "open" : ""} ${placement}`}>
       <div
-        className={`pet-canvas ${expanded ? "open" : ""}`}
+        className={`pet-canvas ${expanded ? "open" : ""} ${layoutChanging ? "layout-changing" : ""}`}
         style={{ transform: `scale(${petSize / 100})`, "--dialog-font-scale": dialogFontSize / 100 } as React.CSSProperties}
       >
       {open && (
@@ -449,19 +517,13 @@ export default function Pet() {
           <div className="speech-head">
             <strong>{character?.name ?? "蓝雨"}</strong>
             <div className="speech-actions">
-              <button onClick={() => setShowControls((value) => !value)}>调整</button>
               <button onClick={returnToMain}>展开</button>
               <button className="close-bubble" onClick={() => void toggleBubble()} aria-label="关闭对话框">×</button>
             </div>
           </div>
-          {showControls && (
-            <div className="pet-controls">
-              <label>大小 <input type="range" min="70" max="125" value={petSize} onChange={(event) => updatePetSize(Number(event.target.value))} /><span>{petSize}%</span></label>
-              <label>透明度 <input type="range" min="30" max="100" value={petOpacity} onChange={(event) => setPetOpacity(Number(event.target.value))} /><span>{petOpacity}%</span></label>
-              <label>文字 <input type="range" min="80" max="160" step="5" value={dialogFontSize} onChange={(event) => setDialogFontSize(Number(event.target.value))} /><span>{dialogFontSize}%</span></label>
-            </div>
-          )}
-          <div className={`pet-reply ${busy ? "thinking" : ""}`}>{reply}</div>
+          <div className={`pet-reply ${busy ? "thinking" : ""}`}>
+            <MessageContent content={reply} mode={messageDisplayMode} />
+          </div>
           <form onSubmit={send}>
             <input value={input} onChange={(event) => setInput(event.target.value)} placeholder="和我说点什么……" autoFocus />
             <button disabled={busy || !input.trim()} aria-label="发送">↑</button>
@@ -496,6 +558,19 @@ export default function Pet() {
           <div className={`translation-result ${translationBusy ? "thinking" : ""}`}>{translationOutput || "译文会显示在这里。"}</div>
         </section>
       )}
+      {settingsOpen && (
+        <section className="speech-bubble settings-panel">
+          <div className="speech-head">
+            <strong>桌宠设置</strong>
+            <button className="close-bubble" onClick={() => void toggleSettings()} aria-label="关闭设置">×</button>
+          </div>
+          <div className="pet-controls">
+            <label>桌宠大小 <input type="range" min="70" max="125" value={petSize} onChange={(event) => updatePetSize(Number(event.target.value))} /><span>{petSize}%</span></label>
+            <label>透明度 <input type="range" min="30" max="100" value={petOpacity} onChange={(event) => setPetOpacity(Number(event.target.value))} /><span>{petOpacity}%</span></label>
+            <label>对话文字 <input type="range" min="80" max="160" step="5" value={dialogFontSize} onChange={(event) => setDialogFontSize(Number(event.target.value))} /><span>{dialogFontSize}%</span></label>
+          </div>
+        </section>
+      )}
       <button
         className={`pet-character ${busy ? "thinking" : ""}`}
         style={{ opacity: petOpacity / 100 }}
@@ -504,7 +579,7 @@ export default function Pet() {
         onPointerUp={finishDrag}
         onPointerCancel={finishDrag}
         onClick={toggleMenu}
-        onDoubleClick={() => { if (open) void toggleBubble(); else if (translationOpen) void toggleTranslation(); }}
+        onDoubleClick={() => { if (open) void toggleBubble(); else if (translationOpen) void toggleTranslation(); else if (settingsOpen) void toggleSettings(); else openLastFeature(); }}
         aria-label="蓝色雨滴史莱姆，拖动移动，点击打开功能菜单"
       >
         <img src="/assets/blue-slime-pet.png" alt="蓝色雨滴史莱姆" draggable={false} />
@@ -513,6 +588,7 @@ export default function Pet() {
         <nav className="pet-plugin-menu" aria-label="桌宠功能">
           <button className="plugin-orb chat-orb" onClick={() => void toggleBubble()}><span>💬</span>对话</button>
           <button className="plugin-orb translate-orb" onClick={() => void toggleTranslation()}><span>译</span>翻译</button>
+          <button className="plugin-orb settings-orb" onClick={() => void toggleSettings()}><span>⚙</span>设置</button>
           <button className="plugin-orb add-orb" disabled title="等待插件接入"><span>＋</span>插件</button>
           <button className="plugin-orb close-orb" onClick={() => void hidePet()}><span>×</span>关闭</button>
         </nav>

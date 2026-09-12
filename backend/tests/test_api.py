@@ -13,6 +13,11 @@ def test_character_conversation_and_messages():
         database.DB_PATH = database.DATA_DIR / "test.db"
         with TestClient(app) as client:
             assert client.get("/api/health").json() == {"status": "ok"}
+            settings = client.get("/api/settings").json()
+            assert settings["message_display_mode"] == "markdown"
+            settings["message_display_mode"] = "plain"
+            assert client.put("/api/settings", json=settings).json() == {"ok": True}
+            assert client.get("/api/settings").json()["message_display_mode"] == "plain"
             character = client.post("/api/characters", json={"name": "测试角色", "greeting": "你好呀", "personality": "温柔"}).json()
             assert character["personality"] == "温柔"
             character = client.put(f"/api/characters/{character['id']}", json={**character, "speaking_style": "简洁"}).json()

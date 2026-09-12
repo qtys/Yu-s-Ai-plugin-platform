@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import MessageContent from "./MessageContent";
+import type { MessageDisplayMode } from "./MessageContent";
 import "./App.css";
 import "./Desktop.css";
 import "./Themes.css";
@@ -26,6 +28,7 @@ type Settings = {
   max_tokens: number;
   context_message_limit: number;
   memory_limit: number;
+  message_display_mode: MessageDisplayMode;
 };
 type Theme = "violet" | "midnight" | "sand" | "paper";
 const themes: { id: Theme; name: string; description: string }[] = [
@@ -75,6 +78,7 @@ export default function App() {
     max_tokens: 2048,
     context_message_limit: 20,
     memory_limit: 5,
+    message_display_mode: "markdown",
   });
   const [draft, setDraft] = useState(emptyCharacter);
   const [editingCharacter, setEditingCharacter] = useState<number | null>(null);
@@ -691,6 +695,28 @@ export default function App() {
                   <input type="number" min="0" max="50" value={settings.memory_limit} onChange={(e) => setSettings({...settings, memory_limit:Number(e.target.value)})} />
                 </Field>
               </div>
+              <div className="form-section-title">
+                <strong>消息显示插件</strong>
+                <small>选择 AI 回复的显示方式；三种处理器互斥，只会启用一个</small>
+              </div>
+              <div className="message-plugin-grid">
+                {([
+                  ["markdown", "Markdown 渲染", "显示标题、列表、表格、引用和代码块"],
+                  ["plain", "Markdown 过滤", "移除格式标记，仅保留可读纯文本"],
+                  ["raw", "原始文本", "完整保留模型返回的所有标记，适合调试"],
+                ] as [MessageDisplayMode, string, string][]).map(([mode, name, description]) => (
+                  <button
+                    type="button"
+                    key={mode}
+                    className={settings.message_display_mode === mode ? "message-plugin selected" : "message-plugin"}
+                    onClick={() => setSettings({ ...settings, message_display_mode: mode })}
+                  >
+                    <span>{settings.message_display_mode === mode ? "●" : "○"}</span>
+                    <strong>{name}</strong>
+                    <small>{description}</small>
+                  </button>
+                ))}
+              </div>
               <button className="primary">保存设置</button>
             </form>
           </section>
@@ -791,9 +817,9 @@ export default function App() {
                         </div>
                         <small>保存后，下一次对话将使用修改后的内容作为上下文。</small>
                       </div>
-                    ) : (
-                      <p>{m.content || <span className="typing">思考中</span>}</p>
-                    )}
+                    ) : m.content ? (
+                      <MessageContent content={m.content} mode={m.role === "assistant" ? settings.message_display_mode : "raw"} />
+                    ) : <p><span className="typing">思考中</span></p>}
                   </div>
                 </article>
               ))}

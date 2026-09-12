@@ -78,6 +78,8 @@ def init_db() -> None:
             db.execute("ALTER TABLE settings ADD COLUMN context_message_limit INTEGER NOT NULL DEFAULT 20")
         if "memory_limit" not in setting_columns:
             db.execute("ALTER TABLE settings ADD COLUMN memory_limit INTEGER NOT NULL DEFAULT 5")
+        if "message_display_mode" not in setting_columns:
+            db.execute("ALTER TABLE settings ADD COLUMN message_display_mode TEXT NOT NULL DEFAULT 'markdown'")
         conversation_columns = {row[1] for row in db.execute("PRAGMA table_info(conversations)")}
         if "summary" not in conversation_columns:
             db.execute("ALTER TABLE conversations ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
