@@ -208,6 +208,50 @@
   border: 1px solid var(--line);
   border-radius: 18px;
 }
+.device-settings {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:20px;
+  padding:18px 22px;
+  margin-bottom:18px;
+  border:1px solid var(--line);
+  border-radius:18px;
+  background:var(--panel);
+}
+.autostart-switch {
+  display:flex;
+  align-items:center;
+  gap:9px;
+  border:1px solid var(--line);
+  border-radius:999px;
+  padding:7px 11px 7px 7px;
+  background:var(--surface);
+  color:var(--muted);
+  cursor:pointer;
+}
+.autostart-switch > span {
+  position:relative;
+  display:block;
+  width:34px;
+  height:20px;
+  border-radius:999px;
+  background:var(--line);
+}
+.autostart-switch i {
+  position:absolute;
+  top:3px;
+  left:3px;
+  width:14px;
+  height:14px;
+  border-radius:50%;
+  background:white;
+  transition:transform .18s ease;
+}
+.autostart-switch.enabled { color:var(--text); border-color:var(--accent); }
+.autostart-switch.enabled > span { background:var(--accent); }
+.autostart-switch.enabled i { transform:translateX(14px); }
+.autostart-switch:disabled { opacity:.6; cursor:wait; }
 .form-section-title {
   display: flex;
   flex-direction: column;

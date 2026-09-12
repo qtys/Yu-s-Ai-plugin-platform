@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Yus AI",
-  "version": "0.6.0",
+  "version": "0.8.1",
   "identifier": "com.qtys.yus-ai",
   "build": {
     "frontendDist": "../dist",
@@ -34,7 +34,7 @@
         "transparent": true,
         "alwaysOnTop": true,
         "skipTaskbar": true,
-        "visible": true,
+        "visible": false,
         "shadow": false
       }
     ],

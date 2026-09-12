@@ -15,4 +15,13 @@
 
 !macro NSIS_HOOK_PREUNINSTALL
   !insertmacro StopYusAiProcesses
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Yus AI"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" "Yus AI"
+!macroend
+
+!macro NSIS_HOOK_POSTINSTALL
+  ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Yus AI"
+  ${If} $0 != ""
+    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Yus AI" '$\"$INSTDIR\yus-ai.exe$\"'
+  ${EndIf}
 !macroend

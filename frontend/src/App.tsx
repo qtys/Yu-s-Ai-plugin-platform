@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 import "./Desktop.css";
 import "./Themes.css";
@@ -61,6 +62,8 @@ export default function App() {
     () => (localStorage.getItem("yus-ai-theme") as Theme) || "violet",
   );
   const [backendReady, setBackendReady] = useState(false);
+  const [autostartEnabled, setAutostartEnabled] = useState(false);
+  const [autostartBusy, setAutostartBusy] = useState(false);
   const [panel, setPanel] = useState<"chat" | "characters" | "settings">(
     "chat",
   );
@@ -81,6 +84,19 @@ export default function App() {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const skipMessageLoadRef = useRef<number | null>(null);
   const desktop = "__TAURI_INTERNALS__" in window;
+
+  useEffect(() => {
+    if (!desktop) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void invoke<boolean>("get_autostart_status")
+      .then((enabled) => { if (!disposed) setAutostartEnabled(enabled); })
+      .catch((cause) => { if (!disposed) setError(`读取开机自启状态失败：${String(cause)}`); });
+    void listen<boolean>("autostart-changed", (event) => {
+      if (!disposed) setAutostartEnabled(event.payload);
+    }).then((stop) => { if (disposed) stop(); else unlisten = stop; });
+    return () => { disposed = true; unlisten?.(); };
+  }, [desktop]);
 
   useEffect(() => {
     let cancelled = false;
@@ -339,6 +355,16 @@ export default function App() {
       setError(String(e));
     }
   }
+  async function toggleAutostart() {
+    if (!desktop || autostartBusy) return;
+    setAutostartBusy(true);
+    try {
+      const enabled = await invoke<boolean>("set_autostart", { enabled: !autostartEnabled });
+      setAutostartEnabled(enabled);
+      setError("");
+    } catch (cause) { setError(`修改开机自启失败：${String(cause)}`); }
+    finally { setAutostartBusy(false); }
+  }
   async function send(event: FormEvent) {
     event.preventDefault();
     const content = input.trim();
@@ -575,6 +601,24 @@ export default function App() {
                 ))}
               </div>
             </div>
+            {desktop && (
+              <div className="device-settings">
+                <div className="form-section-title">
+                  <strong>系统启动</strong>
+                  <small>登录 Windows 后自动启动，并恢复桌宠上次所在位置</small>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={autostartEnabled}
+                  className={autostartEnabled ? "autostart-switch enabled" : "autostart-switch"}
+                  onClick={() => void toggleAutostart()}
+                  disabled={autostartBusy}
+                >
+                  <span><i /></span>{autostartBusy ? "正在设置…" : autostartEnabled ? "已开启" : "已关闭"}
+                </button>
+              </div>
+            )}
             <form onSubmit={saveSettings}>
               <div className="form-section-title">
                 <strong>模型连接</strong>

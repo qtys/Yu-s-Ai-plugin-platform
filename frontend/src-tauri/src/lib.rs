@@ -1,4 +1,5 @@
 use std::{fs::OpenOptions, io::Write, sync::Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::{
@@ -8,9 +9,11 @@ use tauri::{
   Emitter, LogicalPosition, LogicalSize, Manager, RunEvent, State, WebviewWindow, WindowEvent,
 };
 use tauri_plugin_shell::{process::{CommandChild, CommandEvent}, ShellExt};
+use tauri_plugin_autostart::ManagerExt;
 use serde::Serialize;
 
 const DATABASE_FILES: [&str; 3] = ["yus_ai.db", "yus_ai.db-wal", "yus_ai.db-shm"];
+static CONTINUOUS_TRANSLATION: AtomicBool = AtomicBool::new(false);
 
 struct DesktopState {
   backend: Mutex<Option<CommandChild>>,
@@ -157,7 +160,77 @@ fn set_pet_position(window: WebviewWindow, x: f64, y: f64, scale: f64) -> Result
 
 #[tauri::command]
 fn hide_pet_window(window: WebviewWindow) -> Result<(), String> {
+  CONTINUOUS_TRANSLATION.store(false, Ordering::Relaxed);
   window.hide().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn show_pet_window(window: WebviewWindow) -> Result<(), String> {
+  window.show().map_err(|error| error.to_string())?;
+  window.set_always_on_top(true).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn set_continuous_translation(enabled: bool) -> bool {
+  CONTINUOUS_TRANSLATION.store(enabled, Ordering::Relaxed);
+  enabled
+}
+
+#[tauri::command]
+fn get_autostart_status(app: AppHandle) -> Result<bool, String> {
+  app.autolaunch().is_enabled().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn set_autostart(app: AppHandle, enabled: bool) -> Result<bool, String> {
+  let manager = app.autolaunch();
+  if enabled {
+    manager.enable().map_err(|error| error.to_string())?;
+  } else {
+    manager.disable().map_err(|error| error.to_string())?;
+  }
+  let _ = app.emit("autostart-changed", enabled);
+  Ok(enabled)
+}
+
+#[cfg(target_os = "windows")]
+fn start_selection_monitor(app: AppHandle) {
+  std::thread::spawn(move || {
+    use rdev::{listen, simulate, Button, Event, EventType, Key};
+    let (selection_sender, selection_receiver) = std::sync::mpsc::sync_channel::<()>(1);
+    std::thread::spawn(move || {
+      while selection_receiver.recv().is_ok() {
+        if !CONTINUOUS_TRANSLATION.load(Ordering::Relaxed) { continue; }
+        std::thread::sleep(std::time::Duration::from_millis(45));
+        let previous = clipboard_win::get_clipboard_string().ok();
+        let sequence = clipboard_win::seq_num();
+        let _ = simulate(&EventType::KeyPress(Key::ControlLeft));
+        let _ = simulate(&EventType::KeyPress(Key::KeyC));
+        let _ = simulate(&EventType::KeyRelease(Key::KeyC));
+        let _ = simulate(&EventType::KeyRelease(Key::ControlLeft));
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        if clipboard_win::seq_num() == sequence { continue; }
+        let selected = clipboard_win::get_clipboard_string().ok();
+        if let Some(text) = previous { let _ = clipboard_win::set_clipboard_string(&text); }
+        if let Some(text) = selected {
+          let text = text.trim();
+          if !text.is_empty() && text.chars().count() <= 20_000 {
+            let _ = app.emit_to("pet", "screen-text-selected", text.to_string());
+          }
+        }
+      }
+    });
+    let callback = move |event: Event| {
+      if !CONTINUOUS_TRANSLATION.load(Ordering::Relaxed)
+        || !matches!(event.event_type, EventType::ButtonRelease(Button::Left)) {
+        return;
+      }
+      let _ = selection_sender.try_send(());
+    };
+    if let Err(error) = listen(callback) {
+      log::error!("selection_monitor_failed error={error:?}");
+    }
+  });
 }
 
 #[tauri::command]
@@ -190,14 +263,29 @@ fn show_main_window(app: AppHandle) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let application = tauri::Builder::default()
+    .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+      if let Some(main) = app.get_webview_window("main") {
+        if main.is_visible().unwrap_or(false) {
+          let _ = main.unminimize();
+          let _ = main.set_focus();
+          return;
+        }
+      }
+      if let Some(pet) = app.get_webview_window("pet") {
+        let _ = pet.show();
+        let _ = pet.set_always_on_top(true);
+        let _ = pet.set_focus();
+      }
+    }))
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_log::Builder::default().level(log::LevelFilter::Info).build())
+    .plugin(tauri_plugin_autostart::Builder::new().app_name("Yus AI").build())
     .manage(DesktopState {
       backend: Mutex::new(None),
       always_on_top: Mutex::new(false),
       mini_mode: Mutex::new(false),
     })
-    .invoke_handler(tauri::generate_handler![set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, start_pet_drag, get_pet_position, set_pet_position, hide_pet_window, export_character_card])
+    .invoke_handler(tauri::generate_handler![set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, start_pet_drag, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, get_autostart_status, set_autostart, export_character_card])
     .setup(|app| {
       let legacy_data_dir = app.path().app_data_dir()?;
       let data_dir = prepare_install_data_dir(app.handle())?;
@@ -220,6 +308,8 @@ pub fn run() {
         .env("YUS_AI_PARENT_PID", std::process::id().to_string())
         .spawn()?;
       *app.state::<DesktopState>().backend.lock().unwrap() = Some(child);
+      #[cfg(target_os = "windows")]
+      start_selection_monitor(app.handle().clone());
       tauri::async_runtime::spawn(async move {
         while let Some(event) = output.recv().await {
           let line = match event {
@@ -243,13 +333,16 @@ pub fn run() {
       let pet_size_down = MenuItem::with_id(app, "pet_size_down", "桌宠缩小", true, None::<&str>)?;
       let pet_opacity_up = MenuItem::with_id(app, "pet_opacity_up", "桌宠更清晰", true, None::<&str>)?;
       let pet_opacity_down = MenuItem::with_id(app, "pet_opacity_down", "桌宠更透明", true, None::<&str>)?;
+      let autostart_enabled = app.handle().autolaunch().is_enabled().unwrap_or(false);
+      let autostart = MenuItem::with_id(app, "autostart", if autostart_enabled { "关闭开机自启" } else { "开启开机自启" }, true, None::<&str>)?;
       let pin = MenuItem::with_id(app, "pin", "切换窗口置顶", true, None::<&str>)?;
       let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-      let menu = Menu::with_items(app, &[&show, &pet_toggle, &pet_size_up, &pet_size_down, &pet_opacity_up, &pet_opacity_down, &pin, &quit])?;
+      let menu = Menu::with_items(app, &[&show, &pet_toggle, &pet_size_up, &pet_size_down, &pet_opacity_up, &pet_opacity_down, &autostart, &pin, &quit])?;
+      let autostart_menu = autostart.clone();
       TrayIconBuilder::new()
         .icon(app.default_window_icon().unwrap().clone())
         .menu(&menu)
-        .on_menu_event(|app, event| match event.id.as_ref() {
+        .on_menu_event(move |app, event| match event.id.as_ref() {
           "show" => {
             let _ = app.emit_to("pet", "pet-reset", ());
             if let Some(pet) = app.get_webview_window("pet") {
@@ -265,6 +358,16 @@ pub fn run() {
           "pet_size_down" => { let _ = app.emit_to("pet", "pet-control", "size-down"); },
           "pet_opacity_up" => { let _ = app.emit_to("pet", "pet-control", "opacity-up"); },
           "pet_opacity_down" => { let _ = app.emit_to("pet", "pet-control", "opacity-down"); },
+          "autostart" => {
+            let manager = app.autolaunch();
+            let enabled = manager.is_enabled().unwrap_or(false);
+            let next = !enabled;
+            let result = if next { manager.enable() } else { manager.disable() };
+            if result.is_ok() {
+              let _ = autostart_menu.set_text(if next { "关闭开机自启" } else { "开启开机自启" });
+              let _ = app.emit("autostart-changed", next);
+            }
+          },
           "pin" => if let Some(window) = app.get_webview_window("main") {
             let state = app.state::<DesktopState>();
             if let Ok(mut pinned) = state.always_on_top.lock() { *pinned = !*pinned; let _ = window.set_always_on_top(*pinned); };

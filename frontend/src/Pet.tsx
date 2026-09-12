@@ -38,6 +38,7 @@ export default function Pet() {
   const [translationInput, setTranslationInput] = useState("");
   const [translationOutput, setTranslationOutput] = useState("");
   const [translationBusy, setTranslationBusy] = useState(false);
+  const [continuousTranslation, setContinuousTranslation] = useState(false);
   const [character, setCharacter] = useState<Character | null>(null);
   const [showControls, setShowControls] = useState(false);
   const [petSize, setPetSize] = useState(
@@ -54,6 +55,9 @@ export default function Pet() {
   const draggingRef = useRef(false);
   const didDragRef = useRef(false);
   const positionRestoredRef = useRef(false);
+  const startupShownRef = useRef(false);
+  const continuousTranslationRef = useRef(false);
+  const translationSequenceRef = useRef(0);
   const expanded = open || translationOpen;
   const openRef = useRef(expanded);
   const placementRef = useRef(placement);
@@ -62,6 +66,7 @@ export default function Pet() {
   useEffect(() => { openRef.current = expanded; }, [expanded]);
   useEffect(() => { placementRef.current = placement; }, [placement]);
   useEffect(() => { petSizeRef.current = petSize; }, [petSize]);
+  useEffect(() => { continuousTranslationRef.current = continuousTranslation; }, [continuousTranslation]);
 
   useEffect(() => {
     let disposed = false;
@@ -72,14 +77,20 @@ export default function Pet() {
           request<Character[]>("/characters"),
           request<PetState>("/pet/state"),
         ]);
-        if (desktop && !positionRestoredRef.current && petState.position_x !== null && petState.position_y !== null) {
-          const restoredPlacement = await invoke<string>("set_pet_position", {
-            x: petState.position_x,
-            y: petState.position_y,
-            scale: petSizeRef.current / 100,
-          });
-          setPlacement(restoredPlacement);
+        if (desktop && !positionRestoredRef.current) {
+          if (petState.position_x !== null && petState.position_y !== null) {
+            const restoredPlacement = await invoke<string>("set_pet_position", {
+              x: petState.position_x,
+              y: petState.position_y,
+              scale: petSizeRef.current / 100,
+            });
+            setPlacement(restoredPlacement);
+          }
           positionRestoredRef.current = true;
+          if (!startupShownRef.current) {
+            startupShownRef.current = true;
+            await invoke("show_pet_window");
+          }
         }
         setReply((value) => value === WAITING_MESSAGE ? READY_MESSAGE : value);
         const preferred = Number(localStorage.getItem("yus-ai-character"));
@@ -109,6 +120,7 @@ export default function Pet() {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void getCurrentWindow().onMoved(() => {
+      if (!positionRestoredRef.current) return;
       window.clearTimeout(saveTimer);
       saveTimer = window.setTimeout(async () => {
         try {
@@ -146,6 +158,7 @@ export default function Pet() {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     let unlistenReset: (() => void) | undefined;
+    let unlistenSelection: (() => void) | undefined;
     void listen<string>("pet-control", (event) => {
       if (event.payload === "size-up" || event.payload === "size-down") {
         setPetSize((current) => {
@@ -163,6 +176,9 @@ export default function Pet() {
       if (event.payload === "opacity-down") setPetOpacity((current) => Math.max(30, current - 10));
     }).then((stop) => { if (disposed) stop(); else unlisten = stop; });
     void listen("pet-reset", () => {
+      continuousTranslationRef.current = false;
+      setContinuousTranslation(false);
+      void invoke("set_continuous_translation", { enabled: false });
       if (openRef.current) {
         void invoke<string>("set_pet_layout", {
           expanded: false,
@@ -176,7 +192,33 @@ export default function Pet() {
       setMenuOpen(false);
       setShowControls(false);
     }).then((stop) => { if (disposed) stop(); else unlistenReset = stop; });
-    return () => { disposed = true; unlisten?.(); unlistenReset?.(); };
+    void listen<string>("screen-text-selected", (event) => {
+      if (!continuousTranslationRef.current || document.hasFocus()) return;
+      const text = event.payload.trim();
+      if (!text) return;
+      const source: "zh" | "en" = /[\u3400-\u9fff]/.test(text) ? "zh" : "en";
+      const target = source === "zh" ? "en" : "zh";
+      const sequence = ++translationSequenceRef.current;
+      setTranslationSource(source);
+      setTranslationInput(text);
+      setTranslationBusy(true);
+      setTranslationOutput("已捕获选中文本，正在翻译……");
+      void request<{ translation: string }>("/translation", {
+        method: "POST",
+        body: JSON.stringify({ text, source, target }),
+      }).then((result) => {
+        if (sequence === translationSequenceRef.current) setTranslationOutput(result.translation);
+      }).catch((error) => {
+        if (sequence === translationSequenceRef.current) setTranslationOutput((error as Error).message);
+      }).finally(() => {
+        if (sequence === translationSequenceRef.current) setTranslationBusy(false);
+      });
+    }).then((stop) => { if (disposed) stop(); else unlistenSelection = stop; });
+    return () => {
+      disposed = true;
+      void invoke("set_continuous_translation", { enabled: false });
+      unlisten?.(); unlistenReset?.(); unlistenSelection?.();
+    };
   }, [desktop]);
 
   async function toggleBubble() {
@@ -198,6 +240,11 @@ export default function Pet() {
 
   async function toggleTranslation() {
     const nextOpen = !translationOpen;
+    if (!nextOpen && continuousTranslationRef.current) {
+      continuousTranslationRef.current = false;
+      setContinuousTranslation(false);
+      if (desktop) await invoke("set_continuous_translation", { enabled: false });
+    }
     if (desktop) {
       const nextPlacement = await invoke<string>("set_pet_layout", {
         expanded: nextOpen,
@@ -258,6 +305,9 @@ export default function Pet() {
   }
 
   async function returnToMain() {
+    continuousTranslationRef.current = false;
+    setContinuousTranslation(false);
+    if (desktop) await invoke("set_continuous_translation", { enabled: false });
     if (desktop)
       await invoke("set_pet_layout", { expanded: false, scale: petSize / 100, currentExpanded: expanded, currentPlacement: placement });
     setOpen(false);
@@ -267,6 +317,9 @@ export default function Pet() {
   }
 
   async function hidePet() {
+    continuousTranslationRef.current = false;
+    setContinuousTranslation(false);
+    if (desktop) await invoke("set_continuous_translation", { enabled: false });
     setOpen(false);
     setTranslationOpen(false);
     setMenuOpen(false);
@@ -275,16 +328,37 @@ export default function Pet() {
   }
 
   async function downloadTranslationPackage() {
-    const target = translationSource === "zh" ? "en" : "zh";
+    const source = translationSource;
+    const target = source === "zh" ? "en" : "zh";
     setTranslationBusy(true);
-    setTranslationOutput(`正在下载 ${translationSource === "zh" ? "中英" : "英中"}离线语言包……`);
+    setTranslationOutput(`正在下载 ${source === "zh" ? "中英" : "英中"}离线语言包……`);
     try {
-      await request(`/translation/packages/${translationSource}/${target}`, { method: "POST" });
-      setTranslationPackages(await request<TranslationPackage[]>("/translation/packages"));
+      await request(`/translation/packages/${source}/${target}`, { method: "POST" });
+      setTranslationPackages((items) => items.map((item) =>
+        item.from_code === source && item.to_code === target ? { ...item, installed: true } : item,
+      ));
+      const refreshed = await request<TranslationPackage[]>(`/translation/packages?refresh=${Date.now()}`);
+      setTranslationPackages(refreshed);
       setTranslationOutput("语言包安装完成，现在可以离线翻译了。");
     } catch (error) {
       setTranslationOutput((error as Error).message);
     } finally { setTranslationBusy(false); }
+  }
+
+  async function toggleContinuousTranslation() {
+    if (!desktop) {
+      setTranslationOutput("连续翻译仅在 Windows 桌面版中可用。");
+      return;
+    }
+    const enabled = !continuousTranslationRef.current;
+    try {
+      await invoke("set_continuous_translation", { enabled });
+      continuousTranslationRef.current = enabled;
+      setContinuousTranslation(enabled);
+      setTranslationOutput(enabled
+        ? "连续翻译已开启：在其他窗口中用鼠标选中文本，译文会自动显示在这里。"
+        : "连续翻译已关闭。");
+    } catch (error) { setTranslationOutput(`无法切换连续翻译：${String(error)}`); }
   }
 
   async function runTranslation(event: FormEvent) {
@@ -399,6 +473,9 @@ export default function Pet() {
           <div className="speech-head">
             <strong>离线翻译</strong>
             <div className="speech-actions">
+              <button className={continuousTranslation ? "continuous active" : "continuous"} onClick={() => void toggleContinuousTranslation()}>
+                {continuousTranslation ? "● 连续" : "○ 连续"}
+              </button>
               <button onClick={() => setTranslationSource((value) => value === "zh" ? "en" : "zh")}>⇄ {translationSource === "zh" ? "中 → 英" : "英 → 中"}</button>
               <button className="close-bubble" onClick={() => void toggleTranslation()} aria-label="关闭翻译">×</button>
             </div>
