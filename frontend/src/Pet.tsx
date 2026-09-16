@@ -17,9 +17,11 @@ type Conversation = { id: number; character_id: number; title: string };
 type PetState = { position_x: number | null; position_y: number | null };
 type DisplaySettings = { message_display_mode: MessageDisplayMode };
 type TranslationPackage = { from_code: "zh" | "en"; to_code: "zh" | "en"; name: string; size_mb: number; installed: boolean };
+type DownloadProgress = { stage: "testing" | "retrying" | "downloading" | "installing" | "complete" | "error"; percent: number; downloaded?: number; total?: number; error?: string; source?: string; attempt?: number; max_attempts?: number; resumed?: boolean };
 type PetFeature = "chat" | "translation" | "settings";
 type PetMood = "idle" | "tap" | "happy" | "confused";
-type IdleAction = "none" | "squish" | "wiggle" | "sleepy";
+type IdleAction = "none" | "squish" | "wiggle" | "sleepy" | "frontflip" | "backflip";
+type PetFrame = "normal" | "blink" | "wink" | "surprised";
 type DayPeriod = "morning" | "daytime" | "evening" | "night";
 const PERIOD_LABELS: Record<DayPeriod, string> = { morning: "早晨", daytime: "白天", evening: "傍晚", night: "深夜" };
 
@@ -75,8 +77,16 @@ export default function Pet() {
   const [dragging, setDragging] = useState(false);
   const [mood, setMood] = useState<PetMood>("idle");
   const [idleAction, setIdleAction] = useState<IdleAction>("none");
+  const [petFrame, setPetFrame] = useState<PetFrame>("normal");
   const [gaze, setGaze] = useState({ x: 0, y: 0 });
   const [proactiveMessage, setProactiveMessage] = useState("");
+  const [aiProactiveEnabled, setAiProactiveEnabled] = useState<boolean | null>(null);
+  const [proactiveSources, setProactiveSources] = useState<{title: string; url: string}[]>([]);
+  const proactiveInFlightRef = useRef(false);
+  const [pendingProactive, setPendingProactive] = useState<{characterId: number; content: string; sources: {title: string; url: string}[]} | null>(null);
+  const pendingProactiveRef = useRef(pendingProactive);
+  pendingProactiveRef.current = pendingProactive;
+  const proactiveBubbleRef = useRef<HTMLElement | null>(null);
   const [proactiveEnabled, setProactiveEnabled] = useState(
     () => localStorage.getItem("yus-ai-proactive-enabled") !== "false",
   );
@@ -96,8 +106,11 @@ export default function Pet() {
   const [translationInput, setTranslationInput] = useState("");
   const [translationOutput, setTranslationOutput] = useState("");
   const [translationBusy, setTranslationBusy] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
   const [continuousTranslation, setContinuousTranslation] = useState(false);
   const [character, setCharacter] = useState<Character | null>(null);
+  const proactiveContextRef = useRef({ character, expanded: false, menuOpen: false, busy: false, dragging: false });
+  proactiveContextRef.current = { character, expanded: open || translationOpen || settingsOpen, menuOpen, busy, dragging };
   const [messageDisplayMode, setMessageDisplayMode] = useState<MessageDisplayMode>("markdown");
   const [petSize, setPetSize] = useState(
     () => Number(localStorage.getItem("yus-ai-pet-size")) || 100,
@@ -133,6 +146,8 @@ export default function Pet() {
   const dialogWidthRef = useRef(dialogWidth);
   const dialogHeightRef = useRef(dialogHeight);
   const moodTimerRef = useRef<number | undefined>(undefined);
+  const frameTimerRef = useRef<number | undefined>(undefined);
+  const interactionCountRef = useRef(0);
   const dialogResizeTimerRef = useRef<number | undefined>(undefined);
   const dialogResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const dialogHeightResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
@@ -143,13 +158,26 @@ export default function Pet() {
   useEffect(() => { dialogWidthRef.current = dialogWidth; }, [dialogWidth]);
   useEffect(() => { dialogHeightRef.current = dialogHeight; }, [dialogHeight]);
   useEffect(() => { continuousTranslationRef.current = continuousTranslation; }, [continuousTranslation]);
+  useEffect(() => {
+    if (desktop) void invoke("set_pet_interaction_mode", {
+      mode: expanded ? 2 : menuOpen ? 1 : proactiveMessage ? 3 : 0,
+      alignLeft: placement.endsWith("left"),
+      proactiveHeight: Math.ceil((proactiveBubbleRef.current?.getBoundingClientRect().height ?? 0) / (petSize / 100)),
+    });
+  }, [desktop, expanded, menuOpen, placement, proactiveMessage, petSize, proactiveSources]);
   useEffect(() => () => {
     window.clearTimeout(menuClickTimerRef.current);
     window.clearTimeout(dialogResizeTimerRef.current);
+    window.clearTimeout(frameTimerRef.current);
   }, []);
   useEffect(() => { localStorage.setItem("yus-ai-proactive-enabled", String(proactiveEnabled)); }, [proactiveEnabled]);
   useEffect(() => { localStorage.setItem("yus-ai-time-aware-enabled", String(timeAwareEnabled)); }, [timeAwareEnabled]);
   useEffect(() => { localStorage.setItem("yus-ai-role-aware-enabled", String(roleAwareEnabled)); }, [roleAwareEnabled]);
+  useEffect(() => {
+    if (!proactiveMessage) return;
+    const timer = window.setTimeout(() => setProactiveMessage(""), 30000);
+    return () => window.clearTimeout(timer);
+  }, [proactiveMessage]);
   useEffect(() => {
     const timer = window.setInterval(() => setDayPeriod(getDayPeriod()), 60000);
     return () => window.clearInterval(timer);
@@ -159,18 +187,43 @@ export default function Pet() {
     if (expanded || dragging || busy) return;
     const actions: IdleAction[] = dayPeriod === "night"
       ? ["sleepy", "sleepy", "squish"]
-      : ["squish", "wiggle", "sleepy"];
+      : ["squish", "wiggle", "sleepy", "frontflip", "backflip"];
     const timer = window.setInterval(() => {
       const action = actions[Math.floor(Math.random() * actions.length)];
       setIdleAction(action);
-      window.setTimeout(() => setIdleAction("none"), action === "sleepy" ? 2400 : 1100);
+      window.setTimeout(() => setIdleAction("none"), action === "sleepy" ? 2400 : action.endsWith("flip") ? 950 : 1100);
     }, 11000);
     return () => window.clearInterval(timer);
   }, [expanded, dragging, busy, dayPeriod]);
 
   useEffect(() => {
-    if (!proactiveEnabled || expanded || (timeAwareEnabled && dayPeriod === "night")) return;
+    ["blink", "wink", "surprised", "frontflip", "backflip"].forEach((frame) => {
+      const image = new Image();
+      image.src = `/assets/blue-slime-pet-${frame}.png`;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (expanded || dragging || busy) return;
+    let timer: number;
+    const scheduleBlink = () => {
+      timer = window.setTimeout(() => {
+        setPetFrame("blink");
+        window.clearTimeout(frameTimerRef.current);
+        frameTimerRef.current = window.setTimeout(() => {
+          setPetFrame("normal");
+          scheduleBlink();
+        }, 145);
+      }, 3200 + Math.random() * 4200);
+    };
+    scheduleBlink();
+    return () => window.clearTimeout(timer);
+  }, [expanded, dragging, busy]);
+
+  useEffect(() => {
+    if (!proactiveEnabled || aiProactiveEnabled !== false || expanded || (timeAwareEnabled && dayPeriod === "night")) return;
     const showGreeting = () => {
+      setProactiveSources([]);
       setProactiveMessage(roleAwareGreeting(roleAwareEnabled ? character : null, timeAwareEnabled ? dayPeriod : "daytime"));
       window.setTimeout(() => setProactiveMessage(""), 9000);
     };
@@ -183,18 +236,57 @@ export default function Pet() {
     }, 15000);
     const recurring = window.setInterval(showGreeting, 30 * 60 * 1000);
     return () => { window.clearTimeout(first); window.clearInterval(recurring); };
-  }, [proactiveEnabled, timeAwareEnabled, roleAwareEnabled, dayPeriod, character, expanded]);
+  }, [proactiveEnabled, aiProactiveEnabled, timeAwareEnabled, roleAwareEnabled, dayPeriod, character, expanded]);
+
+  useEffect(() => {
+    let disposed = false;
+    const check = async () => {
+      if (proactiveInFlightRef.current || pendingProactiveRef.current) return;
+      proactiveInFlightRef.current = true;
+      try {
+        const config = await request<{enabled: boolean}>("/plugins/proactive");
+        if (disposed) return;
+        setAiProactiveEnabled(config.enabled);
+        const { character, expanded, menuOpen, busy, dragging } = proactiveContextRef.current;
+        if (!config.enabled || !character || expanded || menuOpen || busy || dragging || (!desktop && document.hidden) || (desktop && !(await getCurrentWindow().isVisible()))) return;
+        const result = await request<{skipped?: boolean; content: string; conversation_id: number; sources: {title: string; url: string}[]}>("/plugins/proactive/generate", { method: "POST", body: JSON.stringify({ character_id: character.id, conversation_id: conversationRef.current }) });
+        if (result.skipped) return;
+        if (!disposed && proactiveContextRef.current.character?.id === character.id) {
+          conversationRef.current = result.conversation_id;
+          localStorage.setItem("yus-ai-conversation", String(result.conversation_id));
+          setPendingProactive({ characterId: character.id, content: result.content, sources: result.sources });
+        }
+      } catch (error) {
+        if (!disposed) setPendingProactive({ characterId: proactiveContextRef.current.character?.id ?? 0, content: `主动发言暂时失败：${error instanceof Error ? error.message : "请检查模型服务"}`, sources: [] });
+      }
+      finally { proactiveInFlightRef.current = false; }
+    };
+    const first = window.setTimeout(() => void check(), 20000);
+    const timer = window.setInterval(() => void check(), 60000);
+    return () => { disposed = true; window.clearTimeout(first); window.clearInterval(timer); };
+  }, [desktop]);
+
+  useEffect(() => {
+    if (!pendingProactive || expanded || menuOpen || busy || dragging) return;
+    if (pendingProactive.characterId === character?.id) {
+      setProactiveSources(pendingProactive.sources);
+      setProactiveMessage(pendingProactive.content);
+    }
+    setPendingProactive(null);
+  }, [pendingProactive, character?.id, expanded, menuOpen, busy, dragging]);
 
   useEffect(() => {
     let disposed = false;
     let retryTimer: number | undefined;
     async function loadContext() {
       try {
-        const [characters, petState, displaySettings] = await Promise.all([
+        const [characters, petState, displaySettings, proactiveConfig] = await Promise.all([
           request<Character[]>("/characters"),
           request<PetState>("/pet/state"),
           request<DisplaySettings>("/settings"),
+          request<{enabled: boolean}>("/plugins/proactive"),
         ]);
+        setAiProactiveEnabled(proactiveConfig.enabled);
         setMessageDisplayMode(displaySettings.message_display_mode);
         if (desktop && !positionRestoredRef.current) {
           if (petState.position_x !== null && petState.position_y !== null) {
@@ -372,6 +464,12 @@ export default function Pet() {
     moodTimerRef.current = window.setTimeout(() => setMood("idle"), duration);
   }
 
+  function showPetFrame(frame: PetFrame, duration = 650) {
+    window.clearTimeout(frameTimerRef.current);
+    setPetFrame(frame);
+    frameTimerRef.current = window.setTimeout(() => setPetFrame("normal"), duration);
+  }
+
   async function toggleBubble() {
     const nextOpen = !open;
     if (nextOpen) rememberFeature("chat");
@@ -453,6 +551,8 @@ export default function Pet() {
     draggingRef.current = false;
     didDragRef.current = false;
     showMood("tap", 500);
+    interactionCountRef.current += 1;
+    showPetFrame(interactionCountRef.current % 4 === 0 ? "surprised" : "wink", 620);
   }
 
   async function continueDrag(event: React.PointerEvent<HTMLButtonElement>) {
@@ -496,7 +596,12 @@ export default function Pet() {
       didDragRef.current = false;
       return;
     }
-    if (!expanded) {
+    if (expanded) {
+      window.clearTimeout(menuClickTimerRef.current);
+      if (open) void toggleBubble();
+      else if (translationOpen) void toggleTranslation();
+      else if (settingsOpen) void toggleSettings();
+    } else {
       window.clearTimeout(menuClickTimerRef.current);
       menuClickTimerRef.current = window.setTimeout(() => setMenuOpen((value) => !value), 220);
     }
@@ -551,16 +656,37 @@ export default function Pet() {
     const source = translationSource;
     const target = source === "zh" ? "en" : "zh";
     setTranslationBusy(true);
+    setDownloadProgress({ stage: "downloading", percent: 0 });
     setTranslationOutput(`正在下载 ${source === "zh" ? "中英" : "英中"}离线语言包……`);
     try {
-      await request(`/translation/packages/${source}/${target}`, { method: "POST" });
+      const response = await fetch(`${API}/translation/packages/${source}/${target}/stream`, { method: "POST" });
+      if (!response.ok || !response.body) throw new Error(`语言包下载失败 (${response.status})`);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const progress = JSON.parse(line) as DownloadProgress;
+          setDownloadProgress(progress);
+          if (progress.stage === "error") throw new Error(progress.error ?? "语言包安装失败");
+          if (progress.stage === "installing") setTranslationOutput("下载完成，正在安装语言包……");
+        }
+      }
       setTranslationPackages((items) => items.map((item) =>
         item.from_code === source && item.to_code === target ? { ...item, installed: true } : item,
       ));
       const refreshed = await request<TranslationPackage[]>(`/translation/packages?refresh=${Date.now()}`);
       setTranslationPackages(refreshed);
+      setDownloadProgress({ stage: "complete", percent: 100 });
       setTranslationOutput("语言包安装完成，现在可以离线翻译了。");
     } catch (error) {
+      setDownloadProgress((value) => ({ stage: "error", percent: value?.percent ?? 0, error: (error as Error).message }));
       setTranslationOutput((error as Error).message);
     } finally { setTranslationBusy(false); }
   }
@@ -773,9 +899,17 @@ export default function Pet() {
             const target = translationSource === "zh" ? "en" : "zh";
             const model = translationPackages.find((item) => item.from_code === translationSource && item.to_code === target);
             return model && !model.installed ? (
-              <button className="download-model" disabled={translationBusy} onClick={() => void downloadTranslationPackage()}>
-                下载 {model.name}（约 {model.size_mb} MB）
-              </button>
+              <div className="download-area">
+                <button className="download-model" disabled={translationBusy} onClick={() => void downloadTranslationPackage()}>
+                  {translationBusy ? "正在获取语言包…" : `下载 ${model.name}（约 ${model.size_mb} MB）`}
+                </button>
+                {downloadProgress && (
+                  <div className={`download-progress ${downloadProgress.stage}`}>
+                    <div className="download-progress-track"><span style={{ width: `${downloadProgress.percent}%` }} /></div>
+                    <small>{downloadProgress.stage === "testing" ? `正在测速${downloadProgress.source ? ` · ${downloadProgress.source}` : ""}` : downloadProgress.stage === "retrying" ? `正在重试 ${downloadProgress.attempt ?? ""}/${downloadProgress.max_attempts ?? 3}${downloadProgress.source ? ` · ${downloadProgress.source}` : ""}` : downloadProgress.stage === "installing" ? "正在安装" : downloadProgress.stage === "error" ? "下载失败" : downloadProgress.stage === "complete" ? "安装完成" : `${downloadProgress.resumed ? "续传" : "下载"} ${downloadProgress.percent}%${downloadProgress.source ? ` · ${downloadProgress.source}` : ""}`}</small>
+                  </div>
+                )}
+              </div>
             ) : null;
           })()}
           <form className="translation-form" onSubmit={runTranslation}>
@@ -794,22 +928,28 @@ export default function Pet() {
             <button className="close-bubble" onClick={() => void toggleSettings()} aria-label="关闭设置">×</button>
           </div>
           <div className="pet-controls">
+            <div className="pet-action-controls">
+              <button type="button" disabled={idleAction.endsWith("flip")} onClick={() => { setIdleAction("frontflip"); window.setTimeout(() => setIdleAction("none"), 950); }}>前空翻</button>
+              <button type="button" disabled={idleAction.endsWith("flip")} onClick={() => { setIdleAction("backflip"); window.setTimeout(() => setIdleAction("none"), 950); }}>后空翻</button>
+            </div>
             <label>桌宠大小 <input type="range" min="70" max="125" value={petSize} onChange={(event) => updatePetSize(Number(event.target.value))} /><span>{petSize}%</span></label>
             <label>透明度 <input type="range" min="30" max="100" value={petOpacity} onChange={(event) => setPetOpacity(Number(event.target.value))} /><span>{petOpacity}%</span></label>
             <label>对话文字 <input type="range" min="80" max="160" step="5" value={dialogFontSize} onChange={(event) => setDialogFontSize(Number(event.target.value))} /><span>{dialogFontSize}%</span></label>
             <label>对话框宽度 <input type="range" min="430" max="720" step="10" value={dialogWidth} onChange={(event) => updateDialogWidth(Number(event.target.value))} /><span>{dialogWidth}px</span></label>
             <label>对话框高度 <input type="range" min="520" max="760" step="10" value={dialogHeight} onChange={(event) => updateDialogHeight(Number(event.target.value))} /><span>{dialogHeight}px</span></label>
-            <label className="proactive-toggle">主动冒泡 <input type="checkbox" checked={proactiveEnabled} onChange={(event) => setProactiveEnabled(event.target.checked)} /><span>{proactiveEnabled ? "开启" : "关闭"}</span></label>
+            <label className="proactive-toggle">本地问候 <input type="checkbox" checked={proactiveEnabled} onChange={(event) => setProactiveEnabled(event.target.checked)} /><span>{proactiveEnabled ? "开启" : "关闭"}</span></label>
             <label className="proactive-toggle">时间感知 <input type="checkbox" checked={timeAwareEnabled} onChange={(event) => setTimeAwareEnabled(event.target.checked)} /><span>{timeAwareEnabled ? "开启" : "关闭"}</span></label>
             <label className="proactive-toggle">角色台词 <input type="checkbox" checked={roleAwareEnabled} onChange={(event) => setRoleAwareEnabled(event.target.checked)} /><span>{roleAwareEnabled ? "开启" : "关闭"}</span></label>
           </div>
         </section>
       )}
       {proactiveMessage && !expanded && !menuOpen && (
-        <aside className="proactive-bubble" aria-live="polite">
+        <aside ref={proactiveBubbleRef} className="proactive-bubble" aria-live="polite">
           <button onClick={() => setProactiveMessage("")} aria-label="关闭主动提醒">×</button>
           <small>{PERIOD_LABELS[dayPeriod]} · {character?.name ?? "蓝雨"}</small>
           {proactiveMessage}
+          {proactiveSources.length > 0 && <small>新闻参考来源已附在对话记录中</small>}
+          <a href="#" onClick={(event) => { event.preventDefault(); setReply(proactiveMessage); setProactiveMessage(""); void toggleBubble(); }}>聊聊这个话题</a>
         </aside>
       )}
       <button
@@ -821,10 +961,10 @@ export default function Pet() {
         onPointerCancel={finishDrag}
         onPointerLeave={stopLooking}
         onClick={toggleMenu}
-        onDoubleClick={() => { if (open) void toggleBubble(); else if (translationOpen) void toggleTranslation(); else if (settingsOpen) void toggleSettings(); else openLastFeature(); }}
+        onDoubleClick={() => { if (!expanded) openLastFeature(); }}
         aria-label="蓝色雨滴史莱姆，拖动移动，点击打开功能菜单"
       >
-        <img src="/assets/blue-slime-pet.png" alt="蓝色雨滴史莱姆" draggable={false} />
+        <img src={`/assets/blue-slime-pet${idleAction.endsWith("flip") ? `-${idleAction}` : petFrame === "normal" ? "" : `-${petFrame}`}.png`} alt="蓝色雨滴史莱姆" draggable={false} />
         <span className="pet-ripple" />
         <span className="pet-emote" aria-hidden="true">{busy ? "…" : mood === "happy" ? "♥" : mood === "confused" ? "?" : idleAction === "sleepy" ? "Zzz" : dayPeriod === "night" ? "☾" : ""}</span>
       </button>

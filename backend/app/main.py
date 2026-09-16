@@ -1,6 +1,9 @@
 import json
+import asyncio
 import logging
 import time
+import random
+from datetime import datetime
 from collections import deque
 from contextlib import asynccontextmanager
 from typing import Literal
@@ -14,6 +17,7 @@ from pydantic import BaseModel, Field
 from .database import connect, init_db
 from .logging_config import LOG_FILE, configure_logging
 from .translation import install_package, package_status, translate_text
+from .proactive import EmptyProactiveReply, generate_proactive
 
 logger = logging.getLogger("yus_ai.api")
 
@@ -27,6 +31,7 @@ class SettingsUpdate(BaseModel):
     context_message_limit: int = Field(20, ge=2, le=200)
     memory_limit: int = Field(5, ge=0, le=50)
     message_display_mode: Literal["markdown", "plain", "raw"] = "markdown"
+    translation_mirror_url: str = ""
 
 
 class CharacterCreate(BaseModel):
@@ -45,6 +50,20 @@ class CharacterCreate(BaseModel):
 
 class CharacterUpdate(CharacterCreate):
     pass
+
+
+class ProactiveConfig(BaseModel):
+    enabled: bool = False
+    interval_minutes: int = Field(30, ge=1, le=1440)
+    randomize_interval: bool = True
+    max_tokens: int = Field(1024, ge=64, le=8192)
+    news_enabled: bool = False
+    rss_url: str = Field("https://www.chinanews.com.cn/rss/scroll-news.xml", max_length=1000, pattern=r"^https://")
+
+
+class ProactiveRequest(BaseModel):
+    character_id: int
+    conversation_id: int | None = None
 
 
 def compile_character_prompt(character) -> str:
@@ -100,12 +119,12 @@ def rows(query: str, params: tuple = ()) -> list[dict]:
 async def lifespan(_: FastAPI):
     configure_logging()
     init_db()
-    logger.info("backend_started version=0.11.0")
+    logger.info("backend_started version=0.13.3")
     yield
     logger.info("backend_stopped")
 
 
-app = FastAPI(title="Yu's AI API", version="0.11.0", lifespan=lifespan)
+app = FastAPI(title="Yu's AI API", version="0.13.3", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://tauri.localhost", "tauri://localhost"],
@@ -203,8 +222,8 @@ def update_settings(payload: SettingsUpdate):
         current_key = db.execute("SELECT api_key FROM settings WHERE id = 1").fetchone()[0]
         api_key = current_key if payload.api_key == "••••••••" else payload.api_key
         db.execute(
-            "UPDATE settings SET base_url=?, api_key=?, model=?, temperature=?, max_tokens=?, context_message_limit=?, memory_limit=?, message_display_mode=? WHERE id=1",
-            (payload.base_url.rstrip("/"), api_key, payload.model, payload.temperature, payload.max_tokens, payload.context_message_limit, payload.memory_limit, payload.message_display_mode),
+            "UPDATE settings SET base_url=?, api_key=?, model=?, temperature=?, max_tokens=?, context_message_limit=?, memory_limit=?, message_display_mode=?, translation_mirror_url=? WHERE id=1",
+            (payload.base_url.rstrip("/"), api_key, payload.model, payload.temperature, payload.max_tokens, payload.context_message_limit, payload.memory_limit, payload.message_display_mode, payload.translation_mirror_url.strip().rstrip("/")),
         )
     return {"ok": True}
 
@@ -212,6 +231,77 @@ def update_settings(payload: SettingsUpdate):
 @app.get("/api/pet/state")
 def get_pet_state():
     return rows("SELECT position_x, position_y FROM pet_state WHERE id = 1")[0]
+
+
+@app.get("/api/plugins/proactive")
+def get_proactive_config():
+    config = rows("SELECT * FROM proactive_plugin WHERE id=1")[0]
+    config["enabled"] = bool(config["enabled"])
+    config["news_enabled"] = bool(config["news_enabled"])
+    config["randomize_interval"] = bool(config["randomize_interval"])
+    return config
+
+
+@app.put("/api/plugins/proactive")
+def update_proactive_config(payload: ProactiveConfig):
+    with connect() as db:
+        current = db.execute("SELECT interval_minutes,next_due FROM proactive_plugin WHERE id=1").fetchone()
+        now = time.time()
+        next_due = current["next_due"]
+        if next_due > now and payload.interval_minutes != current["interval_minutes"]:
+            next_due = now + (next_due - now) * payload.interval_minutes / current["interval_minutes"]
+        db.execute("UPDATE proactive_plugin SET enabled=?, interval_minutes=?, max_tokens=?, news_enabled=?, rss_url=?, randomize_interval=?,next_due=? WHERE id=1",
+                   (payload.enabled, payload.interval_minutes, payload.max_tokens, payload.news_enabled, payload.rss_url, payload.randomize_interval, next_due))
+    return {"ok": True}
+
+
+@app.post("/api/plugins/proactive/generate")
+async def proactive_generate(payload: ProactiveRequest):
+    now = datetime.now().astimezone()
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        config = dict(db.execute("SELECT * FROM proactive_plugin WHERE id=1").fetchone())
+        if not config["enabled"] or now.hour < 7 or now.hour >= 23:
+            return {"skipped": True, "reason": "disabled_or_quiet_hours"}
+        if time.time() < config["next_due"]:
+            return {"skipped": True, "reason": "cooldown"}
+        character = db.execute("SELECT * FROM characters WHERE id=?", (payload.character_id,)).fetchone()
+        if not character:
+            raise HTTPException(404, "角色不存在")
+        conversation_id = payload.conversation_id
+        if conversation_id is not None and not db.execute("SELECT id FROM conversations WHERE id=? AND character_id=?", (conversation_id, payload.character_id)).fetchone():
+            conversation_id = None  # Deleted/stale selection must not permanently block pet speech.
+        setting = dict(db.execute("SELECT * FROM settings WHERE id=1").fetchone())
+        if not setting["api_key"]:
+            return {"skipped": True, "reason": "missing_api_key"}
+        history = [dict(row) for row in db.execute("SELECT role,content FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT 6", (conversation_id,)).fetchall()][::-1]
+        # Reserve cooldown before network I/O so repeated requests cannot spend extra tokens.
+        factor = random.uniform(0.85, 1.15) if config["randomize_interval"] else 1.0
+        db.execute("UPDATE proactive_plugin SET next_due=? WHERE id=1", (time.time() + config["interval_minutes"] * 60 * factor,))
+        prompt = compile_character_prompt(character)
+    try:
+        text, kind, sources, usage = await generate_proactive(setting, config, prompt, history, now.isoformat(timespec="seconds"))
+    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
+        failure_count = config["failure_count"] + 1
+        delay = 60 if failure_count <= 2 else max(300, config["interval_minutes"] * 60)
+        detail = "模型未返回正文，请提高主动发言 token 上限（推理也可能占用额度）" if isinstance(exc, EmptyProactiveReply) else "主动发言请求失败，请检查模型服务和配置"
+        logger.warning("proactive_model_failed error_type=%s finish_reason=%s retry_seconds=%s", type(exc).__name__, getattr(exc, "finish_reason", "unknown"), delay)
+        with connect() as db:
+            db.execute("UPDATE proactive_plugin SET failure_count=?,last_error=?,next_due=?,total_tokens=total_tokens+? WHERE id=1", (failure_count, detail, time.time() + delay, getattr(exc, "usage", 0)))
+        raise HTTPException(502, f"{detail}；约 {delay} 秒后自动重试，连续失败会降低重试频率") from exc
+    with connect() as db:
+        if not db.execute("SELECT id FROM characters WHERE id=?", (payload.character_id,)).fetchone():
+            return {"skipped": True, "reason": "character_deleted"}
+        if conversation_id is None:
+            conversation_id = db.execute("INSERT INTO conversations(character_id,title) VALUES (?,?)", (payload.character_id, "桌宠主动互动")).lastrowid
+        elif not db.execute("SELECT id FROM conversations WHERE id=?", (conversation_id,)).fetchone():
+            return {"skipped": True, "reason": "conversation_deleted"}
+        source_text = "\n\n" + "\n".join(f"来源：{source['title']} {source['url']}" for source in sources) if sources else ""
+        db.execute("INSERT INTO messages(conversation_id,role,content) VALUES (?,'assistant',?)", (conversation_id, text + source_text))
+        db.execute("UPDATE conversations SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (conversation_id,))
+        db.execute("UPDATE proactive_plugin SET last_content=?,total_tokens=total_tokens+?,failure_count=0,last_error='' WHERE id=1", (text, usage))
+    logger.info("proactive_generated character_id=%s kind=%s total_tokens=%s", payload.character_id, kind, usage)
+    return {"content": text, "kind": kind, "sources": sources, "total_tokens": usage, "conversation_id": conversation_id}
 
 
 @app.put("/api/pet/state")
@@ -232,7 +322,8 @@ def translation_packages():
 @app.post("/api/translation/packages/{source}/{target}")
 async def download_translation_package(source: str, target: str):
     try:
-        await install_package(source, target)
+        mirror = rows("SELECT translation_mirror_url FROM settings WHERE id=1")[0]["translation_mirror_url"]
+        await install_package(source, target, mirror_url=mirror)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except httpx.HTTPError as exc:
@@ -285,6 +376,32 @@ def delete_character(character_id: int):
         if cursor.rowcount == 0:
             raise HTTPException(404, "角色不存在")
     return {"ok": True}
+
+
+@app.post("/api/translation/packages/{source}/{target}/stream")
+async def stream_translation_package(source: str, target: str):
+    async def events():
+        queue: asyncio.Queue[dict] = asyncio.Queue()
+        mirror = rows("SELECT translation_mirror_url FROM settings WHERE id=1")[0]["translation_mirror_url"]
+        task = asyncio.create_task(install_package(source, target, queue.put_nowait, mirror_url=mirror))
+        while not task.done() or not queue.empty():
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=0.2)
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+            except asyncio.TimeoutError:
+                continue
+        try:
+            await task
+        except ValueError as exc:
+            yield json.dumps({"stage": "error", "error": str(exc)}, ensure_ascii=False) + "\n"
+        except httpx.HTTPError as exc:
+            logger.warning("translation_model_download_failed pair=%s-%s error=%s", source, target, type(exc).__name__)
+            yield json.dumps({"stage": "error", "error": f"语言包下载失败：{type(exc).__name__}"}, ensure_ascii=False) + "\n"
+        except Exception as exc:
+            logger.exception("translation_model_install_failed pair=%s-%s", source, target)
+            yield json.dumps({"stage": "error", "error": f"语言包安装失败：{type(exc).__name__}"}, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(events(), media_type="application/x-ndjson")
 
 
 @app.get("/api/conversations")

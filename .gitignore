@@ -6,6 +6,7 @@ frontend/node_modules/
 frontend/dist/
 frontend/src-tauri/target/
 frontend/src-tauri/binaries/*.exe
+frontend/src-tauri/binaries/backend-runtime/
 build/
 .env
 .DS_Store

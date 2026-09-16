@@ -29,6 +29,7 @@ type Settings = {
   context_message_limit: number;
   memory_limit: number;
   message_display_mode: MessageDisplayMode;
+  translation_mirror_url: string;
 };
 type Theme = "violet" | "midnight" | "sand" | "paper";
 const themes: { id: Theme; name: string; description: string }[] = [
@@ -79,8 +80,10 @@ export default function App() {
     context_message_limit: 20,
     memory_limit: 5,
     message_display_mode: "markdown",
+    translation_mirror_url: "",
   });
   const [draft, setDraft] = useState(emptyCharacter);
+  const [proactivePlugin, setProactivePlugin] = useState({ enabled: false, interval_minutes: 30, randomize_interval: true, max_tokens: 1024, news_enabled: false, rss_url: "https://www.chinanews.com.cn/rss/scroll-news.xml", total_tokens: 0, last_error: "" });
   const [editingCharacter, setEditingCharacter] = useState<number | null>(null);
   const [editingMessage, setEditingMessage] = useState<number | null>(null);
   const [messageDraft, setMessageDraft] = useState("");
@@ -116,6 +119,7 @@ export default function App() {
           ]);
           setCharacters(characterData);
           setSettings(settingsData);
+          setProactivePlugin(await request<typeof proactivePlugin>("/plugins/proactive"));
           if (characterData[0]) {
             setActiveCharacter(characterData[0].id);
             const conversationData = await request<Conversation[]>(
@@ -336,6 +340,7 @@ export default function App() {
         method: "PUT",
         body: JSON.stringify(settings),
       });
+      await request("/plugins/proactive", { method: "PUT", body: JSON.stringify(proactivePlugin) });
       setPanel("chat");
       setError("");
     } catch (e) {
@@ -696,6 +701,13 @@ export default function App() {
                 </Field>
               </div>
               <div className="form-section-title">
+                <strong>离线翻译下载</strong>
+                <small>留空使用 Argos 官方源；国内镜像需提供相同的 .argosmodel 文件</small>
+              </div>
+              <Field label="语言包镜像地址（可选）">
+                <input type="url" placeholder="例如：https://mirror.example.com/argospm/v1" value={settings.translation_mirror_url} onChange={(e) => setSettings({...settings, translation_mirror_url:e.target.value})} />
+              </Field>
+              <div className="form-section-title">
                 <strong>消息显示插件</strong>
                 <small>选择 AI 回复的显示方式；三种处理器互斥，只会启用一个</small>
               </div>
@@ -717,6 +729,18 @@ export default function App() {
                   </button>
                 ))}
               </div>
+              <div className="form-section-title"><strong>角色主动互动插件</strong><small>启用后使用当前模型 API，按角色卡和本地时间生成问题、笑话或真实新闻话题。会消耗 token；23:00–07:00 不打扰。</small></div>
+              <Field label="启用主动模型调用"><input type="checkbox" checked={proactivePlugin.enabled} onChange={(e) => setProactivePlugin({ ...proactivePlugin, enabled: e.target.checked })} /></Field>
+              <Field label="主动发言间隔（1–1440 分钟，越短越耗 token）"><input type="number" min="1" max="1440" value={proactivePlugin.interval_minutes} onChange={(e) => setProactivePlugin({ ...proactivePlugin, interval_minutes: Number(e.target.value) })} /></Field>
+              <div className="proactive-frequency-presets">{[1, 5, 15, 30, 60, 120].map((minutes) => <button type="button" key={minutes} className={proactivePlugin.interval_minutes === minutes ? "selected" : ""} onClick={() => setProactivePlugin({ ...proactivePlugin, interval_minutes: minutes })}>{minutes} 分钟</button>)}</div>
+              <Field label="随机间隔（关闭后使用固定间隔）"><input type="checkbox" checked={proactivePlugin.randomize_interval} onChange={(e) => setProactivePlugin({ ...proactivePlugin, randomize_interval: e.target.checked })} /></Field>
+              <small>当前：约每 {proactivePlugin.interval_minutes} 分钟发言{proactivePlugin.randomize_interval ? "，随机浮动 ±15%" : "，固定间隔"}。修改并保存后会按新间隔调整剩余冷却。面板打开、桌宠隐藏、静默时段不触发；轮询最多延后约 1 分钟。</small>
+              <Field label="单次回复 token 上限（64–8192，推理及输入也可能计费）"><input type="number" min="64" max="8192" value={proactivePlugin.max_tokens} onChange={(e) => setProactivePlugin({ ...proactivePlugin, max_tokens: Number(e.target.value) })} /></Field>
+              <small>建议从 1024 开始；推理模型空回复时可提高至 4096。重试会再次调用模型并可能计费。</small>
+              {proactivePlugin.last_error && <small role="status">最近主动发言失败：{proactivePlugin.last_error}</small>}
+              <Field label="启用时事话题"><input type="checkbox" checked={proactivePlugin.news_enabled} onChange={(e) => setProactivePlugin({ ...proactivePlugin, news_enabled: e.target.checked })} /></Field>
+              <Field label="新闻 RSS（HTTPS）"><input type="url" value={proactivePlugin.rss_url} onChange={(e) => setProactivePlugin({ ...proactivePlugin, rss_url: e.target.value })} /></Field>
+              <small>API 已报告累计 token：{proactivePlugin.total_tokens}（未提供 usage 的服务无法统计）。新闻源失败时仅生成问题或笑话。配置随“保存设置”一起保存。</small>
               <button className="primary">保存设置</button>
             </form>
           </section>

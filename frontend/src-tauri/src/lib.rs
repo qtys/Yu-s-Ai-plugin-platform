@@ -1,5 +1,5 @@
-use std::{fs::OpenOptions, io::Write, sync::Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{fs::OpenOptions, io::Write, sync::{Arc, Mutex}};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::{
@@ -14,9 +14,15 @@ use serde::Serialize;
 
 const DATABASE_FILES: [&str; 3] = ["yus_ai.db", "yus_ai.db-wal", "yus_ai.db-shm"];
 static CONTINUOUS_TRANSLATION: AtomicBool = AtomicBool::new(false);
+static PET_INTERACTION_MODE: AtomicU8 = AtomicU8::new(0);
+static PET_CURSOR_IGNORED: AtomicBool = AtomicBool::new(false);
+static PET_ALIGN_LEFT: AtomicBool = AtomicBool::new(false);
+static PET_PROACTIVE_HEIGHT: AtomicU32 = AtomicU32::new(0);
 
 struct DesktopState {
   backend: Mutex<Option<CommandChild>>,
+  backend_exited: Arc<AtomicBool>,
+  shutdown_file: Mutex<Option<std::path::PathBuf>>,
   always_on_top: Mutex<bool>,
   mini_mode: Mutex<bool>,
 }
@@ -30,7 +36,21 @@ struct PetPosition {
 fn stop_backend(app: &AppHandle) {
   if let Ok(mut backend) = app.state::<DesktopState>().backend.lock() {
     if let Some(child) = backend.take() {
-      let _ = child.kill();
+      let state = app.state::<DesktopState>();
+      let shutdown_file = state.shutdown_file.lock().ok().and_then(|path| path.clone());
+      if let Some(path) = &shutdown_file {
+        if std::fs::write(path, b"shutdown").is_ok() {
+          for _ in 0..40 {
+            if state.backend_exited.load(Ordering::Acquire) { break; }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+          }
+        }
+      }
+      if !state.backend_exited.load(Ordering::Acquire) {
+        log::warn!("backend_graceful_shutdown_timeout; terminating backend");
+        let _ = child.kill();
+      }
+      if let Some(path) = shutdown_file { let _ = std::fs::remove_file(path); }
     }
   }
 }
@@ -250,6 +270,15 @@ fn set_continuous_translation(enabled: bool) -> bool {
 }
 
 #[tauri::command]
+fn set_pet_interaction_mode(window: WebviewWindow, mode: u8, align_left: bool, proactive_height: u32) -> Result<(), String> {
+  PET_INTERACTION_MODE.store(mode.min(3), Ordering::Relaxed);
+  PET_ALIGN_LEFT.store(align_left, Ordering::Relaxed);
+  PET_PROACTIVE_HEIGHT.store(proactive_height.min(250), Ordering::Relaxed);
+  PET_CURSOR_IGNORED.store(false, Ordering::Relaxed);
+  window.set_ignore_cursor_events(false).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn get_autostart_status(app: AppHandle) -> Result<bool, String> {
   app.autolaunch().is_enabled().map_err(|error| error.to_string())
 }
@@ -271,6 +300,7 @@ fn start_selection_monitor(app: AppHandle) {
   std::thread::spawn(move || {
     use rdev::{listen, simulate, Button, Event, EventType, Key};
     let (selection_sender, selection_receiver) = std::sync::mpsc::sync_channel::<()>(1);
+    let selection_app = app.clone();
     std::thread::spawn(move || {
       while selection_receiver.recv().is_ok() {
         if !CONTINUOUS_TRANSLATION.load(Ordering::Relaxed) { continue; }
@@ -288,12 +318,52 @@ fn start_selection_monitor(app: AppHandle) {
         if let Some(text) = selected {
           let text = text.trim();
           if !text.is_empty() && text.chars().count() <= 20_000 {
-            let _ = app.emit_to("pet", "screen-text-selected", text.to_string());
+            let _ = selection_app.emit_to("pet", "screen-text-selected", text.to_string());
           }
         }
       }
     });
     let callback = move |event: Event| {
+      if let EventType::MouseMove { x, y } = &event.event_type {
+        if let Some(pet) = app.get_webview_window("pet") {
+          if pet.is_visible().unwrap_or(false) {
+            let mode = PET_INTERACTION_MODE.load(Ordering::Relaxed);
+            let interactive = if mode == 2 {
+              true
+            } else if let (Ok(position), Ok(size), Ok(scale)) = (pet.outer_position(), pet.outer_size(), pet.scale_factor()) {
+              let local_x = (*x - position.x as f64) / scale;
+              let local_y = (*y - position.y as f64) / scale;
+              let factor = (size.width as f64 / scale / 250.0).max(0.01);
+              let base_x = local_x / factor;
+              let base_y = local_y / factor;
+              let placement_left = PET_ALIGN_LEFT.load(Ordering::Relaxed);
+              let pet_left = if placement_left { 36.0 } else { 74.0 };
+              let over_pet = base_x >= pet_left && base_x <= pet_left + 140.0 && base_y >= 100.0 && base_y <= 250.0;
+              if mode == 0 {
+                over_pet
+              } else if mode == 3 {
+                let bubble_left = if placement_left { 18.0 } else { 27.0 };
+                let bubble_bottom = 10.0 + PET_PROACTIVE_HEIGHT.load(Ordering::Relaxed) as f64;
+                over_pet || (base_x >= bubble_left && base_x <= bubble_left + 205.0 && base_y >= 10.0 && base_y <= bubble_bottom)
+              } else {
+                let orbs = if placement_left {
+                  [(85.0, 229.0), (159.0, 198.0), (190.0, 124.0), (159.0, 50.0), (85.0, 19.0)]
+                } else {
+                  [(124.0, 229.0), (50.0, 198.0), (19.0, 124.0), (50.0, 50.0), (124.0, 19.0)]
+                };
+                over_pet || orbs.iter().any(|(left, top)| base_x >= *left && base_x <= *left + 42.0 && base_y >= *top && base_y <= *top + 42.0)
+              }
+            } else {
+              true
+            };
+            let ignored = !interactive;
+            if PET_CURSOR_IGNORED.swap(ignored, Ordering::Relaxed) != ignored {
+              let _ = pet.set_ignore_cursor_events(ignored);
+            }
+          }
+        }
+        return;
+      }
       if !CONTINUOUS_TRANSLATION.load(Ordering::Relaxed)
         || !matches!(event.event_type, EventType::ButtonRelease(Button::Left)) {
         return;
@@ -355,10 +425,12 @@ pub fn run() {
     .plugin(tauri_plugin_autostart::Builder::new().app_name("Yus AI").build())
     .manage(DesktopState {
       backend: Mutex::new(None),
+      backend_exited: Arc::new(AtomicBool::new(true)),
+      shutdown_file: Mutex::new(None),
       always_on_top: Mutex::new(false),
       mini_mode: Mutex::new(false),
     })
-    .invoke_handler(tauri::generate_handler![set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, resize_pet_dialog, start_pet_drag, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, get_autostart_status, set_autostart, export_character_card])
+    .invoke_handler(tauri::generate_handler![set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, resize_pet_dialog, start_pet_drag, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, set_pet_interaction_mode, get_autostart_status, set_autostart, export_character_card])
     .setup(|app| {
       let legacy_data_dir = app.path().app_data_dir()?;
       let data_dir = prepare_install_data_dir(app.handle())?;
@@ -370,7 +442,16 @@ pub fn run() {
       };
       let sidecar_log = log_dir.join("sidecar.log");
       let translation_runtime_dir = data_dir.join("translation-runtime");
+      std::fs::create_dir_all(data_dir.join("temp"))?;
+      let shutdown_file = data_dir.join("backend.shutdown");
+      let _ = std::fs::remove_file(&shutdown_file);
+      *app.state::<DesktopState>().shutdown_file.lock().unwrap() = Some(shutdown_file.clone());
+      let backend_exited = app.state::<DesktopState>().backend_exited.clone();
+      backend_exited.store(false, Ordering::Release);
       let (mut output, child) = app.shell().sidecar("yus-ai-backend")?
+        .env("YUS_AI_SHUTDOWN_FILE", &shutdown_file)
+        .env("TEMP", data_dir.join("temp"))
+        .env("TMP", data_dir.join("temp"))
         .env("YUS_AI_DATA_DIR", &data_dir)
         .env("YUS_AI_LOG_DIR", &log_dir)
         .env("ARGOS_PACKAGES_DIR", data_dir.join("translation-models"))
@@ -385,6 +466,7 @@ pub fn run() {
       start_selection_monitor(app.handle().clone());
       tauri::async_runtime::spawn(async move {
         while let Some(event) = output.recv().await {
+          if matches!(&event, CommandEvent::Terminated(_)) { backend_exited.store(true, Ordering::Release); }
           let line = match event {
             CommandEvent::Stdout(bytes) => Some(("stdout", bytes)),
             CommandEvent::Stderr(bytes) => Some(("stderr", bytes)),
@@ -398,6 +480,7 @@ pub fn run() {
             }
           }
         }
+        backend_exited.store(true, Ordering::Release);
       });
 
       let show = MenuItem::with_id(app, "show", "显示主界面", true, None::<&str>)?;

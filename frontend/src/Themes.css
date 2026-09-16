@@ -356,6 +356,10 @@
 .message-plugin > span { grid-row:1 / span 2; color:var(--muted); }
 .message-plugin strong { font-size:12px; }
 .message-plugin small { color:var(--muted); font-size:10px; line-height:1.45; }
+.proactive-frequency-presets { display:flex; flex-wrap:wrap; gap:8px; }
+.proactive-frequency-presets button { padding:7px 12px; border:1px solid var(--line); border-radius:9px; color:var(--text); background:var(--input); }
+.proactive-frequency-presets button.selected { border-color:var(--accent); color:var(--accent); }
+.shell .form-page input[type="checkbox"] { width:18px; height:18px; padding:0; accent-color:var(--accent); justify-self:start; }
 .message-plugin.selected {
   border-color:var(--accent);
   box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 18%,transparent);

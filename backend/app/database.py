@@ -80,10 +80,24 @@ def init_db() -> None:
             db.execute("ALTER TABLE settings ADD COLUMN memory_limit INTEGER NOT NULL DEFAULT 5")
         if "message_display_mode" not in setting_columns:
             db.execute("ALTER TABLE settings ADD COLUMN message_display_mode TEXT NOT NULL DEFAULT 'markdown'")
+        if "translation_mirror_url" not in setting_columns:
+            db.execute("ALTER TABLE settings ADD COLUMN translation_mirror_url TEXT NOT NULL DEFAULT ''")
         conversation_columns = {row[1] for row in db.execute("PRAGMA table_info(conversations)")}
         if "summary" not in conversation_columns:
             db.execute("ALTER TABLE conversations ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
         db.executescript("""
+            CREATE TABLE IF NOT EXISTS proactive_plugin (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                enabled INTEGER NOT NULL DEFAULT 0,
+                interval_minutes INTEGER NOT NULL DEFAULT 30,
+                max_tokens INTEGER NOT NULL DEFAULT 160,
+                news_enabled INTEGER NOT NULL DEFAULT 0,
+                rss_url TEXT NOT NULL DEFAULT 'https://www.chinanews.com.cn/rss/scroll-news.xml',
+                next_due REAL NOT NULL DEFAULT 0,
+                last_content TEXT NOT NULL DEFAULT '',
+                total_tokens INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT OR IGNORE INTO proactive_plugin (id) VALUES (1);
             CREATE TABLE IF NOT EXISTS memories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
@@ -93,3 +107,10 @@ def init_db() -> None:
                 UNIQUE(character_id, content)
             );
         """)
+        proactive_columns = {row[1] for row in db.execute("PRAGMA table_info(proactive_plugin)")}
+        if "randomize_interval" not in proactive_columns:
+            db.execute("ALTER TABLE proactive_plugin ADD COLUMN randomize_interval INTEGER NOT NULL DEFAULT 1")
+        if "failure_count" not in proactive_columns:
+            db.execute("ALTER TABLE proactive_plugin ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0")
+            db.execute("ALTER TABLE proactive_plugin ADD COLUMN last_error TEXT NOT NULL DEFAULT ''")
+            db.execute("UPDATE proactive_plugin SET max_tokens=1024 WHERE max_tokens=160")

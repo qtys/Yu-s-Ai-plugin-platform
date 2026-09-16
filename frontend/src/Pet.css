@@ -22,6 +22,8 @@ button,input { font:inherit; }
 .pet-character.idle-squish img { animation:pet-squish .9s ease-in-out; }
 .pet-character.idle-wiggle img { animation:pet-wiggle 1s ease-in-out; }
 .pet-character.idle-sleepy img { animation:pet-sleepy 2.2s ease-in-out; }
+.pet-character.idle-frontflip img { animation:pet-frontflip .9s ease-in-out; }
+.pet-character.idle-backflip img { animation:pet-backflip .9s ease-in-out; }
 .pet-ripple { position:absolute; left:50%; top:58%; width:70px; height:45px; border:3px solid rgba(105,211,255,.8); border-radius:50%; opacity:0; pointer-events:none; transform:translate(-50%,-50%) scale(.45); }
 .mood-tap .pet-ripple { animation:pet-ripple .55s ease-out; }
 .pet-emote { position:absolute; z-index:2; top:20px; right:5px; color:#147fc4; font-size:20px; font-weight:800; text-shadow:0 2px 6px white; pointer-events:none; animation:emote-float .8s ease-in-out infinite alternate; }
@@ -56,6 +58,14 @@ button,input { font:inherit; }
 .translation-panel { display:flex; flex-direction:column; gap:8px; }
 .download-model { width:100%; padding:8px 10px; border:1px solid #83caef; border-radius:10px; color:#096da8; background:#e4f6ff; cursor:pointer; }
 .download-model:disabled { opacity:.6; cursor:wait; }
+.download-area { display:grid; min-width:0; max-width:100%; gap:6px; overflow:hidden; }
+.download-progress { display:grid; min-width:0; max-width:100%; grid-template-columns:minmax(60px,1fr) minmax(0,150px); align-items:center; gap:8px; color:#247ca9; }
+.download-progress-track { height:8px; overflow:hidden; border-radius:999px; background:#d9edf7; box-shadow:inset 0 1px 2px rgba(12,86,126,.13); }
+.download-progress-track span { display:block; height:100%; min-width:2px; border-radius:inherit; background:linear-gradient(90deg,#56c8ff,#167bc8); transition:width .16s ease; }
+.download-progress.installing .download-progress-track span { background:linear-gradient(90deg,#65dca1,#1e9b68); animation:download-pulse .8s ease-in-out infinite alternate; }
+.download-progress.error { color:#b34455; }
+.download-progress.error .download-progress-track span { background:#df6575; }
+.download-progress small { min-width:0; overflow:hidden; text-align:right; font-size:10px; white-space:nowrap; text-overflow:ellipsis; }
 .speech-bubble .translation-form { display:grid; grid-template-columns:1fr 58px; gap:7px; margin:0; }
 .translation-form textarea { min-width:0; height:72px; resize:none; border:1px solid #a8d9f4; outline:0; background:white; color:#173b56; border-radius:11px; padding:8px 10px; font-family:inherit; font-size:calc(13px * var(--dialog-font-scale, 1)); user-select:text; }
 .translation-form textarea:focus { border-color:#198fd4; box-shadow:0 0 0 3px rgba(25,143,212,.12); }
@@ -71,6 +81,9 @@ button,input { font:inherit; }
 .settings-panel .speech-head { margin-bottom:0; }
 .settings-panel .pet-controls { overflow:auto; }
 .pet-controls { display:grid; gap:12px; padding:12px; border-radius:14px; background:#eaf8ff; }
+.pet-action-controls { display:flex; gap:8px; }
+.pet-action-controls button { flex:1; border:1px solid #8bceef; border-radius:9px; padding:6px; color:#0874b8; background:#dff3ff; cursor:pointer; font-size:12px; }
+.pet-action-controls button:disabled { opacity:.5; cursor:default; }
 .pet-controls label { display:grid; grid-template-columns:66px 1fr 38px; align-items:center; gap:7px; font-size:11px; color:#35657f; }
 .pet-controls input { width:100%; accent-color:#168bd0; }
 .pet-controls span { text-align:right; }
@@ -79,6 +92,8 @@ button,input { font:inherit; }
 .above-left .proactive-bubble,.below-left .proactive-bubble { left:18px; right:auto; }
 .proactive-bubble button { position:absolute; top:4px; right:6px; width:22px; height:22px; padding:0; border:0; border-radius:50%; color:#a34255; background:#ffe9ed; cursor:pointer; }
 .proactive-bubble small { display:block; margin-bottom:4px; color:#2787bd; font-size:10px; font-weight:700; }
+.proactive-bubble { max-height:250px; overflow:auto; overflow-wrap:anywhere; }
+.proactive-bubble a { display:block; margin-top:6px; color:#087bc4; font-size:11px; }
 .pet-reply { flex:1; min-height:52px; overflow:auto; white-space:pre-wrap; line-height:1.55; font-size:calc(13px * var(--dialog-font-scale, 1)); user-select:text; }
 .pet-reply p { margin:0; }
 .pet-reply .markdown-content { color:inherit; line-height:1.55; }
@@ -101,6 +116,9 @@ button,input { font:inherit; }
 @keyframes pet-squish { 0%,100%{transform:scale(1)} 45%{transform:scaleX(1.06) scaleY(.94)} }
 @keyframes pet-wiggle { 0%,100%{transform:rotate(0)} 25%{transform:rotate(-4deg)} 75%{transform:rotate(4deg)} }
 @keyframes pet-sleepy { 0%,100%{transform:translateY(0) scaleY(1)} 50%{transform:translateY(4px) scaleY(.96)} }
+@keyframes pet-frontflip { 0%{transform:perspective(450px) rotateX(0) scale(1)} 50%{transform:perspective(450px) translateY(-20px) rotateX(-180deg) scale(.92)} 100%{transform:perspective(450px) rotateX(-360deg) scale(1)} }
+@keyframes pet-backflip { 0%{transform:perspective(450px) rotateX(0) scale(1)} 50%{transform:perspective(450px) translateY(-20px) rotateX(180deg) scale(.92)} 100%{transform:perspective(450px) rotateX(360deg) scale(1)} }
 @keyframes pet-ripple { 0%{opacity:.9;transform:translate(-50%,-50%) scale(.45)} 100%{opacity:0;transform:translate(-50%,-50%) scale(1.7)} }
 @keyframes emote-float { from{transform:translateY(2px)} to{transform:translateY(-4px)} }
 @keyframes bubble-arrive { from{opacity:0;transform:translateY(8px) scale(.96)} to{opacity:1;transform:translateY(0) scale(1)} }
+@keyframes download-pulse { from{opacity:.65} to{opacity:1} }
