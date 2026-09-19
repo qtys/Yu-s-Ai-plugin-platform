@@ -241,29 +241,43 @@ export default function Pet() {
   useEffect(() => {
     let disposed = false;
     const check = async () => {
-      if (proactiveInFlightRef.current || pendingProactiveRef.current) return;
+      if (proactiveInFlightRef.current || pendingProactiveRef.current) return false;
       proactiveInFlightRef.current = true;
       try {
         const config = await request<{enabled: boolean}>("/plugins/proactive");
-        if (disposed) return;
+        if (disposed) return false;
         setAiProactiveEnabled(config.enabled);
         const { character, expanded, menuOpen, busy, dragging } = proactiveContextRef.current;
-        if (!config.enabled || !character || expanded || menuOpen || busy || dragging || (!desktop && document.hidden) || (desktop && !(await getCurrentWindow().isVisible()))) return;
+        if (!config.enabled || !character || expanded || menuOpen || busy || dragging || (!desktop && document.hidden) || (desktop && !(await getCurrentWindow().isVisible()))) return false;
         const result = await request<{skipped?: boolean; content: string; conversation_id: number; sources: {title: string; url: string}[]}>("/plugins/proactive/generate", { method: "POST", body: JSON.stringify({ character_id: character.id, conversation_id: conversationRef.current }) });
-        if (result.skipped) return;
+        if (result.skipped) return true;
         if (!disposed && proactiveContextRef.current.character?.id === character.id) {
           conversationRef.current = result.conversation_id;
           localStorage.setItem("yus-ai-conversation", String(result.conversation_id));
           setPendingProactive({ characterId: character.id, content: result.content, sources: result.sources });
         }
+        return true;
       } catch (error) {
-        if (!disposed) setPendingProactive({ characterId: proactiveContextRef.current.character?.id ?? 0, content: `主动发言暂时失败：${error instanceof Error ? error.message : "请检查模型服务"}`, sources: [] });
+        console.warn("主动发言暂时失败", error);
+        return true;
       }
       finally { proactiveInFlightRef.current = false; }
     };
-    const first = window.setTimeout(() => void check(), 20000);
-    const timer = window.setInterval(() => void check(), 60000);
-    return () => { disposed = true; window.clearTimeout(first); window.clearInterval(timer); };
+    let timer: number;
+    const schedule = async () => {
+      const checked = await check();
+      if (disposed) return;
+      try {
+        const config = await request<{enabled: boolean; next_due: number}>("/plugins/proactive");
+        const untilDue = config.next_due > 0 ? config.next_due * 1000 - Date.now() : 30000;
+        const delay = checked ? Math.max(1000, Math.min(60000, untilDue + 150)) : 15000;
+        timer = window.setTimeout(() => void schedule(), delay);
+      } catch {
+        timer = window.setTimeout(() => void schedule(), 30000);
+      }
+    };
+    timer = window.setTimeout(() => void schedule(), 1000);
+    return () => { disposed = true; window.clearTimeout(timer); };
   }, [desktop]);
 
   useEffect(() => {
@@ -845,6 +859,12 @@ export default function Pet() {
             setReply(complete);
           }
         }
+      }
+      buffer += decoder.decode();
+      if (buffer.trim()) {
+        const data = JSON.parse(buffer);
+        if (data.error) throw new Error(data.error);
+        if (data.token) { complete += data.token; setReply(complete); }
       }
       showMood("happy", 1800);
     } catch (error) {

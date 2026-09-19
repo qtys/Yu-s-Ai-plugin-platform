@@ -58,6 +58,7 @@ def init_db() -> None:
                 conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
                 role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
                 content TEXT NOT NULL,
+                origin TEXT NOT NULL DEFAULT 'chat',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -85,11 +86,17 @@ def init_db() -> None:
         conversation_columns = {row[1] for row in db.execute("PRAGMA table_info(conversations)")}
         if "summary" not in conversation_columns:
             db.execute("ALTER TABLE conversations ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
+        message_columns = {row[1] for row in db.execute("PRAGMA table_info(messages)")}
+        if "origin" not in message_columns:
+            db.execute("ALTER TABLE messages ADD COLUMN origin TEXT NOT NULL DEFAULT 'chat'")
+            db.execute("UPDATE conversations SET summary='' ")
         db.executescript("""
             CREATE TABLE IF NOT EXISTS proactive_plugin (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 enabled INTEGER NOT NULL DEFAULT 0,
                 interval_minutes INTEGER NOT NULL DEFAULT 30,
+                random_min_minutes INTEGER NOT NULL DEFAULT 15,
+                random_max_minutes INTEGER NOT NULL DEFAULT 60,
                 max_tokens INTEGER NOT NULL DEFAULT 160,
                 news_enabled INTEGER NOT NULL DEFAULT 0,
                 rss_url TEXT NOT NULL DEFAULT 'https://www.chinanews.com.cn/rss/scroll-news.xml',
@@ -110,7 +117,13 @@ def init_db() -> None:
         proactive_columns = {row[1] for row in db.execute("PRAGMA table_info(proactive_plugin)")}
         if "randomize_interval" not in proactive_columns:
             db.execute("ALTER TABLE proactive_plugin ADD COLUMN randomize_interval INTEGER NOT NULL DEFAULT 1")
+        if "random_min_minutes" not in proactive_columns:
+            db.execute("ALTER TABLE proactive_plugin ADD COLUMN random_min_minutes INTEGER NOT NULL DEFAULT 15")
+        if "random_max_minutes" not in proactive_columns:
+            db.execute("ALTER TABLE proactive_plugin ADD COLUMN random_max_minutes INTEGER NOT NULL DEFAULT 60")
         if "failure_count" not in proactive_columns:
             db.execute("ALTER TABLE proactive_plugin ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0")
+        if "last_error" not in proactive_columns:
             db.execute("ALTER TABLE proactive_plugin ADD COLUMN last_error TEXT NOT NULL DEFAULT ''")
+        if "failure_count" not in proactive_columns:
             db.execute("UPDATE proactive_plugin SET max_tokens=1024 WHERE max_tokens=160")

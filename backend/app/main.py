@@ -19,6 +19,9 @@ from .logging_config import LOG_FILE, configure_logging
 from .translation import install_package, package_status, translate_text
 from .proactive import EmptyProactiveReply, generate_proactive
 
+MODEL_GENERATION_LOCK = asyncio.Lock()
+PROACTIVE_GENERATION_TASK: asyncio.Task | None = None
+
 logger = logging.getLogger("yus_ai.api")
 
 
@@ -56,6 +59,8 @@ class ProactiveConfig(BaseModel):
     enabled: bool = False
     interval_minutes: int = Field(30, ge=1, le=1440)
     randomize_interval: bool = True
+    random_min_minutes: int = Field(15, ge=1, le=1440)
+    random_max_minutes: int = Field(60, ge=1, le=1440)
     max_tokens: int = Field(1024, ge=64, le=8192)
     news_enabled: bool = False
     rss_url: str = Field("https://www.chinanews.com.cn/rss/scroll-news.xml", max_length=1000, pattern=r"^https://")
@@ -75,6 +80,30 @@ def compile_character_prompt(character) -> str:
         ("补充指令", character["system_prompt"]),
     ]
     return "\n\n".join(f"【{label}】\n{value.strip()}" for label, value in fields if value.strip())
+
+
+def proactive_delay_seconds(config) -> float:
+    if config["randomize_interval"]:
+        return random.uniform(config["random_min_minutes"], config["random_max_minutes"]) * 60
+    return config["interval_minutes"] * 60
+
+
+def reschedule_proactive_from_now() -> None:
+    with connect() as db:
+        config = db.execute("SELECT enabled,interval_minutes,randomize_interval,random_min_minutes,random_max_minutes FROM proactive_plugin WHERE id=1").fetchone()
+        if config and config["enabled"]:
+            db.execute("UPDATE proactive_plugin SET next_due=? WHERE id=1", (time.time() + proactive_delay_seconds(config),))
+
+
+async def cancel_active_proactive_generation() -> None:
+    task = PROACTIVE_GENERATION_TASK
+    if task is None or task.done() or task is asyncio.current_task():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 class ConversationCreate(BaseModel):
@@ -119,12 +148,12 @@ def rows(query: str, params: tuple = ()) -> list[dict]:
 async def lifespan(_: FastAPI):
     configure_logging()
     init_db()
-    logger.info("backend_started version=0.13.3")
+    logger.info("backend_started version=0.13.6")
     yield
     logger.info("backend_stopped")
 
 
-app = FastAPI(title="Yu's AI API", version="0.13.3", lifespan=lifespan)
+app = FastAPI(title="Yu's AI API", version="0.13.6", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://tauri.localhost", "tauri://localhost"],
@@ -244,19 +273,30 @@ def get_proactive_config():
 
 @app.put("/api/plugins/proactive")
 def update_proactive_config(payload: ProactiveConfig):
+    if payload.random_min_minutes > payload.random_max_minutes:
+        raise HTTPException(422, "随机发言的最短等待不能大于最长等待")
     with connect() as db:
-        current = db.execute("SELECT interval_minutes,next_due FROM proactive_plugin WHERE id=1").fetchone()
+        current = db.execute("SELECT enabled,interval_minutes,randomize_interval,random_min_minutes,random_max_minutes,next_due FROM proactive_plugin WHERE id=1").fetchone()
         now = time.time()
         next_due = current["next_due"]
-        if next_due > now and payload.interval_minutes != current["interval_minutes"]:
-            next_due = now + (next_due - now) * payload.interval_minutes / current["interval_minutes"]
-        db.execute("UPDATE proactive_plugin SET enabled=?, interval_minutes=?, max_tokens=?, news_enabled=?, rss_url=?, randomize_interval=?,next_due=? WHERE id=1",
-                   (payload.enabled, payload.interval_minutes, payload.max_tokens, payload.news_enabled, payload.rss_url, payload.randomize_interval, next_due))
+        timing_changed = (payload.interval_minutes != current["interval_minutes"] or
+                          payload.randomize_interval != bool(current["randomize_interval"]) or
+                          payload.random_min_minutes != current["random_min_minutes"] or
+                          payload.random_max_minutes != current["random_max_minutes"])
+        if payload.enabled and (not current["enabled"] or timing_changed):
+            next_due = now + proactive_delay_seconds(payload.model_dump())
+        elif not payload.enabled:
+            next_due = 0
+        db.execute("UPDATE proactive_plugin SET enabled=?, interval_minutes=?, max_tokens=?, news_enabled=?, rss_url=?, randomize_interval=?,random_min_minutes=?,random_max_minutes=?,next_due=? WHERE id=1",
+                   (payload.enabled, payload.interval_minutes, payload.max_tokens, payload.news_enabled, payload.rss_url, payload.randomize_interval, payload.random_min_minutes, payload.random_max_minutes, next_due))
     return {"ok": True}
 
 
 @app.post("/api/plugins/proactive/generate")
 async def proactive_generate(payload: ProactiveRequest):
+    global PROACTIVE_GENERATION_TASK
+    if MODEL_GENERATION_LOCK.locked():
+        return {"skipped": True, "reason": "chat_busy"}
     now = datetime.now().astimezone()
     with connect() as db:
         db.execute("BEGIN IMMEDIATE")
@@ -274,13 +314,20 @@ async def proactive_generate(payload: ProactiveRequest):
         setting = dict(db.execute("SELECT * FROM settings WHERE id=1").fetchone())
         if not setting["api_key"]:
             return {"skipped": True, "reason": "missing_api_key"}
-        history = [dict(row) for row in db.execute("SELECT role,content FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT 6", (conversation_id,)).fetchall()][::-1]
+        history = [dict(row) for row in db.execute("SELECT role,content FROM messages WHERE conversation_id=? AND origin!='proactive' ORDER BY id DESC LIMIT 6", (conversation_id,)).fetchall()][::-1]
         # Reserve cooldown before network I/O so repeated requests cannot spend extra tokens.
-        factor = random.uniform(0.85, 1.15) if config["randomize_interval"] else 1.0
-        db.execute("UPDATE proactive_plugin SET next_due=? WHERE id=1", (time.time() + config["interval_minutes"] * 60 * factor,))
+        db.execute("UPDATE proactive_plugin SET next_due=? WHERE id=1", (time.time() + proactive_delay_seconds(config),))
         prompt = compile_character_prompt(character)
     try:
-        text, kind, sources, usage = await generate_proactive(setting, config, prompt, history, now.isoformat(timespec="seconds"))
+        async with MODEL_GENERATION_LOCK:
+            PROACTIVE_GENERATION_TASK = asyncio.current_task()
+            try:
+                text, kind, sources, usage = await generate_proactive(setting, config, prompt, history, now.isoformat(timespec="seconds"))
+            finally:
+                PROACTIVE_GENERATION_TASK = None
+    except asyncio.CancelledError:
+        logger.info("proactive_cancelled reason=manual_chat_started character_id=%s", payload.character_id)
+        return {"skipped": True, "reason": "manual_chat_started"}
     except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
         failure_count = config["failure_count"] + 1
         delay = 60 if failure_count <= 2 else max(300, config["interval_minutes"] * 60)
@@ -297,7 +344,7 @@ async def proactive_generate(payload: ProactiveRequest):
         elif not db.execute("SELECT id FROM conversations WHERE id=?", (conversation_id,)).fetchone():
             return {"skipped": True, "reason": "conversation_deleted"}
         source_text = "\n\n" + "\n".join(f"来源：{source['title']} {source['url']}" for source in sources) if sources else ""
-        db.execute("INSERT INTO messages(conversation_id,role,content) VALUES (?,'assistant',?)", (conversation_id, text + source_text))
+        db.execute("INSERT INTO messages(conversation_id,role,content,origin) VALUES (?,'assistant',?,'proactive')", (conversation_id, text + source_text))
         db.execute("UPDATE conversations SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (conversation_id,))
         db.execute("UPDATE proactive_plugin SET last_content=?,total_tokens=total_tokens+?,failure_count=0,last_error='' WHERE id=1", (text, usage))
     logger.info("proactive_generated character_id=%s kind=%s total_tokens=%s", payload.character_id, kind, usage)
@@ -494,6 +541,7 @@ def update_message(message_id: int, payload: MessageUpdate):
 
 @app.post("/api/conversations/{conversation_id}/chat")
 async def chat(conversation_id: int, payload: ChatRequest):
+    await cancel_active_proactive_generation()
     with connect() as db:
         conversation = db.execute(
             "SELECT c.*, ch.* FROM conversations c JOIN characters ch ON ch.id=c.character_id WHERE c.id=?",
@@ -505,14 +553,13 @@ async def chat(conversation_id: int, payload: ChatRequest):
         if not setting["api_key"]:
             raise HTTPException(400, "请先在设置中填写 API Key")
         all_history = [dict(row) for row in db.execute(
-            "SELECT role, content FROM messages WHERE conversation_id=? ORDER BY id", (conversation_id,)
+            "SELECT role, content FROM messages WHERE conversation_id=? AND origin!='proactive' ORDER BY id", (conversation_id,)
         ).fetchall()]
         context_limit = setting["context_message_limit"]
         history = all_history[-context_limit:]
         older = all_history[:-context_limit]
-        summary = conversation["summary"]
-        if older:
-            summary = "\n".join(f"{item['role']}: {item['content']}" for item in older)[-4000:]
+        summary = "\n".join(f"{item['role']}: {item['content']}" for item in older)[-4000:] if older else ""
+        if summary != conversation["summary"]:
             db.execute("UPDATE conversations SET summary=? WHERE id=?", (summary, conversation_id))
         cursor = db.execute("INSERT INTO messages(conversation_id, role, content) VALUES (?, 'user', ?)", (conversation_id, payload.content))
         maybe_store_memory(db, conversation["character_id"], cursor.lastrowid, payload.content)
@@ -532,8 +579,21 @@ async def chat(conversation_id: int, payload: ChatRequest):
     model_messages.extend(history)
     model_messages.append({"role": "user", "content": payload.content})
 
+    await MODEL_GENERATION_LOCK.acquire()
+
     async def generate():
         complete = ""
+        saved = False
+
+        def save_complete_reply():
+            nonlocal saved
+            if not complete or saved:
+                return
+            with connect() as db:
+                db.execute("INSERT INTO messages(conversation_id, role, content) VALUES (?, 'assistant', ?)", (conversation_id, complete))
+                db.execute("UPDATE conversations SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (conversation_id,))
+            saved = True
+
         try:
             headers = {"Authorization": f"Bearer {setting['api_key']}", "Content-Type": "application/json"}
             body = {
@@ -548,10 +608,13 @@ async def chat(conversation_id: int, payload: ChatRequest):
                         yield json.dumps({"error": f"模型服务返回 {response.status_code}: {error[:500]}"}, ensure_ascii=False) + "\n"
                         return
                     async for line in response.aiter_lines():
-                        if not line.startswith("data: ") or line == "data: [DONE]":
+                        if not line.startswith("data:"):
                             continue
+                        payload_text = line[5:].lstrip()
+                        if payload_text == "[DONE]":
+                            break
                         try:
-                            data = json.loads(line[6:])
+                            data = json.loads(payload_text)
                             token = data["choices"][0]["delta"].get("content", "")
                         except (json.JSONDecodeError, KeyError, IndexError):
                             continue
@@ -559,13 +622,24 @@ async def chat(conversation_id: int, payload: ChatRequest):
                             complete += token
                             yield json.dumps({"token": token}, ensure_ascii=False) + "\n"
             if complete:
-                with connect() as db:
-                    db.execute("INSERT INTO messages(conversation_id, role, content) VALUES (?, 'assistant', ?)", (conversation_id, complete))
-                    db.execute("UPDATE conversations SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (conversation_id,))
+                save_complete_reply()
                 yield json.dumps({"done": True}, ensure_ascii=False) + "\n"
                 logger.info("model_chat_completed conversation_id=%s output_chars=%s", conversation_id, len(complete))
+            else:
+                yield json.dumps({"error": "模型没有返回可显示的正文，请提高回复 token 上限或检查模型设置"}, ensure_ascii=False) + "\n"
         except httpx.HTTPError as exc:
+            save_complete_reply()
             logger.warning("model_chat_connection_failed conversation_id=%s error_type=%s detail=%s", conversation_id, type(exc).__name__, str(exc))
             yield json.dumps({"error": f"无法连接模型服务：{exc}"}, ensure_ascii=False) + "\n"
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            save_complete_reply()
+            logger.warning("model_chat_response_failed conversation_id=%s error_type=%s", conversation_id, type(exc).__name__)
+            yield json.dumps({"error": "模型返回格式异常，请检查接口兼容性"}, ensure_ascii=False) + "\n"
+        except asyncio.CancelledError:
+            save_complete_reply()
+            raise
+        finally:
+            reschedule_proactive_from_now()
+            MODEL_GENERATION_LOCK.release()
 
-    return StreamingResponse(generate(), media_type="application/x-ndjson")
+    return StreamingResponse(generate(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"})

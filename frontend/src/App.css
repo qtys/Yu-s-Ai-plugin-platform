@@ -290,13 +290,13 @@ article strong {
   min-height: 24px;
 }
 .message-edit {
-  border: 0;
-  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--line) 76%, transparent);
+  background: color-mix(in srgb, var(--panel) 86%, transparent);
   color: var(--muted);
   padding: 3px 7px;
   border-radius: 6px;
   font-size: 11px;
-  opacity: 0;
+  opacity: .62;
   transition: opacity .16s ease, color .16s ease, background .16s ease;
 }
 article:hover .message-edit,
@@ -305,22 +305,56 @@ article:hover .message-edit,
   color: var(--text);
   background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
+.message-editor {
+  width: min(680px, 100%);
+  margin-top: 10px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--panel) 94%, var(--accent) 6%);
+  box-shadow: 0 12px 32px color-mix(in srgb, #000 16%, transparent);
+}
+.message-editor-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.message-editor-header strong { color: var(--text); }
 .message-editor textarea {
   width: 100%;
-  min-height: 100px;
-  margin-top: 8px;
+  min-height: 128px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  outline: 0;
+  background: color-mix(in srgb, var(--bg) 72%, var(--panel));
+  color: var(--text);
+  line-height: 1.65;
   resize: vertical;
 }
-.message-editor > div {
-  display: flex;
-  gap: 8px;
-  margin-top: 8px;
+.message-editor textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
-.message-editor button { padding: 8px 12px; }
+.message-editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+}
+.message-editor-actions span { display: flex; gap: 8px; }
+.message-editor button { padding: 8px 14px; border-radius: 9px; }
 .message-editor small {
-  display: block;
-  margin-top: 8px;
   color: var(--muted);
+}
+.proactive-random-range { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 720px) {
+  .message-editor-header, .message-editor-actions { align-items: flex-start; flex-direction: column; }
+  .message-editor-actions span { align-self: flex-end; }
+  .proactive-random-range { grid-template-columns: 1fr; }
 }
 article p {
   white-space: pre-wrap;

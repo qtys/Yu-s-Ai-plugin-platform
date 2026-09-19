@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import asyncio
+import json
 
 import httpx
 
@@ -114,3 +115,44 @@ def test_translation_download_resumes_partial_file():
         assert (downloaded, total) == (10, 10)
         assert partial.read_bytes() == payload
         assert events[-1]["resumed"] is True
+
+
+def test_chat_streams_visible_tokens_and_saves_reply(monkeypatch):
+    chunks = [
+        b'data:{"choices":[{"delta":{"content":"\xe4\xbd\xa0\xe5\xa5\xbd"}}]}\n',
+        b'data: {"choices":[{"delta":{"content":"\xef\xbc\x8c\xe4\xb8\x96\xe7\x95\x8c"}}]}\n',
+        b'data: [DONE]\n',
+    ]
+
+    uploaded_requests = []
+
+    async def stream(request):
+        uploaded_requests.append(json.loads(request.content))
+        return httpx.Response(200, content=b"".join(chunks))
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr("app.main.httpx.AsyncClient", lambda **kwargs: original_client(transport=httpx.MockTransport(stream), **kwargs))
+    with tempfile.TemporaryDirectory() as directory:
+        database.DATA_DIR = database.Path(directory)
+        database.DB_PATH = database.DATA_DIR / "chat-stream.db"
+        with TestClient(app) as client:
+            settings = client.get("/api/settings").json()
+            settings["api_key"] = "mock"
+            client.put("/api/settings", json=settings)
+            character = client.post("/api/characters", json={"name": "流式角色"}).json()
+            conversation = client.post("/api/conversations", json={"character_id": character["id"]}).json()
+            with database.connect() as db:
+                db.execute("INSERT INTO messages(conversation_id,role,content,origin) VALUES (?,'assistant',?,'proactive')", (conversation["id"], "这条主动发言只能留在本地"))
+            proactive = client.get("/api/plugins/proactive").json()
+            proactive.update(enabled=True, interval_minutes=5, randomize_interval=False)
+            client.put("/api/plugins/proactive", json=proactive)
+            before_chat_due = client.get("/api/plugins/proactive").json()["next_due"]
+            response = client.post(f"/api/conversations/{conversation['id']}/chat", json={"content": "测试"})
+            events = [json.loads(line) for line in response.text.splitlines()]
+            assert [event.get("token") for event in events if event.get("token")] == ["你好", "，世界"]
+            assert events[-1] == {"done": True}
+            messages = client.get(f"/api/conversations/{conversation['id']}/messages").json()
+            assert messages[-1]["content"] == "你好，世界"
+            assert messages[-3]["origin"] == "proactive"
+            assert all(message["content"] != "这条主动发言只能留在本地" for message in uploaded_requests[0]["messages"])
+            assert client.get("/api/plugins/proactive").json()["next_due"] >= before_chat_due

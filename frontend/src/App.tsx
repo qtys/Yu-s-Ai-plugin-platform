@@ -19,7 +19,7 @@ type Character = {
 };
 const emptyCharacter = { name: "", description: "", system_prompt: "", avatar_data: "", greeting: "", background: "", personality: "", speaking_style: "", relationship: "", boundaries: "", example_dialogue: "" };
 type Conversation = { id: number; character_id: number; title: string };
-type Message = { id?: number; conversation_id?: number; role: "user" | "assistant"; content: string };
+type Message = { id?: number; conversation_id?: number; clientKey?: string; role: "user" | "assistant"; content: string };
 type Settings = {
   base_url: string;
   api_key: string;
@@ -83,15 +83,23 @@ export default function App() {
     translation_mirror_url: "",
   });
   const [draft, setDraft] = useState(emptyCharacter);
-  const [proactivePlugin, setProactivePlugin] = useState({ enabled: false, interval_minutes: 30, randomize_interval: true, max_tokens: 1024, news_enabled: false, rss_url: "https://www.chinanews.com.cn/rss/scroll-news.xml", total_tokens: 0, last_error: "" });
+  const [proactivePlugin, setProactivePlugin] = useState({ enabled: false, interval_minutes: 30, randomize_interval: true, random_min_minutes: 15, random_max_minutes: 60, max_tokens: 1024, news_enabled: false, rss_url: "https://www.chinanews.com.cn/rss/scroll-news.xml", total_tokens: 0, last_error: "" });
   const [editingCharacter, setEditingCharacter] = useState<number | null>(null);
   const [editingMessage, setEditingMessage] = useState<number | null>(null);
   const [messageDraft, setMessageDraft] = useState("");
   const abortRef = useRef<AbortController | null>(null);
+  const busyRef = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const skipMessageLoadRef = useRef<number | null>(null);
   const desktop = "__TAURI_INTERNALS__" in window;
 
+  useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ block: "end" });
+  }, [messages]);
   useEffect(() => {
     if (!desktop) return;
     let disposed = false;
@@ -181,6 +189,7 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     async function syncPetConversation() {
+      if (busyRef.current) return;
       const characterId = Number(localStorage.getItem("yus-ai-character"));
       const conversationId = Number(localStorage.getItem("yus-ai-conversation"));
       if (!characterId) return;
@@ -395,11 +404,13 @@ export default function App() {
       setInput("");
       if (inputRef.current) inputRef.current.style.height = "auto";
       setBusy(true);
+      busyRef.current = true;
       setError("");
+      const pendingKey = `assistant-${Date.now()}-${Math.random()}`;
       setMessages((c) => [
         ...c,
         { role: "user", content },
-        { role: "assistant", content: "" },
+        { role: "assistant", content: "", clientKey: pendingKey },
       ]);
       const controller = new AbortController();
       abortRef.current = controller;
@@ -429,13 +440,19 @@ export default function App() {
           if (data.error) throw new Error(data.error);
           if (data.token)
             setMessages((c) =>
-              c.map((m, i) =>
-                i === c.length - 1
+              c.map((m) =>
+                m.clientKey === pendingKey
                   ? { ...m, content: m.content + data.token }
                   : m,
               ),
             );
         }
+      }
+      buffer += decoder.decode();
+      if (buffer.trim()) {
+        const data = JSON.parse(buffer);
+        if (data.error) throw new Error(data.error);
+        if (data.token) setMessages((items) => items.map((message) => message.clientKey === pendingKey ? { ...message, content: message.content + data.token } : message));
       }
       setMessages(await request<Message[]>(`/conversations/${id}/messages`));
       setConversations(
@@ -443,8 +460,10 @@ export default function App() {
       );
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
+      if (id) setMessages(await request<Message[]>(`/conversations/${id}/messages`).catch(() => []));
     } finally {
       setBusy(false);
+      busyRef.current = false;
       abortRef.current = null;
     }
   }
@@ -731,10 +750,19 @@ export default function App() {
               </div>
               <div className="form-section-title"><strong>角色主动互动插件</strong><small>启用后使用当前模型 API，按角色卡和本地时间生成问题、笑话或真实新闻话题。会消耗 token；23:00–07:00 不打扰。</small></div>
               <Field label="启用主动模型调用"><input type="checkbox" checked={proactivePlugin.enabled} onChange={(e) => setProactivePlugin({ ...proactivePlugin, enabled: e.target.checked })} /></Field>
-              <Field label="主动发言间隔（1–1440 分钟，越短越耗 token）"><input type="number" min="1" max="1440" value={proactivePlugin.interval_minutes} onChange={(e) => setProactivePlugin({ ...proactivePlugin, interval_minutes: Number(e.target.value) })} /></Field>
-              <div className="proactive-frequency-presets">{[1, 5, 15, 30, 60, 120].map((minutes) => <button type="button" key={minutes} className={proactivePlugin.interval_minutes === minutes ? "selected" : ""} onClick={() => setProactivePlugin({ ...proactivePlugin, interval_minutes: minutes })}>{minutes} 分钟</button>)}</div>
-              <Field label="随机间隔（关闭后使用固定间隔）"><input type="checkbox" checked={proactivePlugin.randomize_interval} onChange={(e) => setProactivePlugin({ ...proactivePlugin, randomize_interval: e.target.checked })} /></Field>
-              <small>当前：约每 {proactivePlugin.interval_minutes} 分钟发言{proactivePlugin.randomize_interval ? "，随机浮动 ±15%" : "，固定间隔"}。修改并保存后会按新间隔调整剩余冷却。面板打开、桌宠隐藏、静默时段不触发；轮询最多延后约 1 分钟。</small>
+              <Field label="随机时间主动发言"><input type="checkbox" checked={proactivePlugin.randomize_interval} onChange={(e) => setProactivePlugin({ ...proactivePlugin, randomize_interval: e.target.checked })} /></Field>
+              {proactivePlugin.randomize_interval ? (
+                <div className="proactive-random-range">
+                  <Field label="最短等待（分钟）"><input type="number" min="1" max="1440" value={proactivePlugin.random_min_minutes} onChange={(e) => setProactivePlugin({ ...proactivePlugin, random_min_minutes: Number(e.target.value) })} /></Field>
+                  <Field label="最长等待（分钟）"><input type="number" min="1" max="1440" value={proactivePlugin.random_max_minutes} onChange={(e) => setProactivePlugin({ ...proactivePlugin, random_max_minutes: Number(e.target.value) })} /></Field>
+                </div>
+              ) : (
+                <>
+                  <Field label="固定发言间隔（1–1440 分钟）"><input type="number" min="1" max="1440" value={proactivePlugin.interval_minutes} onChange={(e) => setProactivePlugin({ ...proactivePlugin, interval_minutes: Number(e.target.value) })} /></Field>
+                  <div className="proactive-frequency-presets">{[1, 5, 15, 30, 60, 120].map((minutes) => <button type="button" key={minutes} className={proactivePlugin.interval_minutes === minutes ? "selected" : ""} onClick={() => setProactivePlugin({ ...proactivePlugin, interval_minutes: minutes })}>{minutes} 分钟</button>)}</div>
+                </>
+              )}
+              <small>当前：{proactivePlugin.randomize_interval ? `每次在 ${proactivePlugin.random_min_minutes}–${proactivePlugin.random_max_minutes} 分钟之间重新随机` : `固定每 ${proactivePlugin.interval_minutes} 分钟`}。用户发送消息时会立即取消正在生成的主动发言，并从手动对话后重新计时。</small>
               <Field label="单次回复 token 上限（64–8192，推理及输入也可能计费）"><input type="number" min="64" max="8192" value={proactivePlugin.max_tokens} onChange={(e) => setProactivePlugin({ ...proactivePlugin, max_tokens: Number(e.target.value) })} /></Field>
               <small>建议从 1024 开始；推理模型空回复时可提高至 4096。重试会再次调用模型并可能计费。</small>
               {proactivePlugin.last_error && <small role="status">最近主动发言失败：{proactivePlugin.last_error}</small>}
@@ -834,19 +862,29 @@ export default function App() {
                     </div>
                     {editingMessage === m.id ? (
                       <div className="message-editor">
-                        <textarea value={messageDraft} onChange={(e) => setMessageDraft(e.target.value)} autoFocus />
-                        <div>
-                          <button className="primary" type="button" onClick={() => void saveMessageEdit(m)} disabled={!messageDraft.trim()}>保存修改</button>
-                          <button type="button" onClick={() => { setEditingMessage(null); setMessageDraft(""); }}>取消</button>
+                        <div className="message-editor-header">
+                          <strong>编辑这条{m.role === "user" ? "消息" : "回复"}</strong>
+                          <small>修改内容会用于后续对话上下文</small>
                         </div>
-                        <small>保存后，下一次对话将使用修改后的内容作为上下文。</small>
+                        <textarea value={messageDraft} onChange={(e) => setMessageDraft(e.target.value)} onKeyDown={(e) => {
+                          if (e.key === "Escape") { setEditingMessage(null); setMessageDraft(""); }
+                          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); void saveMessageEdit(m); }
+                        }} autoFocus />
+                        <div className="message-editor-actions">
+                          <small>{messageDraft.length} 字 · Ctrl + Enter 保存 · Esc 取消</small>
+                          <span>
+                            <button type="button" onClick={() => { setEditingMessage(null); setMessageDraft(""); }}>取消</button>
+                            <button className="primary" type="button" onClick={() => void saveMessageEdit(m)} disabled={!messageDraft.trim()}>保存</button>
+                          </span>
+                        </div>
                       </div>
                     ) : m.content ? (
-                      <MessageContent content={m.content} mode={m.role === "assistant" ? settings.message_display_mode : "raw"} />
+                      <MessageContent content={m.content} mode={m.clientKey ? "raw" : m.role === "assistant" ? settings.message_display_mode : "raw"} />
                     ) : <p><span className="typing">思考中</span></p>}
                   </div>
                 </article>
               ))}
+              <div ref={messagesEndRef} aria-hidden="true" />
             </div>
             <form className="composer" onSubmit={send}>
               <textarea

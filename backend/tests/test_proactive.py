@@ -40,6 +40,8 @@ def test_proactive_opt_in_cooldown_and_saved_history(monkeypatch):
             config = client.get("/api/plugins/proactive").json()
             config["enabled"] = True
             assert client.put("/api/plugins/proactive", json=config).status_code == 200
+            with database.connect() as db:
+                db.execute("UPDATE proactive_plugin SET next_due=0 WHERE id=1")
             result = client.post("/api/plugins/proactive/generate", json=request).json()
             assert result["total_tokens"] == 123
             messages = client.get(f"/api/conversations/{result['conversation_id']}/messages").json()
@@ -52,22 +54,58 @@ def test_proactive_opt_in_cooldown_and_saved_history(monkeypatch):
             assert client.put("/api/plugins/proactive", json=config).status_code == 422
 
 
-def test_frequency_change_rescales_remaining_cooldown(monkeypatch):
+def test_frequency_change_reschedules_cooldown(monkeypatch):
     with tempfile.TemporaryDirectory() as directory:
         monkeypatch.setattr(database, "DATA_DIR", database.Path(directory))
         monkeypatch.setattr(database, "DB_PATH", database.Path(directory) / "frequency.db")
         with TestClient(app) as client:
             config = client.get("/api/plugins/proactive").json()
             with database.connect() as db:
-                db.execute("UPDATE proactive_plugin SET interval_minutes=30,next_due=2800 WHERE id=1")
+                db.execute("UPDATE proactive_plugin SET enabled=1,interval_minutes=30,next_due=1600 WHERE id=1")
             monkeypatch.setattr("app.main.time.time", lambda: 1000)
-            config.update(interval_minutes=5, randomize_interval=False)
+            config.update(enabled=True, interval_minutes=5, randomize_interval=False)
             assert client.put("/api/plugins/proactive", json=config).status_code == 200
             updated = client.get("/api/plugins/proactive").json()
             assert updated["next_due"] == 1300
             assert updated["randomize_interval"] is False
             config["interval_minutes"] = 1
             assert client.put("/api/plugins/proactive", json=config).status_code == 200
+
+
+def test_random_range_is_validated_and_used(monkeypatch):
+    with tempfile.TemporaryDirectory() as directory:
+        monkeypatch.setattr(database, "DATA_DIR", database.Path(directory))
+        monkeypatch.setattr(database, "DB_PATH", database.Path(directory) / "random-frequency.db")
+        with TestClient(app) as client:
+            config = client.get("/api/plugins/proactive").json()
+            config.update(enabled=True, randomize_interval=True, random_min_minutes=10, random_max_minutes=20)
+            monkeypatch.setattr("app.main.time.time", lambda: 1000)
+            monkeypatch.setattr("app.main.random.uniform", lambda minimum, maximum: 12.5)
+            assert client.put("/api/plugins/proactive", json=config).status_code == 200
+            assert client.get("/api/plugins/proactive").json()["next_due"] == 1750
+            config.update(random_min_minutes=30, random_max_minutes=20)
+            assert client.put("/api/plugins/proactive", json=config).status_code == 422
+
+
+def test_manual_chat_can_cancel_active_proactive_task():
+    import app.main as main
+
+    async def run():
+        started = asyncio.Event()
+
+        async def active_generation():
+            started.set()
+            await asyncio.Event().wait()
+
+        task = asyncio.create_task(active_generation())
+        main.PROACTIVE_GENERATION_TASK = task
+        await started.wait()
+        await main.cancel_active_proactive_generation()
+        assert task.cancelled()
+        assert task.done()
+        main.PROACTIVE_GENERATION_TASK = None
+
+    asyncio.run(run())
 
 
 def test_actual_model_request_keeps_character_identity(monkeypatch):
@@ -164,3 +202,13 @@ def test_model_empty_body_is_not_replaced_with_reasoning(monkeypatch):
                                      {"news_enabled": False, "last_content": "", "max_tokens": 1024}, "persona", [], "now"))
     assert caught.value.usage == 160
     assert caught.value.finish_reason == "length"
+
+
+def test_proactive_skips_while_manual_chat_owns_model_lock():
+    from app.main import MODEL_GENERATION_LOCK, ProactiveRequest, proactive_generate
+
+    async def run():
+        async with MODEL_GENERATION_LOCK:
+            return await proactive_generate(ProactiveRequest(character_id=1))
+
+    assert asyncio.run(run()) == {"skipped": True, "reason": "chat_busy"}

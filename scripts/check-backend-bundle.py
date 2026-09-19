@@ -1,5 +1,6 @@
 """Read-only layout/archive check plus isolated boot smoke test (no model calls)."""
 import os
+import json
 from pathlib import Path
 import socket
 import subprocess
@@ -8,6 +9,7 @@ import tempfile
 from PyInstaller.archive.readers import CArchiveReader
 
 root = Path(__file__).resolve().parents[1]
+expected_version = json.loads((root / "frontend/src-tauri/tauri.conf.json").read_text(encoding="utf-8"))["version"]
 exe = root / "frontend/src-tauri/binaries/yus-ai-backend-x86_64-pc-windows-msvc.exe"
 runtime = exe.parent / "backend-runtime"
 assert (runtime / "python310.dll").is_file()
@@ -37,7 +39,7 @@ else:
         assert result.returncode != 0, "Expected occupied port"
         assert b"10048" in result.stderr or b"address already in use" in result.stderr.lower(), result.stderr.decode(errors="replace")
         log = (Path(directory) / "yus-ai.log").read_text(encoding="utf-8")
-        assert "backend_started version=0.13.3" in log
+        assert f"backend_started version={expected_version}" in log
         assert "backend_stopped" in log
         assert not list(Path(directory).glob("_MEI*"))
         assert set(Path(tempfile.gettempdir()).glob("_MEI*")) - before == set()
