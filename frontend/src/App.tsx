@@ -249,6 +249,53 @@ export default function App() {
     };
   }, [desktop]);
 
+  useEffect(() => {
+    if (!desktop) return;
+    let lastFocusAt = performance.now();
+    let expectedTick = performance.now() + 100;
+    const report = (event: string, durationMs?: number, details?: string) => {
+      void invoke("record_window_diagnostic", {
+        event,
+        durationMs: durationMs ?? null,
+        details: details ?? null,
+      }).catch(() => undefined);
+    };
+    const handleFocus = () => {
+      lastFocusAt = performance.now();
+      expectedTick = lastFocusAt + 100;
+      report("frontend_focus");
+    };
+    const handleBlur = () => report("frontend_blur");
+    window.addEventListener("focus", handleFocus);
+    window.addEventListener("blur", handleBlur);
+    const timer = window.setInterval(() => {
+      const now = performance.now();
+      const drift = now - expectedTick;
+      expectedTick = now + 100;
+      if (drift >= 150 && now - lastFocusAt >= 1000 && document.hasFocus()) {
+        report("frontend_event_loop_gap", drift, `visibility=${document.visibilityState}`);
+      }
+    }, 100);
+    let observer: PerformanceObserver | undefined;
+    if ("PerformanceObserver" in window) {
+      try {
+        observer = new PerformanceObserver((list) => {
+          for (const entry of list.getEntries()) {
+            if (entry.duration >= 50) report("frontend_long_task", entry.duration, `start_ms=${entry.startTime.toFixed(1)}`);
+          }
+        });
+        observer.observe({ entryTypes: ["longtask"] });
+      } catch { /* WebView2 may not expose the long-task entry type. */ }
+    }
+    report("diagnostics_ready");
+    return () => {
+      window.clearInterval(timer);
+      observer?.disconnect();
+      window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("blur", handleBlur);
+    };
+  }, [desktop]);
+
   async function createCharacter(event: FormEvent) {
     event.preventDefault();
     if (!backendReady) {

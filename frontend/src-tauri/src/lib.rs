@@ -1,6 +1,6 @@
 use std::{fs::OpenOptions, io::Write, sync::{Arc, Mutex}};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::{
   AppHandle,
@@ -18,6 +18,7 @@ static PET_INTERACTION_MODE: AtomicU8 = AtomicU8::new(0);
 static PET_CURSOR_IGNORED: AtomicBool = AtomicBool::new(false);
 static PET_ALIGN_LEFT: AtomicBool = AtomicBool::new(false);
 static PET_PROACTIVE_HEIGHT: AtomicU32 = AtomicU32::new(0);
+static PET_VISIBLE: AtomicBool = AtomicBool::new(false);
 static BACKEND_SHUTDOWN_STARTED: AtomicBool = AtomicBool::new(false);
 
 struct DesktopState {
@@ -32,6 +33,25 @@ struct DesktopState {
 struct PetPosition {
   x: f64,
   y: f64,
+}
+
+fn write_window_diagnostic(event: &str, details: &str) {
+  let Ok(executable) = std::env::current_exe() else { return; };
+  let Some(install_dir) = executable.parent() else { return; };
+  let log_dir = install_dir.join("logs");
+  if std::fs::create_dir_all(&log_dir).is_err() { return; }
+  let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).map(|value| value.as_millis()).unwrap_or(0);
+  let safe_event: String = event.chars().filter(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-')).take(64).collect();
+  let safe_details = details.replace(['\r', '\n'], " ");
+  if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_dir.join("window-diagnostics.log")) {
+    let _ = writeln!(file, "{timestamp} | {safe_event} | {}", safe_details.chars().take(300).collect::<String>());
+  }
+}
+
+#[tauri::command]
+fn record_window_diagnostic(event: String, duration_ms: Option<f64>, details: Option<String>) {
+  let message = format!("duration_ms={:.1} {}", duration_ms.unwrap_or(0.0), details.unwrap_or_default());
+  write_window_diagnostic(&event, &message);
 }
 
 fn stop_backend(app: &AppHandle) {
@@ -103,6 +123,7 @@ fn enter_pet_mode(app: AppHandle) -> Result<(), String> {
   let pet = app.get_webview_window("pet").ok_or("找不到桌宠窗口")?;
   let _ = app.emit_to("pet", "pet-reset", ());
   pet.show().map_err(|error| error.to_string())?;
+  PET_VISIBLE.store(true, Ordering::Release);
   let _ = pet.set_always_on_top(true);
   let _ = pet.set_focus();
   if let Some(main) = app.get_webview_window("main") {
@@ -256,12 +277,15 @@ fn set_pet_position(window: WebviewWindow, x: f64, y: f64, scale: f64) -> Result
 #[tauri::command]
 fn hide_pet_window(window: WebviewWindow) -> Result<(), String> {
   CONTINUOUS_TRANSLATION.store(false, Ordering::Relaxed);
-  window.hide().map_err(|error| error.to_string())
+  window.hide().map_err(|error| error.to_string())?;
+  PET_VISIBLE.store(false, Ordering::Release);
+  Ok(())
 }
 
 #[tauri::command]
 fn show_pet_window(window: WebviewWindow) -> Result<(), String> {
   window.show().map_err(|error| error.to_string())?;
+  PET_VISIBLE.store(true, Ordering::Release);
   window.set_always_on_top(true).map_err(|error| error.to_string())
 }
 
@@ -327,12 +351,16 @@ fn start_selection_monitor(app: AppHandle) {
     });
     let callback = move |event: Event| {
       if let EventType::MouseMove { x, y } = &event.event_type {
+        // Never call into the window event loop from the global mouse hook while the
+        // pet is hidden. During native title-bar tracking, a synchronous is_visible()
+        // call here can block the low-level mouse hook and make the whole drag stutter.
+        if !PET_VISIBLE.load(Ordering::Acquire) { return; }
+        let callback_started = Instant::now();
         if let Some(pet) = app.get_webview_window("pet") {
-          if pet.is_visible().unwrap_or(false) {
-            let mode = PET_INTERACTION_MODE.load(Ordering::Relaxed);
-            let interactive = if mode == 2 {
-              true
-            } else if let (Ok(position), Ok(size), Ok(scale)) = (pet.outer_position(), pet.outer_size(), pet.scale_factor()) {
+          let mode = PET_INTERACTION_MODE.load(Ordering::Relaxed);
+          let interactive = if mode == 2 {
+            true
+          } else if let (Ok(position), Ok(size), Ok(scale)) = (pet.outer_position(), pet.outer_size(), pet.scale_factor()) {
               let local_x = (*x - position.x as f64) / scale;
               let local_y = (*y - position.y as f64) / scale;
               let factor = (size.width as f64 / scale / 250.0).max(0.01);
@@ -355,14 +383,17 @@ fn start_selection_monitor(app: AppHandle) {
                 };
                 over_pet || orbs.iter().any(|(left, top)| base_x >= *left && base_x <= *left + 42.0 && base_y >= *top && base_y <= *top + 42.0)
               }
-            } else {
-              true
-            };
-            let ignored = !interactive;
-            if PET_CURSOR_IGNORED.swap(ignored, Ordering::Relaxed) != ignored {
-              let _ = pet.set_ignore_cursor_events(ignored);
-            }
+          } else {
+            true
+          };
+          let ignored = !interactive;
+          if PET_CURSOR_IGNORED.swap(ignored, Ordering::Relaxed) != ignored {
+            let _ = pet.set_ignore_cursor_events(ignored);
           }
+        }
+        let elapsed = callback_started.elapsed();
+        if elapsed.as_millis() >= 16 {
+          write_window_diagnostic("slow_mouse_hook", &format!("duration_ms={:.1} pet_visible=true", elapsed.as_secs_f64() * 1000.0));
         }
         return;
       }
@@ -398,6 +429,7 @@ fn show_main_window(app: AppHandle) -> Result<(), String> {
   let _ = app.emit_to("pet", "pet-reset", ());
   if let Some(pet) = app.get_webview_window("pet") {
     let _ = pet.hide();
+    PET_VISIBLE.store(false, Ordering::Release);
   }
   let main = app.get_webview_window("main").ok_or("找不到主窗口")?;
   main.show().map_err(|error| error.to_string())?;
@@ -419,6 +451,7 @@ pub fn run() {
       }
       if let Some(pet) = app.get_webview_window("pet") {
         let _ = pet.show();
+        PET_VISIBLE.store(true, Ordering::Release);
         let _ = pet.set_always_on_top(true);
         let _ = pet.set_focus();
       }
@@ -433,7 +466,7 @@ pub fn run() {
       always_on_top: Mutex::new(false),
       mini_mode: Mutex::new(false),
     })
-    .invoke_handler(tauri::generate_handler![set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, resize_pet_dialog, start_pet_drag, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, set_pet_interaction_mode, get_autostart_status, set_autostart, export_character_card])
+    .invoke_handler(tauri::generate_handler![set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, resize_pet_dialog, start_pet_drag, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, set_pet_interaction_mode, get_autostart_status, set_autostart, export_character_card, record_window_diagnostic])
     .setup(|app| {
       let legacy_data_dir = app.path().app_data_dir()?;
       let data_dir = prepare_install_data_dir(app.handle())?;
@@ -506,12 +539,13 @@ pub fn run() {
             let _ = app.emit_to("pet", "pet-reset", ());
             if let Some(pet) = app.get_webview_window("pet") {
               let _ = pet.hide();
+              PET_VISIBLE.store(false, Ordering::Release);
             }
             if let Some(window) = app.get_webview_window("main") { let _ = window.show(); let _ = app.emit_to("main", "main-sync", ()); let _ = window.set_focus(); }
           },
           "pet_toggle" => if let Some(pet) = app.get_webview_window("pet") {
-            if pet.is_visible().unwrap_or(false) { let _ = pet.hide(); }
-            else { let _ = pet.show(); let _ = pet.set_focus(); }
+            if pet.is_visible().unwrap_or(false) { let _ = pet.hide(); PET_VISIBLE.store(false, Ordering::Release); }
+            else { let _ = pet.show(); PET_VISIBLE.store(true, Ordering::Release); let _ = pet.set_focus(); }
           },
           "pet_size_up" => { let _ = app.emit_to("pet", "pet-control", "size-up"); },
           "pet_size_down" => { let _ = app.emit_to("pet", "pet-control", "size-down"); },
@@ -533,7 +567,7 @@ pub fn run() {
           },
           "quit" => {
             if let Some(window) = app.get_webview_window("main") { let _ = window.hide(); }
-            if let Some(window) = app.get_webview_window("pet") { let _ = window.hide(); }
+            if let Some(window) = app.get_webview_window("pet") { let _ = window.hide(); PET_VISIBLE.store(false, Ordering::Release); }
             let app_handle = app.clone();
             std::thread::spawn(move || {
               stop_backend(&app_handle);
@@ -545,7 +579,7 @@ pub fn run() {
         .on_tray_icon_event(|tray, event| {
           if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
             let _ = tray.app_handle().emit_to("pet", "pet-reset", ());
-            if let Some(pet) = tray.app_handle().get_webview_window("pet") { let _ = pet.hide(); }
+            if let Some(pet) = tray.app_handle().get_webview_window("pet") { let _ = pet.hide(); PET_VISIBLE.store(false, Ordering::Release); }
             if let Some(window) = tray.app_handle().get_webview_window("main") { let _ = window.show(); let _ = tray.app_handle().emit_to("main", "main-sync", ()); let _ = window.set_focus(); }
           }
         })
@@ -553,6 +587,11 @@ pub fn run() {
       Ok(())
     })
     .on_window_event(|window, event| {
+      if window.label() == "main" {
+        if let WindowEvent::Focused(focused) = event {
+          write_window_diagnostic("native_focus", &format!("focused={focused}"));
+        }
+      }
       if let WindowEvent::CloseRequested { api, .. } = event {
         api.prevent_close();
         let _ = window.hide();
@@ -560,8 +599,11 @@ pub fn run() {
           if let Some(pet) = window.app_handle().get_webview_window("pet") {
             let _ = window.app_handle().emit_to("pet", "pet-reset", ());
             let _ = pet.show();
+            PET_VISIBLE.store(true, Ordering::Release);
             let _ = pet.set_always_on_top(true);
           }
+        } else if window.label() == "pet" {
+          PET_VISIBLE.store(false, Ordering::Release);
         }
       }
     })
