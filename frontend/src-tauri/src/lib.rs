@@ -18,6 +18,7 @@ static PET_INTERACTION_MODE: AtomicU8 = AtomicU8::new(0);
 static PET_CURSOR_IGNORED: AtomicBool = AtomicBool::new(false);
 static PET_ALIGN_LEFT: AtomicBool = AtomicBool::new(false);
 static PET_PROACTIVE_HEIGHT: AtomicU32 = AtomicU32::new(0);
+static BACKEND_SHUTDOWN_STARTED: AtomicBool = AtomicBool::new(false);
 
 struct DesktopState {
   backend: Mutex<Option<CommandChild>>,
@@ -34,6 +35,7 @@ struct PetPosition {
 }
 
 fn stop_backend(app: &AppHandle) {
+  if BACKEND_SHUTDOWN_STARTED.swap(true, Ordering::AcqRel) { return; }
   if let Ok(mut backend) = app.state::<DesktopState>().backend.lock() {
     if let Some(child) = backend.take() {
       let state = app.state::<DesktopState>();
@@ -399,6 +401,7 @@ fn show_main_window(app: AppHandle) -> Result<(), String> {
   }
   let main = app.get_webview_window("main").ok_or("找不到主窗口")?;
   main.show().map_err(|error| error.to_string())?;
+  let _ = app.emit_to("main", "main-sync", ());
   main.set_focus().map_err(|error| error.to_string())?;
   Ok(())
 }
@@ -504,7 +507,7 @@ pub fn run() {
             if let Some(pet) = app.get_webview_window("pet") {
               let _ = pet.hide();
             }
-            if let Some(window) = app.get_webview_window("main") { let _ = window.show(); let _ = window.set_focus(); }
+            if let Some(window) = app.get_webview_window("main") { let _ = window.show(); let _ = app.emit_to("main", "main-sync", ()); let _ = window.set_focus(); }
           },
           "pet_toggle" => if let Some(pet) = app.get_webview_window("pet") {
             if pet.is_visible().unwrap_or(false) { let _ = pet.hide(); }
@@ -529,8 +532,13 @@ pub fn run() {
             if let Ok(mut pinned) = state.always_on_top.lock() { *pinned = !*pinned; let _ = window.set_always_on_top(*pinned); };
           },
           "quit" => {
-            stop_backend(app);
-            app.exit(0);
+            if let Some(window) = app.get_webview_window("main") { let _ = window.hide(); }
+            if let Some(window) = app.get_webview_window("pet") { let _ = window.hide(); }
+            let app_handle = app.clone();
+            std::thread::spawn(move || {
+              stop_backend(&app_handle);
+              app_handle.exit(0);
+            });
           },
           _ => {}
         })
@@ -538,7 +546,7 @@ pub fn run() {
           if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
             let _ = tray.app_handle().emit_to("pet", "pet-reset", ());
             if let Some(pet) = tray.app_handle().get_webview_window("pet") { let _ = pet.hide(); }
-            if let Some(window) = tray.app_handle().get_webview_window("main") { let _ = window.show(); let _ = window.set_focus(); }
+            if let Some(window) = tray.app_handle().get_webview_window("main") { let _ = window.show(); let _ = tray.app_handle().emit_to("main", "main-sync", ()); let _ = window.set_focus(); }
           }
         })
         .build(app)?;

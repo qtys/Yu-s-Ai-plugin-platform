@@ -20,6 +20,7 @@ type Character = {
 const emptyCharacter = { name: "", description: "", system_prompt: "", avatar_data: "", greeting: "", background: "", personality: "", speaking_style: "", relationship: "", boundaries: "", example_dialogue: "" };
 type Conversation = { id: number; character_id: number; title: string };
 type Message = { id?: number; conversation_id?: number; clientKey?: string; role: "user" | "assistant"; content: string };
+type DocumentItem = { id: number; conversation_id: number; filename: string; char_count: number; image_count: number; summary: string; status: "ready" | "analyzing" | "analyzed" | "error"; analysis_mode: "fast" | "deep"; analysis_stage: string; progress_current: number; progress_total: number };
 type Settings = {
   base_url: string;
   api_key: string;
@@ -30,6 +31,8 @@ type Settings = {
   memory_limit: number;
   message_display_mode: MessageDisplayMode;
   translation_mirror_url: string;
+  vision_model: string;
+  document_analysis_mode: "fast" | "deep";
 };
 type Theme = "violet" | "midnight" | "sand" | "paper";
 const themes: { id: Theme; name: string; description: string }[] = [
@@ -51,10 +54,20 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return response.json();
 }
 
+function documentStatusText(item: DocumentItem) {
+  if (item.status === "analyzed") return `可用于对话 · ${item.analysis_mode === "deep" ? "深度" : "快速"}分析${item.image_count ? ` · ${item.image_count} 个视觉切片` : ""}`;
+  if (item.status === "error") return "处理失败，点击重试";
+  if (item.analysis_stage === "visual" && item.progress_total) return `正在分析第 ${item.progress_current}/${item.progress_total} 页 · ${item.analysis_mode === "deep" ? "深度" : "快速"}模式`;
+  if (item.analysis_stage === "text") return "正在整理文档文字…";
+  if (item.analysis_stage === "summary") return "正在生成全文总结…";
+  return "正在读取文字、页面和图片…";
+}
+
 export default function App() {
   const [characters, setCharacters] = useState<Character[]>([]),
     [conversations, setConversations] = useState<Conversation[]>([]),
-    [messages, setMessages] = useState<Message[]>([]);
+    [messages, setMessages] = useState<Message[]>([]),
+    [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [activeCharacter, setActiveCharacter] = useState<number | null>(null),
     [activeConversation, setActiveConversation] = useState<number | null>(null);
   const [input, setInput] = useState(""),
@@ -81,12 +94,16 @@ export default function App() {
     memory_limit: 5,
     message_display_mode: "markdown",
     translation_mirror_url: "",
+    vision_model: "",
+    document_analysis_mode: "fast",
   });
   const [draft, setDraft] = useState(emptyCharacter);
   const [proactivePlugin, setProactivePlugin] = useState({ enabled: false, interval_minutes: 30, randomize_interval: true, random_min_minutes: 15, random_max_minutes: 60, max_tokens: 1024, news_enabled: false, rss_url: "https://www.chinanews.com.cn/rss/scroll-news.xml", total_tokens: 0, last_error: "" });
   const [editingCharacter, setEditingCharacter] = useState<number | null>(null);
   const [editingMessage, setEditingMessage] = useState<number | null>(null);
   const [messageDraft, setMessageDraft] = useState("");
+  const [documentBusy, setDocumentBusy] = useState(false);
+  const documentInputRef = useRef<HTMLInputElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const busyRef = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -165,10 +182,14 @@ export default function App() {
           if (!cancelled) setMessages(data);
         })
         .catch((e) => setError(e.message));
+      request<DocumentItem[]>(`/conversations/${activeConversation}/documents`)
+        .then((data) => { if (!cancelled) setDocuments(data); })
+        .catch((e) => setError(e.message));
       return () => {
         cancelled = true;
       };
     }
+    setDocuments([]);
   }, [activeConversation]);
   useEffect(() => {
     localStorage.setItem("yus-ai-theme", theme);
@@ -188,6 +209,7 @@ export default function App() {
   }, [activeConversation]);
   useEffect(() => {
     let cancelled = false;
+    let unlisten: (() => void) | undefined;
     async function syncPetConversation() {
       if (busyRef.current) return;
       const characterId = Number(localStorage.getItem("yus-ai-character"));
@@ -214,12 +236,18 @@ export default function App() {
         if (!cancelled) setError((e as Error).message);
       }
     }
-    window.addEventListener("focus", syncPetConversation);
+    if (desktop) {
+      void listen("main-sync", () => { void syncPetConversation(); })
+        .then((stop) => { if (cancelled) stop(); else unlisten = stop; });
+    } else {
+      window.addEventListener("focus", syncPetConversation);
+    }
     return () => {
       cancelled = true;
-      window.removeEventListener("focus", syncPetConversation);
+      unlisten?.();
+      if (!desktop) window.removeEventListener("focus", syncPetConversation);
     };
-  }, []);
+  }, [desktop]);
 
   async function createCharacter(event: FormEvent) {
     event.preventDefault();
@@ -467,6 +495,55 @@ export default function App() {
       abortRef.current = null;
     }
   }
+  async function uploadDocument(file: File) {
+    if (!activeCharacter || documentBusy) return;
+    setDocumentBusy(true);
+    setError("");
+    try {
+      let conversationId = activeConversation;
+      if (!conversationId) {
+        const created = await request<Conversation>("/conversations", { method: "POST", body: JSON.stringify({ character_id: activeCharacter, title: `阅读 ${file.name}` }) });
+        conversationId = created.id;
+        skipMessageLoadRef.current = created.id;
+        setActiveConversation(created.id);
+        setConversations((items) => [created, ...items]);
+      }
+      const contentBase64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(",", 2)[1] ?? "");
+        reader.onerror = () => reject(new Error("读取文件失败"));
+        reader.readAsDataURL(file);
+      });
+      const uploaded = await request<DocumentItem>(`/conversations/${conversationId}/documents`, { method: "POST", body: JSON.stringify({ filename: file.name, content_base64: contentBase64 }) });
+      setDocuments((items) => [uploaded, ...items]);
+      await analyzeDocument(uploaded, conversationId);
+    } catch (cause) { setError((cause as Error).message); }
+    finally {
+      setDocumentBusy(false);
+      if (documentInputRef.current) documentInputRef.current.value = "";
+    }
+  }
+  async function analyzeDocument(item: DocumentItem, conversationId = activeConversation) {
+    if (!conversationId) return;
+    setDocuments((items) => items.map((value) => value.id === item.id ? { ...value, status: "analyzing", analysis_mode: settings.document_analysis_mode, analysis_stage: "preparing", progress_current: 0, progress_total: 0 } : value));
+    const poller = window.setInterval(() => {
+      void request<DocumentItem[]>(`/conversations/${conversationId}/documents`)
+        .then(setDocuments)
+        .catch(() => undefined);
+    }, 800);
+    try {
+      await request(`/documents/${item.id}/analyze`, { method: "POST" });
+    } finally {
+      window.clearInterval(poller);
+      setDocuments(await request<DocumentItem[]>(`/conversations/${conversationId}/documents`));
+    }
+  }
+  async function deleteDocument(item: DocumentItem) {
+    try {
+      await request(`/documents/${item.id}`, { method: "DELETE" });
+      setDocuments((items) => items.filter((value) => value.id !== item.id));
+    } catch (cause) { setError((cause as Error).message); }
+  }
   const character = characters.find((x) => x.id === activeCharacter),
     conversation = conversations.find((x) => x.id === activeConversation);
 
@@ -694,7 +771,7 @@ export default function App() {
                     }
                   />
                 </Field>
-                <Field label="最大输出">
+                <Field label="单轮最大输出（截断时自动续写，最多 3 次）">
                   <input
                     type="number"
                     value={settings.max_tokens}
@@ -725,6 +802,20 @@ export default function App() {
               </div>
               <Field label="语言包镜像地址（可选）">
                 <input type="url" placeholder="例如：https://mirror.example.com/argospm/v1" value={settings.translation_mirror_url} onChange={(e) => setSettings({...settings, translation_mirror_url:e.target.value})} />
+              </Field>
+              <Field label="文档图片模型（留空自动选择）">
+                <input
+                  value={settings.vision_model}
+                  onChange={(e) => setSettings({ ...settings, vision_model: e.target.value })}
+                  placeholder="DeepSeek 自动使用 deepseek-flash"
+                />
+              </Field>
+              <small>只用于 PDF 页面和文档图片分析，不改变普通聊天模型。DeepSeek 官方接口留空时自动使用 deepseek-flash。</small>
+              <Field label="文档分析模式">
+                <select value={settings.document_analysis_mode} onChange={(e) => setSettings({ ...settings, document_analysis_mode: e.target.value as "fast" | "deep" })}>
+                  <option value="fast">快速分析（整页预览，速度优先）</option>
+                  <option value="deep">深度分析（整页＋高清切片，细节优先）</option>
+                </select>
               </Field>
               <div className="form-section-title">
                 <strong>消息显示插件</strong>
@@ -887,33 +978,45 @@ export default function App() {
               <div ref={messagesEndRef} aria-hidden="true" />
             </div>
             <form className="composer" onSubmit={send}>
-              <textarea
-                ref={inputRef}
-                rows={1}
-                value={input}
-                onChange={(e) => {
-                  setInput(e.target.value);
-                  e.target.style.height = "auto";
-                  e.target.style.height = `${Math.min(e.target.scrollHeight, 144)}px`;
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    e.currentTarget.form?.requestSubmit();
-                  }
-                }}
-                placeholder={
-                  character ? `给 ${character.name} 发消息…` : "请先创建角色"
-                }
-                disabled={!character || busy}
-              />
-              <button
-                type={busy ? "button" : "submit"}
-                onClick={busy ? () => abortRef.current?.abort() : undefined}
-              >
-                {busy ? "■" : "↑"}
-              </button>
-              <small>Enter 发送 · Shift + Enter 换行</small>
+              <input ref={documentInputRef} type="file" accept=".txt,.md,.markdown,.pdf,.docx" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadDocument(file); }} />
+              {(documents.length > 0 || documentBusy) && (
+                <div className="composer-attachments">
+                  {documents.map((item) => (
+                    <div className={`attachment-chip ${item.status}`} key={item.id} title={item.summary || `${item.char_count.toLocaleString()} 字`}>
+                      <span className="attachment-icon">▤</span>
+                      <span><strong>{item.filename}</strong><small>{documentStatusText(item)}</small></span>
+                      {item.status === "error" && <button type="button" title="重试" onClick={() => void analyzeDocument(item)}>↻</button>}
+                      <button type="button" title="移除附件" onClick={() => void deleteDocument(item)}>×</button>
+                    </div>
+                  ))}
+                  {documentBusy && <div className="attachment-chip loading"><span className="attachment-icon">…</span><span><strong>正在处理文件</strong><small>提取内容并理解全文</small></span></div>}
+                </div>
+              )}
+              <div className="composer-main">
+                <button className="attach-button" type="button" disabled={!character || documentBusy || busy} onClick={() => documentInputRef.current?.click()} title="上传文档">📎</button>
+                <textarea
+                  ref={inputRef}
+                  rows={1}
+                  value={input}
+                  onChange={(e) => {
+                    setInput(e.target.value);
+                    e.target.style.height = "auto";
+                    e.target.style.height = `${Math.min(e.target.scrollHeight, 144)}px`;
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      e.currentTarget.form?.requestSubmit();
+                    }
+                  }}
+                  placeholder={documentBusy ? "正在读取文档…" : documents.length ? "针对附件提问…" : character ? `给 ${character.name} 发消息…` : "请先创建角色"}
+                  disabled={!character || busy || documentBusy}
+                />
+                <button className="send-button" type={busy ? "button" : "submit"} onClick={busy ? () => abortRef.current?.abort() : undefined}>
+                  {busy ? "■" : "↑"}
+                </button>
+              </div>
+              <small className="composer-tip">支持 TXT、Markdown、PDF、DOCX · Enter 发送 · Shift + Enter 换行</small>
             </form>
           </section>
         )}

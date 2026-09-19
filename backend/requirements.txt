@@ -2,3 +2,6 @@ fastapi==0.116.1
 httpx==0.28.1
 uvicorn[standard]==0.35.0
 argostranslate==1.11.0
+pypdf==6.1.0
+pillow==11.3.0
+pypdfium2==5.13.0

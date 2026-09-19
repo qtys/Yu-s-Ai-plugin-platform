@@ -83,6 +83,10 @@ def init_db() -> None:
             db.execute("ALTER TABLE settings ADD COLUMN message_display_mode TEXT NOT NULL DEFAULT 'markdown'")
         if "translation_mirror_url" not in setting_columns:
             db.execute("ALTER TABLE settings ADD COLUMN translation_mirror_url TEXT NOT NULL DEFAULT ''")
+        if "vision_model" not in setting_columns:
+            db.execute("ALTER TABLE settings ADD COLUMN vision_model TEXT NOT NULL DEFAULT ''")
+        if "document_analysis_mode" not in setting_columns:
+            db.execute("ALTER TABLE settings ADD COLUMN document_analysis_mode TEXT NOT NULL DEFAULT 'fast'")
         conversation_columns = {row[1] for row in db.execute("PRAGMA table_info(conversations)")}
         if "summary" not in conversation_columns:
             db.execute("ALTER TABLE conversations ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
@@ -104,6 +108,30 @@ def init_db() -> None:
                 last_content TEXT NOT NULL DEFAULT '',
                 total_tokens INTEGER NOT NULL DEFAULT 0
             );
+
+            CREATE TABLE IF NOT EXISTS documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                filename TEXT NOT NULL,
+                stored_name TEXT NOT NULL,
+                char_count INTEGER NOT NULL DEFAULT 0,
+                image_count INTEGER NOT NULL DEFAULT 0,
+                summary TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                analysis_mode TEXT NOT NULL DEFAULT 'fast',
+                analysis_stage TEXT NOT NULL DEFAULT '',
+                progress_current INTEGER NOT NULL DEFAULT 0,
+                progress_total INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS document_chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                chunk_index INTEGER NOT NULL,
+                page_number INTEGER,
+                content TEXT NOT NULL
+            );
             INSERT OR IGNORE INTO proactive_plugin (id) VALUES (1);
             CREATE TABLE IF NOT EXISTS memories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,6 +142,17 @@ def init_db() -> None:
                 UNIQUE(character_id, content)
             );
         """)
+        document_columns = {row[1] for row in db.execute("PRAGMA table_info(documents)")}
+        if "image_count" not in document_columns:
+            db.execute("ALTER TABLE documents ADD COLUMN image_count INTEGER NOT NULL DEFAULT 0")
+        if "analysis_mode" not in document_columns:
+            db.execute("ALTER TABLE documents ADD COLUMN analysis_mode TEXT NOT NULL DEFAULT 'fast'")
+        if "analysis_stage" not in document_columns:
+            db.execute("ALTER TABLE documents ADD COLUMN analysis_stage TEXT NOT NULL DEFAULT ''")
+        if "progress_current" not in document_columns:
+            db.execute("ALTER TABLE documents ADD COLUMN progress_current INTEGER NOT NULL DEFAULT 0")
+        if "progress_total" not in document_columns:
+            db.execute("ALTER TABLE documents ADD COLUMN progress_total INTEGER NOT NULL DEFAULT 0")
         proactive_columns = {row[1] for row in db.execute("PRAGMA table_info(proactive_plugin)")}
         if "randomize_interval" not in proactive_columns:
             db.execute("ALTER TABLE proactive_plugin ADD COLUMN randomize_interval INTEGER NOT NULL DEFAULT 1")

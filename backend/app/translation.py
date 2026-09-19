@@ -16,6 +16,8 @@ DOWNLOAD_DIR = DATA_DIR / "translation-downloads"
 SPEED_TEST_BYTES = 256 * 1024
 MAX_RETRIES = 3
 BACKUP_BASE_URL = "https://argos-net.com/v1"
+HF_MIRROR_REVISION = "99e26c15ecd0888d2c653556126dca206210316c"
+HF_MIRROR_BASE_URL = f"https://hf-mirror.com/TiberiuCristianLeon/Argostranslate/resolve/{HF_MIRROR_REVISION}"
 PACKAGES = {
     ("zh", "en"): {"name": "中文 → English", "size_mb": 71, "url": "https://data.argosopentech.com/argospm/v1/translate-zh_en-1_9.argosmodel"},
     ("en", "zh"): {"name": "English → 中文", "size_mb": 67, "url": "https://data.argosopentech.com/argospm/v1/translate-en_zh-1_9.argosmodel"},
@@ -42,7 +44,11 @@ def package_status() -> list[dict]:
 def _candidate_urls(details: dict, mirror_url: str = "") -> list[str]:
     file_name = details["url"].rsplit("/", 1)[-1]
     mirror = (mirror_url or os.getenv("YUS_AI_TRANSLATION_MIRROR", "")).strip().rstrip("/")
-    urls = ([f"{mirror}/{file_name}"] if mirror else []) + [details["url"], f"{BACKUP_BASE_URL}/{file_name}"]
+    urls = ([f"{mirror}/{file_name}"] if mirror else []) + [
+        f"{HF_MIRROR_BASE_URL}/{file_name}",
+        details["url"],
+        f"{BACKUP_BASE_URL}/{file_name}",
+    ]
     return list(dict.fromkeys(urls))
 
 

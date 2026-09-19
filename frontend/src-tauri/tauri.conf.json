@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Yus AI",
-  "version": "0.13.6",
+  "version": "0.14.0",
   "identifier": "com.qtys.yus-ai",
   "build": {
     "frontendDist": "../dist",
@@ -19,6 +19,7 @@
         "minHeight": 560,
         "resizable": true,
         "fullscreen": false,
+        "additionalBrowserArgs": "--disable-renderer-backgrounding --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion",
         "visible": false
       },
       {
@@ -34,6 +35,7 @@
         "transparent": true,
         "alwaysOnTop": true,
         "skipTaskbar": true,
+        "additionalBrowserArgs": "--disable-renderer-backgrounding --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion",
         "visible": false,
         "shadow": false
       }

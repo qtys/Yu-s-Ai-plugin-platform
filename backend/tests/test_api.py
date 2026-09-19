@@ -1,8 +1,10 @@
-import json
 import os
 import tempfile
+import base64
 import asyncio
 import json
+import io
+import zipfile
 
 import httpx
 
@@ -10,6 +12,67 @@ from fastapi.testclient import TestClient
 
 from app import database
 from app.main import app
+from app.documents import extract_visuals
+
+
+def test_docx_embedded_image_is_extracted_for_multimodal_analysis():
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w") as archive:
+        archive.writestr("word/media/image1.png", b"\x89PNG\r\n\x1a\nmock")
+    visuals = extract_visuals(payload.getvalue(), ".docx")
+    assert len(visuals) == 1
+    assert visuals[0]["name"] == "image1.png"
+    assert visuals[0]["data_url"].startswith("data:image/png;base64,")
+
+
+def test_deepseek_document_visuals_use_flash_model(monkeypatch):
+    from app.main import model_summary
+
+    captured = {}
+
+    def handler(request: httpx.Request):
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "已读图"}}]})
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr("app.main.httpx.AsyncClient", lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs))
+    result = asyncio.run(model_summary(
+        {"base_url": "https://api.deepseek.com", "api_key": "test", "model": "deepseek-v4-flash", "vision_model": "", "max_tokens": 2048},
+        "SCH_test.pdf", "", "分析原理图", [{"name": "page.jpg", "page_number": 1, "data_url": "data:image/jpeg;base64,eA=="}],
+    ))
+    assert result == "已读图"
+    assert captured["model"] == "deepseek-flash"
+    assert captured["max_tokens"] == 393216
+    assert captured["messages"][1]["content"][2]["type"] == "image_url"
+
+
+def test_visual_reasoning_is_summarized_when_final_content_is_empty(monkeypatch):
+    from app.main import model_summary
+
+    requests = []
+
+    def handler(request: httpx.Request):
+        payload = json.loads(request.content)
+        requests.append(payload)
+        if len(requests) == 1:
+            return httpx.Response(200, json={
+                "choices": [{
+                    "finish_reason": "length",
+                    "message": {"content": "", "reasoning_content": "识别到 U1 与 +3V3 网络相连。"},
+                }],
+            })
+        return httpx.Response(200, json={"choices": [{"message": {"content": "U1 连接 +3V3。"}}]})
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr("app.main.httpx.AsyncClient", lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs))
+    result = asyncio.run(model_summary(
+        {"base_url": "https://api.deepseek.com", "api_key": "test", "model": "deepseek-v4-flash", "vision_model": "", "max_tokens": 2048},
+        "SCH_test.pdf", "", "分析原理图", [{"name": "page.jpg", "page_number": 1, "data_url": "data:image/jpeg;base64,eA=="}],
+    ))
+    assert result == "U1 连接 +3V3。"
+    assert requests[0]["model"] == "deepseek-flash"
+    assert requests[1]["model"] == "deepseek-v4-flash"
+    assert "识别到 U1" in requests[1]["messages"][1]["content"]
 
 
 def test_character_conversation_and_messages():
@@ -86,6 +149,7 @@ def test_translation_sources_include_mirror_and_official_fallbacks():
 
     urls = _candidate_urls(PACKAGES[("zh", "en")], "https://mirror.example.com/argos/")
     assert urls[0].startswith("https://mirror.example.com/argos/")
+    assert any("hf-mirror.com" in url for url in urls)
     assert any("data.argosopentech.com" in url for url in urls)
     assert any("argos-net.com" in url for url in urls)
     assert len(urls) == len(set(urls))
@@ -141,6 +205,14 @@ def test_chat_streams_visible_tokens_and_saves_reply(monkeypatch):
             client.put("/api/settings", json=settings)
             character = client.post("/api/characters", json={"name": "流式角色"}).json()
             conversation = client.post("/api/conversations", json={"character_id": character["id"]}).json()
+            document_text = "项目规定主动发言必须在用户空闲时进行，不能打断手动对话。"
+            uploaded = client.post(f"/api/conversations/{conversation['id']}/documents", json={
+                "filename": "设计说明.txt",
+                "content_base64": base64.b64encode(document_text.encode()).decode(),
+            })
+            assert uploaded.status_code == 201
+            with database.connect() as db:
+                db.execute("UPDATE documents SET summary=? WHERE id=?", ("全文结论：用户对话优先。", uploaded.json()["id"]))
             with database.connect() as db:
                 db.execute("INSERT INTO messages(conversation_id,role,content,origin) VALUES (?,'assistant',?,'proactive')", (conversation["id"], "这条主动发言只能留在本地"))
             proactive = client.get("/api/plugins/proactive").json()
@@ -155,4 +227,49 @@ def test_chat_streams_visible_tokens_and_saves_reply(monkeypatch):
             assert messages[-1]["content"] == "你好，世界"
             assert messages[-3]["origin"] == "proactive"
             assert all(message["content"] != "这条主动发言只能留在本地" for message in uploaded_requests[0]["messages"])
+            document_prompt = "\n".join(message["content"] for message in uploaded_requests[0]["messages"] if message["role"] == "system")
+            assert "全文结论：用户对话优先" in document_prompt
+            assert "不能打断手动对话" in document_prompt
+            assert client.delete(f"/api/documents/{uploaded.json()['id']}").status_code == 200
             assert client.get("/api/plugins/proactive").json()["next_due"] >= before_chat_due
+
+
+def test_chat_auto_continues_when_model_hits_length_limit(monkeypatch):
+    calls = []
+
+    async def stream(request):
+        payload = json.loads(request.content)
+        calls.append(payload)
+        if len(calls) == 1:
+            content = (
+                'data: {"choices":[{"delta":{"content":"第一段"},"finish_reason":null}]}\n'
+                'data: {"choices":[{"delta":{"content":""},"finish_reason":"length"}]}\n'
+                'data: [DONE]\n'
+            )
+        else:
+            content = (
+                'data: {"choices":[{"delta":{"content":"接下去"},"finish_reason":null}]}\n'
+                'data: {"choices":[{"delta":{"content":""},"finish_reason":"stop"}]}\n'
+                'data: [DONE]\n'
+            )
+        return httpx.Response(200, content=content.encode())
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr("app.main.httpx.AsyncClient", lambda **kwargs: original_client(transport=httpx.MockTransport(stream), **kwargs))
+    with tempfile.TemporaryDirectory() as directory:
+        database.DATA_DIR = database.Path(directory)
+        database.DB_PATH = database.DATA_DIR / "chat-continuation.db"
+        with TestClient(app) as client:
+            settings = client.get("/api/settings").json()
+            settings["api_key"] = "mock"
+            client.put("/api/settings", json=settings)
+            character = client.post("/api/characters", json={"name": "续写角色"}).json()
+            conversation = client.post("/api/conversations", json={"character_id": character["id"]}).json()
+            response = client.post(f"/api/conversations/{conversation['id']}/chat", json={"content": "长回答"})
+            events = [json.loads(line) for line in response.text.splitlines()]
+            assert [event.get("token") for event in events if event.get("token")] == ["第一段", "接下去"]
+            assert any(event.get("continuing") for event in events)
+            assert events[-1] == {"done": True}
+            assert calls[1]["messages"][-2] == {"role": "assistant", "content": "第一段"}
+            messages = client.get(f"/api/conversations/{conversation['id']}/messages").json()
+            assert messages[-1]["content"] == "第一段接下去"

@@ -667,38 +667,42 @@ export default function Pet() {
   }
 
   async function downloadTranslationPackage() {
-    const source = translationSource;
-    const target = source === "zh" ? "en" : "zh";
+    const pairs = [
+      { source: "zh", target: "en", label: "中译英" },
+      { source: "en", target: "zh", label: "英译中" },
+    ];
     setTranslationBusy(true);
     setDownloadProgress({ stage: "downloading", percent: 0 });
-    setTranslationOutput(`正在下载 ${source === "zh" ? "中英" : "英中"}离线语言包……`);
+    setTranslationOutput("正在测速并下载中英双向离线语言包……");
     try {
-      const response = await fetch(`${API}/translation/packages/${source}/${target}/stream`, { method: "POST" });
-      if (!response.ok || !response.body) throw new Error(`语言包下载失败 (${response.status})`);
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          const progress = JSON.parse(line) as DownloadProgress;
-          setDownloadProgress(progress);
-          if (progress.stage === "error") throw new Error(progress.error ?? "语言包安装失败");
-          if (progress.stage === "installing") setTranslationOutput("下载完成，正在安装语言包……");
+      for (let pairIndex = 0; pairIndex < pairs.length; pairIndex += 1) {
+        const pair = pairs[pairIndex];
+        setTranslationOutput(`正在处理 ${pair.label}语言包（${pairIndex + 1}/2）……`);
+        const response = await fetch(`${API}/translation/packages/${pair.source}/${pair.target}/stream`, { method: "POST" });
+        if (!response.ok || !response.body) throw new Error(`${pair.label}语言包下载失败 (${response.status})`);
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const progress = JSON.parse(line) as DownloadProgress;
+            const overall = Math.round((pairIndex * 100 + progress.percent) / pairs.length);
+            setDownloadProgress({ ...progress, percent: overall });
+            if (progress.stage === "error") throw new Error(`${pair.label}：${progress.error ?? "语言包安装失败"}`);
+            if (progress.stage === "installing") setTranslationOutput(`${pair.label}下载完成，正在安装……`);
+          }
         }
       }
-      setTranslationPackages((items) => items.map((item) =>
-        item.from_code === source && item.to_code === target ? { ...item, installed: true } : item,
-      ));
       const refreshed = await request<TranslationPackage[]>(`/translation/packages?refresh=${Date.now()}`);
       setTranslationPackages(refreshed);
       setDownloadProgress({ stage: "complete", percent: 100 });
-      setTranslationOutput("语言包安装完成，现在可以离线翻译了。");
+      setTranslationOutput("中译英和英译中语言包均已安装，现在可以双向离线翻译了。");
     } catch (error) {
       setDownloadProgress((value) => ({ stage: "error", percent: value?.percent ?? 0, error: (error as Error).message }));
       setTranslationOutput((error as Error).message);
@@ -916,12 +920,12 @@ export default function Pet() {
             </div>
           </div>
           {(() => {
-            const target = translationSource === "zh" ? "en" : "zh";
-            const model = translationPackages.find((item) => item.from_code === translationSource && item.to_code === target);
-            return model && !model.installed ? (
+            const missing = translationPackages.filter((item) => !item.installed);
+            const totalSize = missing.reduce((total, item) => total + item.size_mb, 0);
+            return missing.length ? (
               <div className="download-area">
                 <button className="download-model" disabled={translationBusy} onClick={() => void downloadTranslationPackage()}>
-                  {translationBusy ? "正在获取语言包…" : `下载 ${model.name}（约 ${model.size_mb} MB）`}
+                  {translationBusy ? "正在下载双向语言包…" : `一键下载中英双向语言包（约 ${totalSize} MB）`}
                 </button>
                 {downloadProgress && (
                   <div className={`download-progress ${downloadProgress.stage}`}>
