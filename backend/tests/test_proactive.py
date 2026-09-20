@@ -38,8 +38,11 @@ def test_proactive_opt_in_cooldown_and_saved_history(monkeypatch):
             settings["api_key"] = "test-key-not-used"
             client.put("/api/settings", json=settings)
             config = client.get("/api/plugins/proactive").json()
+            assert config["history_weight"] == 15
             config["enabled"] = True
+            config["history_weight"] = 10
             assert client.put("/api/plugins/proactive", json=config).status_code == 200
+            assert client.get("/api/plugins/proactive").json()["history_weight"] == 10
             with database.connect() as db:
                 db.execute("UPDATE proactive_plugin SET next_due=0 WHERE id=1")
             result = client.post("/api/plugins/proactive/generate", json=request).json()
@@ -120,7 +123,7 @@ def test_actual_model_request_keeps_character_identity(monkeypatch):
         body = json.loads(request.content)
         captured.append(body)
         assert body["messages"][0] == {"role": "system", "content": prompt}
-        assert body["messages"][2] == history[0]
+        assert body["messages"][3] == history[0]
         instruction = body["messages"][1]["content"]
         assert "人设优先" in instruction and "不凭空添加" in instruction
         assert "未指定语言" in instruction
@@ -128,12 +131,45 @@ def test_actual_model_request_keeps_character_identity(monkeypatch):
         return httpx.Response(200, json={"choices": [{"message": {"content": "今晚想观测猎户座吗？"}}], "usage": {"total_tokens": 99}})
 
     original_client = httpx.AsyncClient
+    monkeypatch.setattr("app.proactive.random.random", lambda: 0.0)
     monkeypatch.setattr("app.proactive.httpx.AsyncClient", lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs))
     setting = {"base_url": "https://model.example/v1", "api_key": "test", "model": "mock", "temperature": 0.8}
-    config = {"news_enabled": False, "last_content": "", "max_tokens": 160}
+    config = {"news_enabled": False, "history_weight": 15, "last_content": "", "max_tokens": 160}
     result = asyncio.run(generate_proactive(setting, config, prompt, history, "2026-09-16T20:00:00+08:00"))
     assert result[0] == "今晚想观测猎户座吗？"
     assert result[3] == 99 and len(captured) == 1
+
+
+def test_non_conversation_topics_do_not_receive_chat_history():
+    from app.proactive import build_proactive_messages
+
+    history = [
+        {"role": "user", "content": "旧话题A"},
+        {"role": "assistant", "content": "旧回答A"},
+        {"role": "user", "content": "旧话题B"},
+    ]
+    messages = build_proactive_messages("角色卡", history, "现在", "daily", [], "上次主动内容")
+    combined = "\n".join(message["content"] for message in messages)
+    assert "旧话题A" not in combined
+    assert "旧回答A" not in combined
+    assert "旧话题B" not in combined
+    assert "人自然会换话题" in combined
+
+
+def test_conversation_topic_uses_only_two_recent_messages_as_light_context():
+    from app.proactive import build_proactive_messages
+
+    history = [
+        {"role": "user", "content": "太早的内容"},
+        {"role": "assistant", "content": "最近回答"},
+        {"role": "user", "content": "最近问题"},
+    ]
+    messages = build_proactive_messages("角色卡", history, "现在", "conversation", [], "")
+    combined = "\n".join(message["content"] for message in messages)
+    assert "太早的内容" not in combined
+    assert "最近回答" in combined
+    assert "最近问题" in combined
+    assert "只允许轻微承接" in combined
 
 
 def test_news_requires_recent_dated_sources():

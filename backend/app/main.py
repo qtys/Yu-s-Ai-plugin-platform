@@ -66,6 +66,7 @@ class ProactiveConfig(BaseModel):
     randomize_interval: bool = True
     random_min_minutes: int = Field(15, ge=1, le=1440)
     random_max_minutes: int = Field(60, ge=1, le=1440)
+    history_weight: int = Field(15, ge=0, le=50)
     max_tokens: int = Field(1024, ge=64, le=8192)
     news_enabled: bool = False
     rss_url: str = Field("https://www.chinanews.com.cn/rss/scroll-news.xml", max_length=1000, pattern=r"^https://")
@@ -297,8 +298,8 @@ def update_proactive_config(payload: ProactiveConfig):
             next_due = now + proactive_delay_seconds(payload.model_dump())
         elif not payload.enabled:
             next_due = 0
-        db.execute("UPDATE proactive_plugin SET enabled=?, interval_minutes=?, max_tokens=?, news_enabled=?, rss_url=?, randomize_interval=?,random_min_minutes=?,random_max_minutes=?,next_due=? WHERE id=1",
-                   (payload.enabled, payload.interval_minutes, payload.max_tokens, payload.news_enabled, payload.rss_url, payload.randomize_interval, payload.random_min_minutes, payload.random_max_minutes, next_due))
+        db.execute("UPDATE proactive_plugin SET enabled=?, interval_minutes=?, max_tokens=?, news_enabled=?, rss_url=?, randomize_interval=?,random_min_minutes=?,random_max_minutes=?,history_weight=?,next_due=? WHERE id=1",
+                   (payload.enabled, payload.interval_minutes, payload.max_tokens, payload.news_enabled, payload.rss_url, payload.randomize_interval, payload.random_min_minutes, payload.random_max_minutes, payload.history_weight, next_due))
     return {"ok": True}
 
 

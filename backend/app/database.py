@@ -101,6 +101,7 @@ def init_db() -> None:
                 interval_minutes INTEGER NOT NULL DEFAULT 30,
                 random_min_minutes INTEGER NOT NULL DEFAULT 15,
                 random_max_minutes INTEGER NOT NULL DEFAULT 60,
+                history_weight INTEGER NOT NULL DEFAULT 15,
                 max_tokens INTEGER NOT NULL DEFAULT 160,
                 news_enabled INTEGER NOT NULL DEFAULT 0,
                 rss_url TEXT NOT NULL DEFAULT 'https://www.chinanews.com.cn/rss/scroll-news.xml',
@@ -160,6 +161,8 @@ def init_db() -> None:
             db.execute("ALTER TABLE proactive_plugin ADD COLUMN random_min_minutes INTEGER NOT NULL DEFAULT 15")
         if "random_max_minutes" not in proactive_columns:
             db.execute("ALTER TABLE proactive_plugin ADD COLUMN random_max_minutes INTEGER NOT NULL DEFAULT 60")
+        if "history_weight" not in proactive_columns:
+            db.execute("ALTER TABLE proactive_plugin ADD COLUMN history_weight INTEGER NOT NULL DEFAULT 15")
         if "failure_count" not in proactive_columns:
             db.execute("ALTER TABLE proactive_plugin ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0")
         if "last_error" not in proactive_columns:
