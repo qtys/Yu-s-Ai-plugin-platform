@@ -234,6 +234,47 @@ def test_chat_streams_visible_tokens_and_saves_reply(monkeypatch):
             assert client.get("/api/plugins/proactive").json()["next_due"] >= before_chat_due
 
 
+def test_chat_environment_context_respects_time_and_location_switches(monkeypatch):
+    uploaded_requests = []
+
+    async def stream(request):
+        uploaded_requests.append(json.loads(request.content))
+        content = (
+            'data: {"choices":[{"delta":{"content":"收到"},"finish_reason":"stop"}]}\n'
+            'data: [DONE]\n'
+        )
+        return httpx.Response(200, content=content.encode())
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr("app.main.httpx.AsyncClient", lambda **kwargs: original_client(transport=httpx.MockTransport(stream), **kwargs))
+    with tempfile.TemporaryDirectory() as directory:
+        database.DATA_DIR = database.Path(directory)
+        database.DB_PATH = database.DATA_DIR / "environment-context.db"
+        with TestClient(app) as client:
+            settings = client.get("/api/settings").json()
+            settings.update(api_key="mock", include_local_time=False, include_location_context=False, location_context="中国上海市")
+            assert client.put("/api/settings", json=settings).status_code == 200
+            character = client.post("/api/characters", json={"name": "环境测试角色"}).json()
+            conversation = client.post("/api/conversations", json={"character_id": character["id"]}).json()
+            assert client.post(f"/api/conversations/{conversation['id']}/chat", json={"content": "第一次"}).status_code == 200
+            first_system_text = "\n".join(message["content"] for message in uploaded_requests[-1]["messages"] if message["role"] == "system")
+            assert "当前设备本地时间" not in first_system_text
+            assert "中国上海市" not in first_system_text
+
+            settings = client.get("/api/settings").json()
+            settings.update(include_local_time=True, include_location_context=True, location_context="中国上海市")
+            assert client.put("/api/settings", json=settings).status_code == 200
+            saved = client.get("/api/settings").json()
+            assert saved["include_local_time"] is True
+            assert saved["include_location_context"] is True
+            assert saved["location_context"] == "中国上海市"
+            assert client.post(f"/api/conversations/{conversation['id']}/chat", json={"content": "第二次"}).status_code == 200
+            second_system_text = "\n".join(message["content"] for message in uploaded_requests[-1]["messages"] if message["role"] == "system")
+            assert "当前设备本地时间" in second_system_text
+            assert "中国上海市" in second_system_text
+            assert "不必特意提及时间" in second_system_text
+
+
 def test_chat_auto_continues_when_model_hits_length_limit(monkeypatch):
     calls = []
 

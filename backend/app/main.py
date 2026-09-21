@@ -40,6 +40,9 @@ class SettingsUpdate(BaseModel):
     translation_mirror_url: str = ""
     vision_model: str = Field(default="", max_length=200)
     document_analysis_mode: Literal["fast", "deep"] = "fast"
+    include_local_time: bool = True
+    include_location_context: bool = False
+    location_context: str = Field(default="", max_length=200)
 
 
 class CharacterCreate(BaseModel):
@@ -253,6 +256,8 @@ async def diagnostic_command(payload: DiagnosticCommand):
 def get_settings():
     setting = rows("SELECT * FROM settings WHERE id = 1")[0]
     setting["api_key"] = "" if not setting["api_key"] else "••••••••"
+    setting["include_local_time"] = bool(setting["include_local_time"])
+    setting["include_location_context"] = bool(setting["include_location_context"])
     return setting
 
 
@@ -262,8 +267,8 @@ def update_settings(payload: SettingsUpdate):
         current_key = db.execute("SELECT api_key FROM settings WHERE id = 1").fetchone()[0]
         api_key = current_key if payload.api_key == "••••••••" else payload.api_key
         db.execute(
-            "UPDATE settings SET base_url=?, api_key=?, model=?, temperature=?, max_tokens=?, context_message_limit=?, memory_limit=?, message_display_mode=?, translation_mirror_url=?, vision_model=?, document_analysis_mode=? WHERE id=1",
-            (payload.base_url.rstrip("/"), api_key, payload.model, payload.temperature, payload.max_tokens, payload.context_message_limit, payload.memory_limit, payload.message_display_mode, payload.translation_mirror_url.strip().rstrip("/"), payload.vision_model.strip(), payload.document_analysis_mode),
+            "UPDATE settings SET base_url=?, api_key=?, model=?, temperature=?, max_tokens=?, context_message_limit=?, memory_limit=?, message_display_mode=?, translation_mirror_url=?, vision_model=?, document_analysis_mode=?, include_local_time=?, include_location_context=?, location_context=? WHERE id=1",
+            (payload.base_url.rstrip("/"), api_key, payload.model, payload.temperature, payload.max_tokens, payload.context_message_limit, payload.memory_limit, payload.message_display_mode, payload.translation_mirror_url.strip().rstrip("/"), payload.vision_model.strip(), payload.document_analysis_mode, payload.include_local_time, payload.include_location_context, payload.location_context.strip()),
         )
     return {"ok": True}
 
@@ -815,6 +820,14 @@ async def chat(conversation_id: int, payload: ChatRequest):
     if document_context:
         document_text = "\n\n".join(document_context)[:30000]
         model_messages.append({"role": "system", "content": "以下是用户在本次对话中提供的文档资料。优先依据资料回答；资料不足时明确说明。\n\n" + document_text})
+    environment_context = []
+    if setting["include_local_time"]:
+        local_time = datetime.now().astimezone().isoformat(timespec="seconds")
+        environment_context.append(f"当前设备本地时间：{local_time}。回答时可以参考时间判断时效性或语境，但不必特意提及时间。")
+    if setting["include_location_context"] and setting["location_context"].strip():
+        environment_context.append(f"用户设置的位置/地区：{setting['location_context'].strip()}。这是用户提供的概略地区信息；仅在对问题有帮助时参考，不要推断更精确的位置，也不必主动提及。")
+    if environment_context:
+        model_messages.append({"role": "system", "content": "【可选环境信息】\n" + "\n".join(environment_context)})
     model_messages.extend(history)
     model_messages.append({"role": "user", "content": payload.content})
 

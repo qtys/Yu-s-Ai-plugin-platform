@@ -33,6 +33,9 @@ type Settings = {
   translation_mirror_url: string;
   vision_model: string;
   document_analysis_mode: "fast" | "deep";
+  include_local_time: boolean;
+  include_location_context: boolean;
+  location_context: string;
 };
 type Theme = "violet" | "midnight" | "sand" | "paper";
 const themes: { id: Theme; name: string; description: string }[] = [
@@ -96,6 +99,9 @@ export default function App() {
     translation_mirror_url: "",
     vision_model: "",
     document_analysis_mode: "fast",
+    include_local_time: true,
+    include_location_context: false,
+    location_context: "",
   });
   const [draft, setDraft] = useState(emptyCharacter);
   const [proactivePlugin, setProactivePlugin] = useState({ enabled: false, interval_minutes: 30, randomize_interval: true, random_min_minutes: 15, random_max_minutes: 60, history_weight: 15, max_tokens: 1024, news_enabled: false, rss_url: "https://www.chinanews.com.cn/rss/scroll-news.xml", total_tokens: 0, last_error: "" });
@@ -843,6 +849,18 @@ export default function App() {
                   <input type="number" min="0" max="50" value={settings.memory_limit} onChange={(e) => setSettings({...settings, memory_limit:Number(e.target.value)})} />
                 </Field>
               </div>
+              <div className="form-section-title">
+                <strong>对话环境信息</strong>
+                <small>按开关把设备本地时间或你填写的地区作为可选上下文传给模型</small>
+              </div>
+              <Field label="提供当前设备本地时间"><input type="checkbox" checked={settings.include_local_time} onChange={(e) => setSettings({ ...settings, include_local_time: e.target.checked })} /></Field>
+              <Field label="向模型提供位置/地区"><input type="checkbox" checked={settings.include_location_context} onChange={(e) => setSettings({ ...settings, include_location_context: e.target.checked })} /></Field>
+              {settings.include_location_context && (
+                <Field label="位置或地区">
+                  <input maxLength={200} value={settings.location_context} onChange={(e) => setSettings({ ...settings, location_context: e.target.value })} placeholder="例如：中国上海市浦东新区" />
+                </Field>
+              )}
+              <small>位置由你手动填写，仅在开启位置开关后随对话发送；不会自动读取 GPS。时间与位置都只是参考信息，模型可以在无关问题中忽略它们。</small>
               <div className="form-section-title">
                 <strong>离线翻译下载</strong>
                 <small>留空使用 Argos 官方源；国内镜像需提供相同的 .argosmodel 文件</small>

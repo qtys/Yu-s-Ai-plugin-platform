@@ -33,7 +33,10 @@ def init_db() -> None:
                 api_key TEXT NOT NULL DEFAULT '',
                 model TEXT NOT NULL DEFAULT 'gpt-4o-mini',
                 temperature REAL NOT NULL DEFAULT 0.8,
-                max_tokens INTEGER NOT NULL DEFAULT 2048
+                max_tokens INTEGER NOT NULL DEFAULT 2048,
+                include_local_time INTEGER NOT NULL DEFAULT 1,
+                include_location_context INTEGER NOT NULL DEFAULT 0,
+                location_context TEXT NOT NULL DEFAULT ''
             );
             INSERT OR IGNORE INTO settings (id) VALUES (1);
 
@@ -87,6 +90,12 @@ def init_db() -> None:
             db.execute("ALTER TABLE settings ADD COLUMN vision_model TEXT NOT NULL DEFAULT ''")
         if "document_analysis_mode" not in setting_columns:
             db.execute("ALTER TABLE settings ADD COLUMN document_analysis_mode TEXT NOT NULL DEFAULT 'fast'")
+        if "include_local_time" not in setting_columns:
+            db.execute("ALTER TABLE settings ADD COLUMN include_local_time INTEGER NOT NULL DEFAULT 1")
+        if "include_location_context" not in setting_columns:
+            db.execute("ALTER TABLE settings ADD COLUMN include_location_context INTEGER NOT NULL DEFAULT 0")
+        if "location_context" not in setting_columns:
+            db.execute("ALTER TABLE settings ADD COLUMN location_context TEXT NOT NULL DEFAULT ''")
         conversation_columns = {row[1] for row in db.execute("PRAGMA table_info(conversations)")}
         if "summary" not in conversation_columns:
             db.execute("ALTER TABLE conversations ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
