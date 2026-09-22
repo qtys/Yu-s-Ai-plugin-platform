@@ -320,6 +320,8 @@ class ProactiveConfig(BaseModel):
     random_min_minutes: int = Field(15, ge=1, le=1440)
     random_max_minutes: int = Field(60, ge=1, le=1440)
     history_weight: int = Field(15, ge=0, le=50)
+    care_enabled: bool = True
+    care_weight: int = Field(45, ge=0, le=100)
     max_tokens: int = Field(1024, ge=64, le=8192)
     news_enabled: bool = False
     rss_url: str = Field("https://www.chinanews.com.cn/rss/scroll-news.xml", max_length=1000, pattern=r"^https://")
@@ -667,12 +669,12 @@ async def _latest_release() -> dict:
 async def lifespan(_: FastAPI):
     configure_logging()
     init_db()
-    logger.info("backend_started version=0.15.7")
+    logger.info("backend_started version=0.15.8")
     yield
     logger.info("backend_stopped")
 
 
-app = FastAPI(title="Yu's AI API", version="0.15.7", lifespan=lifespan)
+app = FastAPI(title="Yu's AI API", version="0.15.8", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://tauri.localhost", "tauri://localhost"],
@@ -911,6 +913,7 @@ def get_proactive_config():
     config["enabled"] = bool(config["enabled"])
     config["news_enabled"] = bool(config["news_enabled"])
     config["randomize_interval"] = bool(config["randomize_interval"])
+    config["care_enabled"] = bool(config["care_enabled"])
     return config
 
 
@@ -930,8 +933,8 @@ def update_proactive_config(payload: ProactiveConfig):
             next_due = now + proactive_delay_seconds(payload.model_dump())
         elif not payload.enabled:
             next_due = 0
-        db.execute("UPDATE proactive_plugin SET enabled=?, interval_minutes=?, max_tokens=?, news_enabled=?, rss_url=?, randomize_interval=?,random_min_minutes=?,random_max_minutes=?,history_weight=?,next_due=? WHERE id=1",
-                   (payload.enabled, payload.interval_minutes, payload.max_tokens, payload.news_enabled, payload.rss_url, payload.randomize_interval, payload.random_min_minutes, payload.random_max_minutes, payload.history_weight, next_due))
+        db.execute("UPDATE proactive_plugin SET enabled=?, interval_minutes=?, max_tokens=?, news_enabled=?, rss_url=?, randomize_interval=?,random_min_minutes=?,random_max_minutes=?,history_weight=?,care_enabled=?,care_weight=?,next_due=? WHERE id=1",
+                   (payload.enabled, payload.interval_minutes, payload.max_tokens, payload.news_enabled, payload.rss_url, payload.randomize_interval, payload.random_min_minutes, payload.random_max_minutes, payload.history_weight, payload.care_enabled, payload.care_weight, next_due))
     return {"ok": True}
 
 
@@ -965,7 +968,7 @@ async def proactive_generate(payload: ProactiveRequest):
         async with MODEL_GENERATION_LOCK:
             PROACTIVE_GENERATION_TASK = asyncio.current_task()
             try:
-                text, kind, sources, usage = await generate_proactive(setting, config, prompt, history, now.isoformat(timespec="seconds"))
+                text, kind, sources, usage, care_slot = await generate_proactive(setting, config, prompt, history, now.isoformat(timespec="seconds"))
             finally:
                 PROACTIVE_GENERATION_TASK = None
     except asyncio.CancelledError:
@@ -989,7 +992,7 @@ async def proactive_generate(payload: ProactiveRequest):
         source_text = "\n\n" + "\n".join(f"来源：{source['title']} {source['url']}" for source in sources) if sources else ""
         db.execute("INSERT INTO messages(conversation_id,role,content,origin) VALUES (?,'assistant',?,'proactive')", (conversation_id, text + source_text))
         db.execute("UPDATE conversations SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (conversation_id,))
-        db.execute("UPDATE proactive_plugin SET last_content=?,total_tokens=total_tokens+?,failure_count=0,last_error='' WHERE id=1", (text, usage))
+        db.execute("UPDATE proactive_plugin SET last_content=?,total_tokens=total_tokens+?,failure_count=0,last_error='',last_care_slot=CASE WHEN ?='' THEN last_care_slot ELSE ? END WHERE id=1", (text, usage, care_slot, care_slot))
     logger.info("proactive_generated character_id=%s kind=%s total_tokens=%s", payload.character_id, kind, usage)
     return {"content": text, "kind": kind, "sources": sources, "total_tokens": usage, "conversation_id": conversation_id}
 

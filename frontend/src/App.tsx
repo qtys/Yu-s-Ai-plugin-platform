@@ -118,7 +118,7 @@ export default function App() {
     location_context: "",
   });
   const [draft, setDraft] = useState(emptyCharacter);
-  const [proactivePlugin, setProactivePlugin] = useState({ enabled: false, interval_minutes: 30, randomize_interval: true, random_min_minutes: 15, random_max_minutes: 60, history_weight: 15, max_tokens: 1024, news_enabled: false, rss_url: "https://www.chinanews.com.cn/rss/scroll-news.xml", total_tokens: 0, last_error: "" });
+  const [proactivePlugin, setProactivePlugin] = useState({ enabled: false, interval_minutes: 30, randomize_interval: true, random_min_minutes: 15, random_max_minutes: 60, history_weight: 15, care_enabled: true, care_weight: 45, max_tokens: 1024, news_enabled: false, rss_url: "https://www.chinanews.com.cn/rss/scroll-news.xml", total_tokens: 0, last_error: "" });
   const [editingCharacter, setEditingCharacter] = useState<number | null>(null);
   const [editingMessage, setEditingMessage] = useState<number | null>(null);
   const [messageDraft, setMessageDraft] = useState("");
@@ -1107,6 +1107,9 @@ export default function App() {
               <small>当前：{proactivePlugin.randomize_interval ? `每次在 ${proactivePlugin.random_min_minutes}–${proactivePlugin.random_max_minutes} 分钟之间重新随机` : `固定每 ${proactivePlugin.interval_minutes} 分钟`}。用户发送消息时会立即取消正在生成的主动发言，并从手动对话后重新计时。</small>
               <Field label={`承接最近聊天的概率（${proactivePlugin.history_weight}%）`}><input type="range" min="0" max="50" step="5" value={proactivePlugin.history_weight} onChange={(e) => setProactivePlugin({ ...proactivePlugin, history_weight: Number(e.target.value) })} /></Field>
               <small>未抽中时不会把聊天记录发给主动模型，而会按人设随机聊日常、兴趣、轻松话题或可选时事。建议保持 10%–20%，避免每次都像在续聊。</small>
+              <Field label="启用时间关心"><input type="checkbox" checked={proactivePlugin.care_enabled} onChange={(e) => setProactivePlugin({ ...proactivePlugin, care_enabled: e.target.checked })} /></Field>
+              {proactivePlugin.care_enabled && <Field label={`关心内容概率（${proactivePlugin.care_weight}%）`}><input type="range" min="0" max="100" step="5" value={proactivePlugin.care_weight} onChange={(e) => setProactivePlugin({ ...proactivePlugin, care_weight: Number(e.target.value) })} /></Field>}
+              <small>早晨、午饭、下午久坐、傍晚和临睡前会按概率自然关心；每个时间窗口每天最多一次，其余随机调用仍会聊日常、兴趣或时事。</small>
               <Field label="单次回复 token 上限（64–8192，推理及输入也可能计费）"><input type="number" min="64" max="8192" value={proactivePlugin.max_tokens} onChange={(e) => setProactivePlugin({ ...proactivePlugin, max_tokens: Number(e.target.value) })} /></Field>
               <small>建议从 1024 开始；推理模型空回复时可提高至 4096。重试会再次调用模型并可能计费。</small>
               {proactivePlugin.last_error && <small role="status">最近主动发言失败：{proactivePlugin.last_error}</small>}

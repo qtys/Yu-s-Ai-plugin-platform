@@ -45,6 +45,7 @@ async def recent_headlines(client: httpx.AsyncClient, url: str) -> list[dict]:
 
 TOPIC_GUIDANCE = {
     "conversation": "只把最近对话当作一个很轻的线索；自然接一句即可，不复述、不总结，也不要总追问同一件事。",
+    "care": "像真正熟悉用户的角色一样自然关心一句，不要像系统提醒、健康软件或客服通知；不要连续提问，也不要假定用户已经疲劳、生病、没吃饭或正在工作。",
     "daily": "从此刻可能发生的普通日常、天气感受、吃喝休息、眼前小事或轻松见闻中自然挑一个话头；不要假定用户正在做什么。",
     "interest": "从角色卡明确写出的兴趣、身份、经历或价值观出发聊一点自己会感兴趣的内容；没有明确设定就选择朴素日常，不要编造爱好。",
     "playful": "说一句符合角色性格的轻松观察、脑洞、小问题或善意玩笑；严肃角色可以用克制的趣味表达，不必硬讲笑话。",
@@ -52,7 +53,23 @@ TOPIC_GUIDANCE = {
 }
 
 
-def build_proactive_messages(character_prompt: str, history: list, now: str, kind: str, headlines: list, last_content: str) -> list[dict]:
+def care_window(now: datetime) -> tuple[str, str]:
+    """Return one daily care slot and its soft contextual guidance."""
+    minute = now.hour * 60 + now.minute
+    windows = [
+        (7 * 60, 9 * 60 + 30, "morning", "现在是早晨。可以自然问候睡眠、早餐或今天的心情，但不要盘问计划。"),
+        (11 * 60 + 30, 13 * 60 + 30, "noon", "临近或处于午间。可以轻轻关心吃饭、休息或上午过得怎样，但不要断言用户没吃饭。"),
+        (14 * 60 + 30, 17 * 60 + 30, "afternoon", "现在是下午。可以自然提醒放松眼睛、活动一下，或聊一句轻松小事，但不要像定时健康提醒。"),
+        (18 * 60, 21 * 60 + 30, "evening", "现在是傍晚到晚间。可以关心今天是否辛苦、晚饭或放松安排，也可以只是安静陪伴。"),
+        (21 * 60 + 30, 23 * 60, "late", "已经较晚。可以温和关心休息和情绪，不命令用户睡觉，也不要制造焦虑。"),
+    ]
+    for start, end, name, guidance in windows:
+        if start <= minute < end:
+            return f"{now.date().isoformat()}:{name}", guidance
+    return "", "当前不处于特定关心时间窗口，选择普通日常话题。"
+
+
+def build_proactive_messages(character_prompt: str, history: list, now: str, kind: str, headlines: list, last_content: str, care_guidance: str = "") -> list[dict]:
     instruction = (
         "【当前场景】你是角色卡中的角色本人，想自然地找用户说一句话，不是智能助手、新闻主持人或插件。"
         "身份、兴趣、价值观、性格、说话方式、用户关系、行为边界以角色卡为准。"
@@ -63,7 +80,7 @@ def build_proactive_messages(character_prompt: str, history: list, now: str, kin
         "不要为了显得连贯而强行提起旧对话；人自然会换话题、分享自己的念头，也可能只是随口聊点日常。"
         "内容类型只是方向，人设优先；设定少时保持朴素，不杜撰背景。"
         "新闻与人设/兴趣无关时可以不谈新闻；若使用新闻，只基于提供的标题，不扩写未知事实。"
-        f"\n当前本地时间：{now}；本次话题方向：{kind}。{TOPIC_GUIDANCE.get(kind, TOPIC_GUIDANCE['daily'])}自然考虑时间，不必报时。"
+        f"\n当前本地时间：{now}；本次话题方向：{kind}。{TOPIC_GUIDANCE.get(kind, TOPIC_GUIDANCE['daily'])}{care_guidance}自然考虑时间，不必报时。"
         f"\n上次主动发言（避免重复，不作为人设）：{last_content}"
     )
     messages = [{"role": "system", "content": character_prompt}, {"role": "system", "content": instruction}]
@@ -77,20 +94,26 @@ def build_proactive_messages(character_prompt: str, history: list, now: str, kin
 async def generate_proactive(setting, config, character_prompt: str, history: list, now: str):
     async with httpx.AsyncClient(timeout=60, trust_env=False, follow_redirects=True) as client:
         headlines = []
+        local_now = datetime.fromisoformat(now)
+        slot, care_guidance = care_window(local_now)
+        care_probability = max(0, min(100, int(config.get("care_weight", 45)))) / 100
+        use_care = bool(config.get("care_enabled", True) and slot and slot != config.get("last_care_slot", "") and random.random() < care_probability)
         history_probability = max(0, min(50, int(config.get("history_weight", 15)))) / 100
-        use_history = bool(history) and random.random() < history_probability
-        if not use_history and config["news_enabled"] and random.random() < 0.20:
+        use_history = not use_care and bool(history) and random.random() < history_probability
+        if not use_care and not use_history and config["news_enabled"] and random.random() < 0.20:
             try:
                 headlines = await recent_headlines(client, config["rss_url"])
             except (httpx.HTTPError, ValueError, ET.ParseError):
                 pass  # Never invent current events when live sources are unavailable.
-        if use_history:
+        if use_care:
+            kind = "care"
+        elif use_history:
             kind = "conversation"
         elif headlines:
             kind = "news"
         else:
             kind = random.choices(["daily", "interest", "playful"], weights=[50, 35, 15], k=1)[0]
-        messages = build_proactive_messages(character_prompt, history, now, kind, headlines, config["last_content"])
+        messages = build_proactive_messages(character_prompt, history, now, kind, headlines, config["last_content"], care_guidance if use_care else "")
         response = await client.post(f"{setting['base_url'].rstrip('/')}/chat/completions", headers={"Authorization": f"Bearer {setting['api_key']}"}, json={
             "model": setting["model"], "messages": messages, "stream": False,
             "temperature": setting["temperature"], "max_tokens": config["max_tokens"],
@@ -102,4 +125,4 @@ async def generate_proactive(setting, config, character_prompt: str, history: li
         if not isinstance(content, str) or not content.strip():
             raise EmptyProactiveReply(usage, str(data["choices"][0].get("finish_reason", "unknown")))
         text = content.strip()
-        return text, kind, headlines, usage
+        return text, kind, headlines, usage, slot if use_care else ""

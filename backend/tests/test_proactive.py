@@ -7,7 +7,7 @@ import httpx
 from fastapi.testclient import TestClient
 from app import database
 from app.main import app
-from app.proactive import recent_headlines
+from app.proactive import care_window, recent_headlines
 
 
 def test_proactive_opt_in_cooldown_and_saved_history(monkeypatch):
@@ -24,7 +24,7 @@ def test_proactive_opt_in_cooldown_and_saved_history(monkeypatch):
         assert "2026-09-16" in now
         assert config["max_tokens"] == 1024
         calls.append(now)
-        return "今天想一起看看星星吗？", "question", [], 123
+        return "今天想一起看看星星吗？", "care", [], 123, "2026-09-16:noon"
 
     monkeypatch.setattr("app.main.generate_proactive", fake_generate)
     with tempfile.TemporaryDirectory() as directory:
@@ -39,10 +39,14 @@ def test_proactive_opt_in_cooldown_and_saved_history(monkeypatch):
             client.put("/api/settings", json=settings)
             config = client.get("/api/plugins/proactive").json()
             assert config["history_weight"] == 15
+            assert config["care_enabled"] is True
+            assert config["care_weight"] == 45
             config["enabled"] = True
             config["history_weight"] = 10
+            config["care_weight"] = 70
             assert client.put("/api/plugins/proactive", json=config).status_code == 200
             assert client.get("/api/plugins/proactive").json()["history_weight"] == 10
+            assert client.get("/api/plugins/proactive").json()["care_weight"] == 70
             with database.connect() as db:
                 db.execute("UPDATE proactive_plugin SET next_due=0 WHERE id=1")
             result = client.post("/api/plugins/proactive/generate", json=request).json()
@@ -52,7 +56,9 @@ def test_proactive_opt_in_cooldown_and_saved_history(monkeypatch):
             assert messages[-1]["content"] == result["content"]
             assert client.post("/api/plugins/proactive/generate", json=request).json()["reason"] == "cooldown"
             assert len(calls) == 1
-            assert client.get("/api/plugins/proactive").json()["total_tokens"] == 123
+            saved = client.get("/api/plugins/proactive").json()
+            assert saved["total_tokens"] == 123
+            assert saved["last_care_slot"] == "2026-09-16:noon"
             config["interval_minutes"] = 0
             assert client.put("/api/plugins/proactive", json=config).status_code == 422
 
@@ -134,7 +140,7 @@ def test_actual_model_request_keeps_character_identity(monkeypatch):
     monkeypatch.setattr("app.proactive.random.random", lambda: 0.0)
     monkeypatch.setattr("app.proactive.httpx.AsyncClient", lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs))
     setting = {"base_url": "https://model.example/v1", "api_key": "test", "model": "mock", "temperature": 0.8}
-    config = {"news_enabled": False, "history_weight": 15, "last_content": "", "max_tokens": 160}
+    config = {"news_enabled": False, "history_weight": 15, "care_enabled": False, "last_content": "", "max_tokens": 160}
     result = asyncio.run(generate_proactive(setting, config, prompt, history, "2026-09-16T20:00:00+08:00"))
     assert result[0] == "今晚想观测猎户座吗？"
     assert result[3] == 99 and len(captured) == 1
@@ -154,6 +160,38 @@ def test_non_conversation_topics_do_not_receive_chat_history():
     assert "旧回答A" not in combined
     assert "旧话题B" not in combined
     assert "人自然会换话题" in combined
+
+
+def test_care_windows_are_time_specific_and_have_daily_keys():
+    morning_slot, morning_guidance = care_window(datetime.fromisoformat("2026-09-23T08:15:00+08:00"))
+    afternoon_slot, afternoon_guidance = care_window(datetime.fromisoformat("2026-09-23T16:00:00+08:00"))
+    quiet_slot, _ = care_window(datetime.fromisoformat("2026-09-23T10:30:00+08:00"))
+    assert morning_slot == "2026-09-23:morning"
+    assert "早餐" in morning_guidance
+    assert afternoon_slot == "2026-09-23:afternoon"
+    assert "眼睛" in afternoon_guidance
+    assert quiet_slot == ""
+
+
+def test_care_is_selected_at_most_once_per_time_window(monkeypatch):
+    from app.proactive import generate_proactive
+
+    original_client = httpx.AsyncClient
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={
+        "choices": [{"message": {"content": "记得让眼睛休息一下。"}}],
+        "usage": {"total_tokens": 12},
+    }))
+    monkeypatch.setattr("app.proactive.random.random", lambda: 0.0)
+    monkeypatch.setattr("app.proactive.httpx.AsyncClient", lambda **kwargs: original_client(transport=transport, **kwargs))
+    setting = {"base_url": "https://model.example/v1", "api_key": "mock", "model": "mock", "temperature": 0.8}
+    config = {"news_enabled": False, "history_weight": 0, "care_enabled": True, "care_weight": 100, "last_content": "", "last_care_slot": "", "max_tokens": 160}
+    first = asyncio.run(generate_proactive(setting, config, "角色卡", [], "2026-09-23T16:00:00+08:00"))
+    assert first[1] == "care"
+    assert first[4] == "2026-09-23:afternoon"
+    config["last_care_slot"] = first[4]
+    second = asyncio.run(generate_proactive(setting, config, "角色卡", [], "2026-09-23T16:30:00+08:00"))
+    assert second[1] != "care"
+    assert second[4] == ""
 
 
 def test_conversation_topic_uses_only_two_recent_messages_as_light_context():
@@ -235,7 +273,7 @@ def test_model_empty_body_is_not_replaced_with_reasoning(monkeypatch):
     monkeypatch.setattr("app.proactive.httpx.AsyncClient", lambda **kwargs: original_client(transport=transport, **kwargs))
     with pytest.raises(EmptyProactiveReply) as caught:
         asyncio.run(generate_proactive({"base_url": "https://model.example/v1", "api_key": "mock", "model": "mock", "temperature": 0.8},
-                                     {"news_enabled": False, "last_content": "", "max_tokens": 1024}, "persona", [], "now"))
+                                     {"news_enabled": False, "care_enabled": False, "last_content": "", "max_tokens": 1024}, "persona", [], "2026-09-16T20:00:00+08:00"))
     assert caught.value.usage == 160
     assert caught.value.finish_reason == "length"
 
