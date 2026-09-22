@@ -660,12 +660,12 @@ async def _latest_release() -> dict:
 async def lifespan(_: FastAPI):
     configure_logging()
     init_db()
-    logger.info("backend_started version=0.15.1")
+    logger.info("backend_started version=0.15.2")
     yield
     logger.info("backend_stopped")
 
 
-app = FastAPI(title="Yu's AI API", version="0.15.1", lifespan=lifespan)
+app = FastAPI(title="Yu's AI API", version="0.15.2", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://tauri.localhost", "tauri://localhost"],

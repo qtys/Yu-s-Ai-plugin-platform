@@ -12,6 +12,12 @@ use tauri_plugin_shell::{process::{CommandChild, CommandEvent}, ShellExt};
 use tauri_plugin_autostart::ManagerExt;
 use serde::Serialize;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 const DATABASE_FILES: [&str; 3] = ["yus_ai.db", "yus_ai.db-wal", "yus_ai.db-shm"];
 static CONTINUOUS_TRANSLATION: AtomicBool = AtomicBool::new(false);
 static PET_INTERACTION_MODE: AtomicU8 = AtomicU8::new(0);
@@ -545,26 +551,47 @@ fn copy_backup_file(source: String, destination: String) -> Result<String, Strin
 }
 
 fn spawn_after_exit(path: &std::path::Path) -> Result<(), String> {
-  StdCommand::new("powershell.exe")
-    .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", "Start-Sleep -Milliseconds 900; Start-Process -FilePath $args[0]"])
-    .arg(path)
+  let powershell = std::env::var_os("SystemRoot")
+    .map(std::path::PathBuf::from)
+    .map(|root| root.join("System32").join("WindowsPowerShell").join("v1.0").join("powershell.exe"))
+    .filter(|candidate| candidate.is_file())
+    .unwrap_or_else(|| std::path::PathBuf::from("powershell.exe"));
+  let mut command = StdCommand::new(powershell);
+  command
+    .args([
+      "-NoProfile",
+      "-NonInteractive",
+      "-WindowStyle",
+      "Hidden",
+      "-Command",
+      "$target=$env:YUS_AI_LAUNCH_TARGET; $parent=[int]$env:YUS_AI_LAUNCH_PARENT_PID; try { Wait-Process -Id $parent -Timeout 20 -ErrorAction Stop } catch {}; Start-Process -FilePath $target",
+    ])
+    .env("YUS_AI_LAUNCH_TARGET", path)
+    .env("YUS_AI_LAUNCH_PARENT_PID", std::process::id().to_string());
+  #[cfg(target_os = "windows")]
+  command.creation_flags(CREATE_NO_WINDOW);
+  command
     .spawn()
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| format!("无法创建更新启动器：{error}"))?;
   Ok(())
 }
 
 #[tauri::command]
 fn install_update(app: AppHandle, installer_path: String) -> Result<(), String> {
-  let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+  write_window_diagnostic("update_install_requested", &format!("path={installer_path}"));
+  let executable = std::env::current_exe().map_err(|error| format!("无法读取程序路径：{error}"))?;
   let install_dir = executable.parent().ok_or("无法确定软件安装目录")?;
   let update_dir = install_dir.join("data").join("updates");
-  let installer = std::fs::canonicalize(installer_path).map_err(|error| error.to_string())?;
-  let update_root = std::fs::canonicalize(update_dir).map_err(|error| error.to_string())?;
+  let installer = std::fs::canonicalize(installer_path).map_err(|error| format!("无法读取已下载的安装包：{error}"))?;
+  let update_root = std::fs::canonicalize(update_dir).map_err(|error| format!("无法读取更新目录：{error}"))?;
   if !installer.starts_with(update_root) || installer.extension().and_then(|value| value.to_str()).map(|value| value.eq_ignore_ascii_case("exe")) != Some(true) {
+    write_window_diagnostic("update_install_rejected", &format!("path={}", installer.display()));
     return Err("安装包不在受信任的更新目录中".to_string());
   }
-  stop_backend(&app);
   spawn_after_exit(&installer)?;
+  write_window_diagnostic("update_launcher_started", &format!("path={}", installer.display()));
+  stop_backend(&app);
+  write_window_diagnostic("update_application_exit", "code=0");
   app.exit(0);
   Ok(())
 }
