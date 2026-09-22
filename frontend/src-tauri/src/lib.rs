@@ -703,15 +703,11 @@ pub fn run() {
 
       let show = MenuItem::with_id(app, "show", "显示主界面", true, None::<&str>)?;
       let pet_toggle = MenuItem::with_id(app, "pet_toggle", "显示/隐藏桌宠", true, None::<&str>)?;
-      let pet_size_up = MenuItem::with_id(app, "pet_size_up", "桌宠放大", true, None::<&str>)?;
-      let pet_size_down = MenuItem::with_id(app, "pet_size_down", "桌宠缩小", true, None::<&str>)?;
-      let pet_opacity_up = MenuItem::with_id(app, "pet_opacity_up", "桌宠更清晰", true, None::<&str>)?;
-      let pet_opacity_down = MenuItem::with_id(app, "pet_opacity_down", "桌宠更透明", true, None::<&str>)?;
       let autostart_enabled = app.handle().autolaunch().is_enabled().unwrap_or(false);
       let autostart = MenuItem::with_id(app, "autostart", if autostart_enabled { "关闭开机自启" } else { "开启开机自启" }, true, None::<&str>)?;
       let pin = MenuItem::with_id(app, "pin", "切换窗口置顶", true, None::<&str>)?;
       let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-      let menu = Menu::with_items(app, &[&show, &pet_toggle, &pet_size_up, &pet_size_down, &pet_opacity_up, &pet_opacity_down, &autostart, &pin, &quit])?;
+      let menu = Menu::with_items(app, &[&show, &pet_toggle, &autostart, &pin, &quit])?;
       let autostart_menu = autostart.clone();
       TrayIconBuilder::new()
         .icon(app.default_window_icon().unwrap().clone())
@@ -729,10 +725,6 @@ pub fn run() {
             if pet.is_visible().unwrap_or(false) { let _ = pet.hide(); PET_VISIBLE.store(false, Ordering::Release); }
             else { let _ = pet.show(); PET_VISIBLE.store(true, Ordering::Release); let _ = pet.set_focus(); }
           },
-          "pet_size_up" => { let _ = app.emit_to("pet", "pet-control", "size-up"); },
-          "pet_size_down" => { let _ = app.emit_to("pet", "pet-control", "size-down"); },
-          "pet_opacity_up" => { let _ = app.emit_to("pet", "pet-control", "opacity-up"); },
-          "pet_opacity_down" => { let _ = app.emit_to("pet", "pet-control", "opacity-down"); },
           "autostart" => {
             let manager = app.autolaunch();
             let enabled = manager.is_enabled().unwrap_or(false);
