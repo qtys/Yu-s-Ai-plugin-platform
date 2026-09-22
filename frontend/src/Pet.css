@@ -21,32 +21,53 @@ button,input { font:inherit; }
 .slime-highlight-layer i { left:28px; top:47px; width:15px; height:28px; transform:rotate(28deg); }
 .slime-highlight-layer b { left:49px; top:37px; width:7px; height:9px; opacity:.7; }
 .slime-face-layer { position:absolute; z-index:2; left:24px; top:61px; width:92px; height:68px; display:block; transform:translate(calc(var(--gaze-x,0) * 2px),calc(var(--gaze-y,0) * 1.5px)) rotate(calc(var(--gaze-x,0) * 1deg)); transition:transform .18s cubic-bezier(.22,.75,.25,1); }
-.slime-eye { position:absolute; top:0; width:33px; height:39px; overflow:hidden; border:2px solid rgba(31,105,184,.78); border-radius:48% 52% 47% 53%; background:linear-gradient(155deg,#fff 0 63%,#e7f8ff 100%); box-shadow:inset 0 -3px 5px rgba(39,143,216,.16),0 2px 3px rgba(10,79,148,.13); transform-origin:center 56%; transition:transform .12s ease,height .12s ease; }
+.slime-eye { position:absolute; top:0; width:33px; height:39px; overflow:hidden; border:2px solid rgba(31,105,184,.78); border-radius:48% 52% 47% 53%; background:linear-gradient(155deg,#fff 0 63%,#e7f8ff 100%); box-shadow:inset 0 -3px 5px rgba(39,143,216,.16),0 2px 3px rgba(10,79,148,.13); transform-origin:center 56%; transition:transform .14s ease,background-color .1s ease,border-color .1s ease,box-shadow .1s ease; }
 .slime-eye-left { left:7px; transform:rotate(-3deg); }
 .slime-eye-right { right:7px; transform:rotate(3deg); }
-.slime-pupil { position:absolute; left:8px; top:9px; width:17px; height:23px; overflow:hidden; border-radius:50%; background:linear-gradient(180deg,#2369bc,#083e91 70%,#082a6c); box-shadow:inset 0 -3px 4px rgba(0,18,64,.35); transform:translate(calc(var(--gaze-x,0) * 4px),calc(var(--gaze-y,0) * 3px)); transition:transform .16s cubic-bezier(.22,.75,.25,1); }
+.slime-pupil { position:absolute; left:8px; top:9px; width:17px; height:23px; overflow:hidden; border-radius:50%; opacity:1; background:linear-gradient(180deg,#2369bc,#083e91 70%,#082a6c); box-shadow:inset 0 -3px 4px rgba(0,18,64,.35); transform:translate(calc(var(--gaze-x,0) * 4px),calc(var(--gaze-y,0) * 3px)); transition:transform .16s cubic-bezier(.22,.75,.25,1),opacity .08s ease; }
 .slime-pupil::before { content:""; position:absolute; left:3px; top:3px; width:6px; height:8px; border-radius:50%; background:#fff; box-shadow:8px 10px 0 -2px rgba(132,226,255,.95); }
 .slime-pupil i { position:absolute; left:6px; bottom:2px; width:7px; height:3px; border-radius:50%; background:rgba(42,180,245,.7); }
-.slime-eye b { position:absolute; z-index:3; inset:-2px; border-bottom:3px solid rgba(32,104,180,.8); border-radius:50%; background:linear-gradient(180deg,#67c9f5,#a5e8fb); transform:translateY(-105%); transition:transform .1s ease; }
+.slime-eye b { position:absolute; z-index:3; left:3px; top:14px; width:23px; height:11px; border:0; border-top:3px solid rgba(22,82,143,.9); border-radius:50% 50% 0 0; opacity:0; background:transparent; box-shadow:0 -1px 0 rgba(255,255,255,.2); transform:scaleX(.72) scaleY(.25); transform-origin:center top; transition:opacity .09s ease,transform .14s cubic-bezier(.2,.8,.3,1); }
 .slime-blush { position:absolute; top:42px; width:17px; height:7px; border-radius:50%; opacity:var(--blush-strength,.58); background:radial-gradient(ellipse,#ff8fc0 0,rgba(255,143,192,0) 72%); transition:opacity .18s ease,transform .18s ease; }
 .slime-blush-left { left:0; }
 .slime-blush-right { right:0; }
-.slime-mouth { position:absolute; left:39px; top:42px; width:15px; height:12px; overflow:hidden; border:2px solid #19558d; border-top-width:1px; border-radius:30% 30% 55% 55%; background:#164b7e; transform-origin:center top; transition:transform .14s ease,width .14s ease,height .14s ease; }
-.slime-mouth i { position:absolute; left:3px; bottom:-1px; width:8px; height:5px; border-radius:50% 50% 0 0; background:#ff8fae; }
-.frame-blink .slime-eye b { transform:translateY(0); }
-.frame-wink .slime-eye-left b { transform:translateY(0); }
+.slime-mouth { position:absolute; left:38px; top:42px; width:17px; height:8px; overflow:visible; border:0; border-bottom:3px solid rgba(20,76,130,.92); border-radius:0 0 52% 52%; background:transparent; box-shadow:0 1px 0 rgba(255,255,255,.18); transform-origin:center; transition:left .14s ease,top .14s ease,width .14s ease,height .14s ease,border-radius .14s ease,transform .14s ease,background-color .12s ease,box-shadow .12s ease; }
+.slime-mouth i { position:absolute; left:50%; bottom:-1px; width:9px; height:5px; border-radius:55% 55% 25% 25%; opacity:0; background:linear-gradient(180deg,#ff9fbb,#f277a0); transform:translateX(-50%); transition:opacity .1s ease; }
 .frame-surprised .slime-eye { transform:scale(1.08); }
-.frame-surprised .slime-mouth { left:40px; top:43px; width:13px; height:15px; border-radius:50%; }
+.frame-surprised .slime-mouth { left:40px; top:42px; width:13px; height:16px; overflow:hidden; border:1px solid rgba(19,72,125,.7); border-radius:50%; background:radial-gradient(circle at 50% 30%,#1d6094,#103d70 72%); box-shadow:inset 0 2px 4px rgba(4,27,67,.38),0 1px 0 rgba(255,255,255,.16); }
 .pet-character.eyes-wide .slime-eye { transform:scale(1.12); }
-.pet-character.eyes-soft .slime-eye { transform:scaleY(.76); }
-.pet-character.eyes-closed .slime-eye b { transform:translateY(0); }
-.pet-character.eyes-wink-left .slime-eye-left b { transform:translateY(0); }
-.pet-character.eyes-wink-right .slime-eye-right b { transform:translateY(0); }
-.pet-character.mouth-smile .slime-mouth { left:36px; top:43px; width:21px; height:10px; border-top-color:transparent; border-radius:20% 20% 60% 60%; transform:scaleY(.8); }
-.pet-character.mouth-grin .slime-mouth { left:33px; top:40px; width:27px; height:16px; border-radius:20% 20% 55% 55%; transform:scaleY(.88); }
-.pet-character.mouth-open .slime-mouth { left:37px; top:39px; width:20px; height:20px; border-radius:45%; transform:scale(1.05); }
-.pet-character.mouth-o .slime-mouth { left:39px; top:41px; width:15px; height:17px; border-radius:50%; transform:scale(.9); }
-.pet-character.mouth-pout .slime-mouth { left:39px; top:46px; width:16px; height:8px; border-radius:50% 50% 25% 25%; transform:rotate(180deg); }
+.pet-character.frame-blink .slime-eye,
+.pet-character.frame-wink .slime-eye-left,
+.pet-character.eyes-soft .slime-eye,
+.pet-character.eyes-closed .slime-eye,
+.pet-character.eyes-wink-left .slime-eye-left,
+.pet-character.eyes-wink-right .slime-eye-right,
+.pet-character.expression-sleepy .slime-eye { overflow:visible; border-color:transparent; background:transparent; box-shadow:none; }
+.pet-character.frame-blink .slime-eye .slime-pupil,
+.pet-character.frame-wink .slime-eye-left .slime-pupil,
+.pet-character.eyes-soft .slime-eye .slime-pupil,
+.pet-character.eyes-closed .slime-eye .slime-pupil,
+.pet-character.eyes-wink-left .slime-eye-left .slime-pupil,
+.pet-character.eyes-wink-right .slime-eye-right .slime-pupil,
+.pet-character.expression-sleepy .slime-eye .slime-pupil { opacity:0; transform:translateY(3px) scaleY(.2); }
+.pet-character.frame-blink .slime-eye b,
+.pet-character.frame-wink .slime-eye-left b,
+.pet-character.eyes-closed .slime-eye b,
+.pet-character.eyes-wink-left .slime-eye-left b,
+.pet-character.eyes-wink-right .slime-eye-right b { opacity:1; transform:scaleX(.96) scaleY(.3); }
+.pet-character.eyes-soft .slime-eye b,
+.pet-character.expression-sleepy .slime-eye b { opacity:1; transform:translateY(-1px) scaleX(1.03) scaleY(.72); }
+.pet-character.eyes-soft .slime-eye-left b,
+.pet-character.expression-sleepy .slime-eye-left b { transform:translateY(-1px) rotate(-3deg) scaleX(1.03) scaleY(.72); }
+.pet-character.eyes-soft .slime-eye-right b,
+.pet-character.expression-sleepy .slime-eye-right b { transform:translateY(-1px) rotate(3deg) scaleX(1.03) scaleY(.72); }
+.pet-character.mouth-smile .slime-mouth { left:34px; top:40px; width:25px; height:11px; border-bottom-width:3px; border-radius:0 0 55% 55%; transform:scaleY(.84); }
+.pet-character.mouth-grin .slime-mouth { left:34px; top:39px; width:26px; height:17px; overflow:hidden; border:1px solid rgba(19,72,125,.68); border-radius:44% 44% 52% 52%; background:radial-gradient(ellipse at 50% 28%,#205f91,#103966 74%); box-shadow:inset 0 3px 5px rgba(3,24,57,.38),0 1px 0 rgba(255,255,255,.18); transform:scaleY(.9); }
+.pet-character.mouth-open .slime-mouth { left:36px; top:38px; width:21px; height:21px; overflow:hidden; border:1px solid rgba(19,72,125,.68); border-radius:46% 46% 50% 50%; background:radial-gradient(circle at 50% 28%,#205f91,#103966 72%); box-shadow:inset 0 3px 6px rgba(3,24,57,.4),0 1px 0 rgba(255,255,255,.18); transform:scale(1.02); }
+.pet-character.mouth-o .slime-mouth { left:39px; top:41px; width:15px; height:17px; overflow:hidden; border:1px solid rgba(19,72,125,.68); border-radius:50%; background:radial-gradient(circle at 50% 32%,#235f8e,#103865 75%); box-shadow:inset 0 2px 4px rgba(3,24,57,.42),0 1px 0 rgba(255,255,255,.15); transform:scale(.88); }
+.pet-character.mouth-pout .slime-mouth { left:38px; top:47px; width:18px; height:8px; border:0; border-top:3px solid rgba(20,76,130,.92); border-radius:50% 50% 0 0; box-shadow:0 -1px 0 rgba(255,255,255,.14); transform:rotate(-2deg) scaleX(.9); }
+.pet-character.mouth-grin .slime-mouth i,
+.pet-character.mouth-open .slime-mouth i { opacity:1; }
 .pet-character.thinking { animation:pet-think .75s ease-in-out infinite alternate; }
 .period-morning .pet-character { filter:drop-shadow(0 12px 16px rgba(5,73,142,.35)) brightness(1.05); }
 .period-evening .pet-character { filter:drop-shadow(0 12px 16px rgba(5,73,142,.35)) saturate(.94); }
@@ -84,7 +105,6 @@ button,input { font:inherit; }
 .pet-character.travel-left .slime-ground-shadow { animation:pet-travel-shadow-left .72s ease-out; }
 .pet-character.travel-right .slime-ground-shadow { animation:pet-travel-shadow-right .72s ease-out; }
 .pet-character.expression-shy .slime-blush { opacity:.92; transform:scale(1.18); }
-.pet-character.expression-sleepy .slime-eye { transform:scaleY(.48); }
 .pet-character.expression-confused .slime-mouth { transform:rotate(7deg) scaleX(.85); }
 .pet-character.dragging .slime-rig { transform:scaleX(1.09) scaleY(.92) rotate(calc(var(--gaze-x,0) * 3deg)); transition:transform .08s ease; animation:none; }
 .pet-ripple { position:absolute; left:50%; top:58%; width:70px; height:45px; border:3px solid rgba(105,211,255,.8); border-radius:50%; opacity:0; pointer-events:none; transform:translate(-50%,-50%) scale(.45); }

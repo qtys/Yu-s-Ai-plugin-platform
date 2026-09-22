@@ -29,6 +29,7 @@ type PetEyePose = "normal" | "wide" | "soft" | "closed" | "wink-left" | "wink-ri
 type PetMouthPose = "neutral" | "smile" | "grin" | "open" | "o" | "pout";
 type PetEffect = "none" | "heart" | "sparkle" | "question" | "sweat" | "star" | "music";
 type MotionKeyframe = { at: number; x: number; y: number; rotate: number; scaleX: number; scaleY: number };
+type PrimitiveSignature = [number, number, number, number, number, number, number, number];
 type MotionSource = "idle" | "proactive" | "chat" | "model" | "feedback" | "user" | "drag";
 type PetMotion = { action: DirectedAction; expression: PetExpression; gazeMode: GazeMode; lookX: number; lookY: number; offsetX: number; offsetY: number; intensity: number; duration: number; movement: PetMovement; moveDistance: number; emotionLabel?: string; eyes?: PetEyePose; mouth?: PetMouthPose; blush?: number; effect?: PetEffect; easing?: string; repeat?: number; keyframes?: MotionKeyframe[]; faceKeyframes?: MotionKeyframe[]; crestKeyframes?: MotionKeyframe[]; generatedLayers?: string[]; motionQuality?: number };
 type MotionDebug = { source: MotionSource; priority: number; startedAt: number; expiresAt: number | null; raw: string };
@@ -109,38 +110,144 @@ function parseModelMotion(value: unknown): PetMotion | null {
   };
 }
 
-function roleAwareIdleMotion(character: Character | null, period: DayPeriod, recent: DirectedAction[]): PetMotion {
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function randomBetween(min: number, max: number) {
+  return min + Math.random() * (max - min);
+}
+
+function signatureDistance(left: PrimitiveSignature, right: PrimitiveSignature) {
+  return Math.sqrt(left.reduce((sum, value, index) => sum + (value - right[index]) ** 2, 0) / left.length);
+}
+
+/**
+ * Synthesizes an idle performance from forces instead of selecting an animation.
+ * Body impulses are integrated through a damped spring; the face and crest are
+ * generated afterwards from delayed body velocity so each layer has inertia.
+ */
+function synthesizeIdlePrimitive(character: Character | null, period: DayPeriod, recent: PrimitiveSignature[]) {
   const profile = `${character?.personality ?? ""} ${character?.speaking_style ?? ""}`;
   const energetic = /活泼|开朗|元气|可爱|调皮|热情/.test(profile);
   const shy = /害羞|内向|腼腆|胆小/.test(profile);
   const calm = /冷静|理性|沉稳|安静|严谨/.test(profile);
   const sleepy = period === "night" || /慵懒|困倦|嗜睡/.test(profile);
-  const motions: PetMotion[] = sleepy ? [
-    { ...EMPTY_MOTION, action: "squish", expression: "sleepy", gazeMode: "none", intensity: .42, duration: 2200 },
-    { ...EMPTY_MOTION, action: "lean-left", expression: "sleepy", gazeMode: "none", intensity: .35, duration: 2100 },
-    { ...EMPTY_MOTION, action: "wiggle", expression: "idle", intensity: .35, duration: 1500 },
-  ] : energetic ? [
-    { ...EMPTY_MOTION, action: "bounce", expression: "happy", intensity: .8, duration: 1400, movement: "toward-cursor", moveDistance: 38 },
-    { ...EMPTY_MOTION, action: "frontflip", expression: "happy", gazeMode: "directed", lookY: -.5, intensity: .85, duration: 1050 },
-    { ...EMPTY_MOTION, action: "backflip", expression: "happy", intensity: .82, duration: 1050 },
-    { ...EMPTY_MOTION, action: "wiggle", expression: "happy", intensity: .72, duration: 1350, movement: "wander", moveDistance: 52 },
-  ] : shy ? [
-    { ...EMPTY_MOTION, action: "shy", expression: "shy", gazeMode: "none", intensity: .45, duration: 2100, movement: "away-cursor", moveDistance: 28 },
-    { ...EMPTY_MOTION, action: "peek", expression: "surprised", gazeMode: "directed", lookX: .8, intensity: .5, duration: 1800 },
-    { ...EMPTY_MOTION, action: "squish", expression: "shy", gazeMode: "none", intensity: .42, duration: 1600 },
-  ] : calm ? [
-    { ...EMPTY_MOTION, action: "lean-left", expression: "idle", intensity: .35, duration: 1900 },
-    { ...EMPTY_MOTION, action: "lean-right", expression: "idle", intensity: .35, duration: 1900 },
-    { ...EMPTY_MOTION, action: "squish", expression: "idle", intensity: .32, duration: 1700, movement: "wander", moveDistance: 24 },
-  ] : [
-    { ...EMPTY_MOTION, action: "bounce", expression: "happy", intensity: .62, duration: 1350 },
-    { ...EMPTY_MOTION, action: "wiggle", expression: "idle", intensity: .55, duration: 1400, movement: "wander", moveDistance: 34 },
-    { ...EMPTY_MOTION, action: "frontflip", expression: "happy", intensity: .72, duration: 1050 },
-    { ...EMPTY_MOTION, action: "squish", expression: "idle", intensity: .48, duration: 1500 },
-  ];
-  const fresh = motions.filter((motion) => !recent.includes(motion.action));
-  const choices = fresh.length ? fresh : motions;
-  return { ...choices[Math.floor(Math.random() * choices.length)] };
+  const baseEnergy = energetic ? .9 : sleepy ? .38 : calm ? .48 : shy ? .52 : .68;
+
+  const createCandidate = () => {
+    const energy = clamp(baseEnergy * randomBetween(.72, 1.2), .28, 1);
+    const frameCount = Math.floor(randomBetween(6, 8));
+    const pulseCount = Math.floor(randomBetween(2, energetic ? 5 : 4));
+    const pulses = Array.from({ length: pulseCount }, () => ({
+      center: randomBetween(.12, .74),
+      width: randomBetween(.07, .2),
+      x: randomBetween(-5.8, 5.8) * energy * (shy ? .72 : 1),
+      y: randomBetween(-8.5, 5) * energy,
+      torque: randomBetween(-15, 15) * energy,
+      squash: randomBetween(-.13, .13) * energy,
+    }));
+    let x = 0, y = 0, rotate = 0, vx = 0, vy = 0, angularVelocity = 0;
+    const body: MotionKeyframe[] = [{ at: 0, x: 0, y: 0, rotate: 0, scaleX: 1, scaleY: 1 }];
+    for (let index = 1; index < frameCount - 1; index += 1) {
+      const at = index / (frameCount - 1);
+      let forceX = 0, forceY = 0, torque = 0, squash = 0;
+      for (const pulse of pulses) {
+        const influence = Math.exp(-(((at - pulse.center) / pulse.width) ** 2));
+        forceX += pulse.x * influence;
+        forceY += pulse.y * influence;
+        torque += pulse.torque * influence;
+        squash += pulse.squash * influence;
+      }
+      vx = (vx + forceX - x * randomBetween(.12, .2)) * randomBetween(.55, .76);
+      vy = (vy + forceY - y * randomBetween(.16, .24)) * randomBetween(.52, .72);
+      angularVelocity = (angularVelocity + torque - rotate * .16) * randomBetween(.5, .72);
+      x = clamp(x + vx, -16, 16);
+      y = clamp(y + vy, -30, 10);
+      rotate = clamp(rotate + angularVelocity, -70, 70);
+      const speedStretch = clamp((-vy * .009) + squash, -.18, .2);
+      const scaleY = clamp(1 + speedStretch, .79, 1.22);
+      const scaleX = clamp(1 - speedStretch * .72 + Math.abs(angularVelocity) * .0015, .8, 1.22);
+      body.push({ at, x, y, rotate, scaleX, scaleY });
+    }
+    body.push({ at: 1, x: 0, y: 0, rotate: 0, scaleX: 1, scaleY: 1 });
+
+    const face = body.map((frame, index) => {
+      const previous = body[Math.max(0, index - 1)];
+      const velocityX = frame.x - previous.x;
+      const velocityY = frame.y - previous.y;
+      return {
+        at: frame.at,
+        x: clamp(frame.x * -.18 - velocityX * .42, -8, 8),
+        y: clamp(frame.y * -.08 - velocityY * .3, -7, 7),
+        rotate: clamp(frame.rotate * -.12 - velocityX * .32, -16, 16),
+        scaleX: clamp(1 + (frame.scaleX - 1) * .35, .84, 1.16),
+        scaleY: clamp(1 + (frame.scaleY - 1) * .35, .84, 1.16),
+      };
+    });
+    const crest = body.map((frame, index) => {
+      const previous = body[Math.max(0, index - 1)];
+      const velocityX = frame.x - previous.x;
+      const velocityY = frame.y - previous.y;
+      return {
+        at: frame.at,
+        x: clamp(-velocityX * .42, -5, 5),
+        y: clamp(-velocityY * .25, -6, 6),
+        rotate: clamp(-frame.rotate * .45 - velocityX * 1.5, -44, 44),
+        scaleX: clamp(1 - (frame.scaleY - 1) * .35, .76, 1.28),
+        scaleY: clamp(1 + (frame.scaleY - 1) * .62, .74, 1.32),
+      };
+    });
+
+    const maxX = Math.max(...body.map((frame) => Math.abs(frame.x)));
+    const maxLift = Math.abs(Math.min(...body.map((frame) => frame.y)));
+    const maxRotate = Math.max(...body.map((frame) => Math.abs(frame.rotate)));
+    const deformation = Math.max(...body.map((frame) => Math.abs(frame.scaleY - frame.scaleX)));
+    const directionChanges = body.slice(2).filter((frame, index) => {
+      const previous = body[index + 1];
+      const before = body[index];
+      return Math.sign(frame.x - previous.x) !== Math.sign(previous.x - before.x);
+    }).length;
+    const duration = Math.round(randomBetween(sleepy ? 1900 : 1250, sleepy ? 2900 : energetic ? 2100 : 2500));
+    const signature: PrimitiveSignature = [
+      maxX / 16,
+      maxLift / 30,
+      maxRotate / 70,
+      deformation / .42,
+      directionChanges / 4,
+      pulseCount / 4,
+      duration / 2900,
+      body.reduce((sum, frame) => sum + frame.x, 0) >= 0 ? 1 : -1,
+    ];
+    const novelty = recent.length ? Math.min(...recent.map((item) => signatureDistance(signature, item))) : 1;
+    const expression: PetExpression = sleepy ? "sleepy" : energy > .78 ? "happy" : shy ? "shy" : maxRotate > 38 ? "surprised" : "idle";
+    const eyes: PetEyePose = sleepy ? "soft" : maxRotate > 42 ? "wide" : Math.random() < .22 ? (Math.random() < .5 ? "wink-left" : "wink-right") : "normal";
+    const mouth: PetMouthPose = energy > .8 ? "grin" : shy ? "smile" : maxLift > 16 ? "o" : "neutral";
+    const direction = body.reduce((sum, frame) => sum + frame.x, 0) >= 0 ? "右" : "左";
+    const motion: PetMotion = {
+      ...EMPTY_MOTION,
+      action: "custom",
+      expression,
+      gazeMode: Math.random() < (shy ? .35 : .72) ? "cursor" : "none",
+      intensity: clamp(randomBetween(.72, 1) * (energetic ? 1 : .9), .55, 1),
+      duration,
+      emotionLabel: `即兴·${direction}${maxLift > 14 ? "跃" : "摆"}${maxRotate > 36 ? "旋" : "弹"}`,
+      eyes,
+      mouth,
+      blush: shy ? randomBetween(.25, .65) : randomBetween(0, .25),
+      effect: energy > .86 && Math.random() < .28 ? "sparkle" : "none",
+      easing: Math.random() < .55 ? "spring" : "ease-in-out",
+      repeat: 1,
+      keyframes: body,
+      faceKeyframes: face,
+      crestKeyframes: crest,
+      generatedLayers: ["动力曲线", "面部惯性", "水滴惯性"],
+      motionQuality: Math.round(clamp(76 + novelty * 24, 76, 100)),
+    };
+    return { motion, signature, novelty };
+  };
+
+  return Array.from({ length: 14 }, createCandidate).sort((left, right) => right.novelty - left.novelty)[0];
 }
 
 function getDayPeriod(date = new Date()): DayPeriod {
@@ -280,7 +387,7 @@ export default function Pet() {
   const motionPriorityRef = useRef(0);
   const motionSequenceRef = useRef(0);
   const queuedMotionRef = useRef<{ motion: PetMotion; source: MotionSource; raw: string } | null>(null);
-  const recentActionsRef = useRef<DirectedAction[]>([]);
+  const recentPrimitiveSignaturesRef = useRef<PrimitiveSignature[]>([]);
   const recentMotionLabelsRef = useRef<string[]>([]);
   const autoMoveTimerRef = useRef<number | undefined>(undefined);
   const pendingAutoMoveRef = useRef<{ motion: PetMotion; expiresAt: number } | null>(null);
@@ -342,12 +449,25 @@ export default function Pet() {
 
   useEffect(() => {
     if (expanded || dragging || busy) return;
-    const timer = window.setInterval(() => {
-      const motion = roleAwareIdleMotion(character, dayPeriod, recentActionsRef.current);
-      schedulePetMotion(motion, "idle", `role idle: ${motion.action}`);
-    }, 11000);
-    return () => window.clearInterval(timer);
-  // oxlint-disable-next-line react-hooks/exhaustive-deps -- the scheduler uses live refs and this interval must not restart on every render
+    let cancelled = false;
+    let timer: number;
+    const scheduleNext = (first = false) => {
+      const delay = first ? randomBetween(4500, 9000) : randomBetween(8500, 21000);
+      timer = window.setTimeout(() => {
+        if (cancelled) return;
+        const generated = synthesizeIdlePrimitive(character, dayPeriod, recentPrimitiveSignaturesRef.current);
+        if (schedulePetMotion(generated.motion, "idle", `procedural primitive: ${generated.motion.emotionLabel}`)) {
+          recentPrimitiveSignaturesRef.current = [generated.signature, ...recentPrimitiveSignaturesRef.current].slice(0, 16);
+        }
+        scheduleNext();
+      }, delay);
+    };
+    scheduleNext(true);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  // oxlint-disable-next-line react-hooks/exhaustive-deps -- scheduler reads live refs; timing intentionally stays irregular
   }, [expanded, dragging, busy, dayPeriod, character]);
 
   useEffect(() => {
@@ -725,7 +845,7 @@ export default function Pet() {
       proceduralAnimationsRef.current.push(slimeRigRef.current.animate(
         motion.keyframes.map((frame) => ({
           offset: frame.at,
-          transform: `translate(${(frame.x * strength).toFixed(2)}px, ${(frame.y * strength).toFixed(2)}px) rotate(${(frame.rotate * strength).toFixed(2)}deg) scale(${frame.scaleX.toFixed(3)}, ${frame.scaleY.toFixed(3)})`,
+          transform: `translate(${(frame.x * strength).toFixed(2)}px, ${(frame.y * strength).toFixed(2)}px) rotate(${(frame.rotate * strength).toFixed(2)}deg) scale(${(1 + (frame.scaleX - 1) * strength).toFixed(3)}, ${(1 + (frame.scaleY - 1) * strength).toFixed(3)})`,
         })),
         { duration: motion.duration, iterations: repeat, easing, fill: "both" },
       ));
@@ -733,7 +853,7 @@ export default function Pet() {
         proceduralAnimationsRef.current.push(slimeFaceRef.current.animate(
           motion.faceKeyframes.map((frame) => ({
             offset: frame.at,
-            transform: `translate(${((frame.x + motion.lookX * 2) * strength).toFixed(2)}px, ${((frame.y + motion.lookY * 1.5) * strength).toFixed(2)}px) rotate(${((frame.rotate + motion.lookX) * strength).toFixed(2)}deg) scale(${frame.scaleX.toFixed(3)}, ${frame.scaleY.toFixed(3)})`,
+            transform: `translate(${((frame.x + motion.lookX * 2) * strength).toFixed(2)}px, ${((frame.y + motion.lookY * 1.5) * strength).toFixed(2)}px) rotate(${((frame.rotate + motion.lookX) * strength).toFixed(2)}deg) scale(${(1 + (frame.scaleX - 1) * strength).toFixed(3)}, ${(1 + (frame.scaleY - 1) * strength).toFixed(3)})`,
           })),
           { duration: motion.duration, iterations: repeat, easing, fill: "both" },
         ));
@@ -742,7 +862,7 @@ export default function Pet() {
         proceduralAnimationsRef.current.push(slimeCrestRef.current.animate(
           motion.crestKeyframes.map((frame) => ({
             offset: frame.at,
-            transform: `translate(${(frame.x * strength).toFixed(2)}px, ${(frame.y * strength).toFixed(2)}px) rotate(${(19 + frame.rotate * strength).toFixed(2)}deg) skewY(-7deg) scale(${frame.scaleX.toFixed(3)}, ${frame.scaleY.toFixed(3)})`,
+            transform: `translate(${(frame.x * strength).toFixed(2)}px, ${(frame.y * strength).toFixed(2)}px) rotate(${(19 + frame.rotate * strength).toFixed(2)}deg) skewY(-7deg) scale(${(1 + (frame.scaleX - 1) * strength).toFixed(3)}, ${(1 + (frame.scaleY - 1) * strength).toFixed(3)})`,
           })),
           { duration: motion.duration, iterations: repeat, easing, fill: "both" },
         ));
@@ -750,7 +870,6 @@ export default function Pet() {
     }
     const now = Date.now();
     setActiveMotion({ source, priority, startedAt: now, expiresAt: now + totalDuration, raw });
-    recentActionsRef.current = [motion.action, ...recentActionsRef.current.filter((action) => action !== motion.action)].slice(0, 2);
     const motionLabel = motion.emotionLabel || `${motion.action}/${motion.expression}/${motion.effect ?? "none"}`;
     recentMotionLabelsRef.current = [motionLabel, ...recentMotionLabelsRef.current.filter((label) => label !== motionLabel)].slice(0, 5);
     if (motion.movement !== "stay" && motion.moveDistance > 0) {
@@ -891,6 +1010,13 @@ export default function Pet() {
   function playReplyMotion(text: string, modelMotion?: PetMotion | null, raw = "") {
     if (!motionEnabled || draggingRef.current) return;
     schedulePetMotion(modelMotion ?? replyDrivenMotion(text), "model", raw || "local semantic fallback", true);
+  }
+
+  function playGeneratedPreview() {
+    const generated = synthesizeIdlePrimitive(character, dayPeriod, recentPrimitiveSignaturesRef.current);
+    if (schedulePetMotion(generated.motion, "user", `generated preview: ${generated.motion.emotionLabel}`)) {
+      recentPrimitiveSignaturesRef.current = [generated.signature, ...recentPrimitiveSignaturesRef.current].slice(0, 16);
+    }
   }
 
   function toggleMenu() {
@@ -1257,7 +1383,7 @@ export default function Pet() {
             <div className="pet-action-controls">
               <button type="button" disabled={directedMotion.action.endsWith("flip")} onClick={() => schedulePetMotion({ ...EMPTY_MOTION, action: "frontflip", expression: "happy", intensity: .85, duration: 1050 }, "user", "manual frontflip")}>前空翻</button>
               <button type="button" disabled={directedMotion.action.endsWith("flip")} onClick={() => schedulePetMotion({ ...EMPTY_MOTION, action: "backflip", expression: "happy", intensity: .85, duration: 1050 }, "user", "manual backflip")}>后空翻</button>
-              <button type="button" disabled={directedMotion.action === "custom"} onClick={() => schedulePetMotion({ ...EMPTY_MOTION, action: "custom", expression: "surprised", emotionLabel: "蓄力斜跳后回头眨眼", eyes: "wide", mouth: "o", blush: .35, effect: "sparkle", intensity: .8, duration: 2100, easing: "spring", repeat: 1, keyframes: [{ at: 0, x: 0, y: 0, rotate: 0, scaleX: 1, scaleY: 1 }, { at: .22, x: -5, y: 4, rotate: -8, scaleX: 1.12, scaleY: .86 }, { at: .48, x: 8, y: -22, rotate: 16, scaleX: .9, scaleY: 1.13 }, { at: .72, x: 3, y: 1, rotate: -5, scaleX: 1.14, scaleY: .86 }, { at: 1, x: 0, y: 0, rotate: 0, scaleX: 1, scaleY: 1 }], faceKeyframes: [{ at: 0, x: 0, y: 0, rotate: 0, scaleX: 1, scaleY: 1 }, { at: .35, x: -5, y: 2, rotate: -5, scaleX: .94, scaleY: .94 }, { at: .62, x: 7, y: -3, rotate: 8, scaleX: 1.08, scaleY: 1.08 }, { at: 1, x: 0, y: 0, rotate: 0, scaleX: 1, scaleY: 1 }], crestKeyframes: [{ at: 0, x: 0, y: 0, rotate: 0, scaleX: 1, scaleY: 1 }, { at: .3, x: -3, y: 2, rotate: -30, scaleX: .82, scaleY: 1.2 }, { at: .58, x: 3, y: -3, rotate: 35, scaleX: 1.12, scaleY: .9 }, { at: .82, x: -1, y: 1, rotate: -16, scaleX: .96, scaleY: 1.08 }, { at: 1, x: 0, y: 0, rotate: 0, scaleX: 1, scaleY: 1 }] }, "user", "manual layered creative preview")}>创意试演</button>
+              <button type="button" disabled={directedMotion.action === "custom"} onClick={playGeneratedPreview}>即兴生成</button>
             </div>
             <label>桌宠大小 <input type="range" min="70" max="125" value={petSize} onChange={(event) => updatePetSize(Number(event.target.value))} /><span>{petSize}%</span></label>
             <label>透明度 <input type="range" min="30" max="100" value={petOpacity} onChange={(event) => setPetOpacity(Number(event.target.value))} /><span>{petOpacity}%</span></label>

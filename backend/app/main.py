@@ -45,9 +45,9 @@ PET_ACTION_OPEN = "<pet_action>"
 PET_ACTION_CLOSE = "</pet_action>"
 PET_ACTION_PROMPT = """【桌宠动作导演工具】
 你可以为蓝色史莱姆创作符合角色性格、本次语气和情绪的表演。若接口提供 perform_pet_action 工具，请在正常正文后调用它一次，且不要再输出动作标签；若没有该工具，才另起一行追加一个 <pet_action> JSON 标签。工具调用和标签都不会展示给用户，不要在正文中解释它们。
-你不是在选择动画菜单，而是在导演一段短表演。除非回复完全中性、适合静止，否则优先使用 action=\"custom\"；预设 none、bounce、celebrate、lean_left、lean_right、peek、shy、squish、wiggle、frontflip、backflip 只作为低调回退。
+你不是在选择动画菜单，也不是把既有动作换序组合，而是在创造一个此前不存在的软体动作。先想象情绪如何变成重心变化、受力、迟疑、惯性和回弹，再从零写出运动曲线。除非回复完全中性、适合静止，否则优先使用 action=\"custom\"；预设 none、bounce、celebrate、lean_left、lean_right、peek、shy、squish、wiggle、frontflip、backflip 只作为低调回退。
 自定义表演可独立编排三层，所有关键帧第一帧 at=0、末帧 at=1，且 at 严格递增：
-- body_keyframes（必填，2~7 帧）：at(0~1)、x(-18~18)、y(-40~16)、rotate(-540~540)、scale_x/scale_y(0.72~1.3)。负责重心、蓄力、腾空、落地与果冻形变。
+- body_keyframes（必填，2~7 帧）：at(0~1)、x(-18~18)、y(-40~16)、rotate(-540~540)、scale_x/scale_y(0.72~1.3)。负责重心、受力、迟疑、惯性、落地与果冻形变；不要先选“跳/摇/翻”等动作名称再套模板。
 - face_keyframes（可选，2~7 帧）：at、x(-10~10)、y(-10~10)、rotate(-20~20)、scale_x/scale_y(0.75~1.25)。负责表情的迟疑、追视、后知后觉和反应延迟。
 - crest_keyframes（可选，2~7 帧）：at、x(-5~5)、y(-7~7)、rotate(-45~45)、scale_x/scale_y(0.7~1.35)。负责头顶水滴的惯性、甩动和弹性跟随。
 可选 effect：none、heart、sparkle、question、sweat、star、music；特效必须服务于情绪，不能每次都出现。请设计有起承转合的动作，如“先缩成一团蓄力→斜跳→脸慢半拍跟上→水滴回弹”“听不懂时身体停住→脸探出去→问号浮起”，不要只做整只上下摇晃，也不要每次都翻滚。
@@ -69,7 +69,7 @@ PET_ACTION_TOOL = {
     "type": "function",
     "function": {
         "name": "perform_pet_action",
-        "description": "为蓝色史莱姆桌宠编排与当前回复情绪一致的分层短表演。优先使用 custom 并分别设计身体、脸和头顶水滴。",
+        "description": "为蓝色史莱姆桌宠从受力、惯性和软体形变开始创造全新的分层短表演，而非组合已有动作。优先使用 custom 并分别设计身体、脸和头顶水滴。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -667,12 +667,12 @@ async def _latest_release() -> dict:
 async def lifespan(_: FastAPI):
     configure_logging()
     init_db()
-    logger.info("backend_started version=0.15.4")
+    logger.info("backend_started version=0.15.7")
     yield
     logger.info("backend_stopped")
 
 
-app = FastAPI(title="Yu's AI API", version="0.15.4", lifespan=lifespan)
+app = FastAPI(title="Yu's AI API", version="0.15.7", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://tauri.localhost", "tauri://localhost"],
