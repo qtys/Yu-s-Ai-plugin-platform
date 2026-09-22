@@ -1,5 +1,5 @@
 use std::{fs::OpenOptions, io::Write, sync::{Arc, Mutex}};
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::{
@@ -18,7 +18,13 @@ static PET_INTERACTION_MODE: AtomicU8 = AtomicU8::new(0);
 static PET_CURSOR_IGNORED: AtomicBool = AtomicBool::new(false);
 static PET_ALIGN_LEFT: AtomicBool = AtomicBool::new(false);
 static PET_PROACTIVE_HEIGHT: AtomicU32 = AtomicU32::new(0);
+static PET_SCALE_MILLI: AtomicU32 = AtomicU32::new(1000);
+static PET_DIALOG_WIDTH: AtomicU32 = AtomicU32::new(430);
+static PET_DIALOG_HEIGHT: AtomicU32 = AtomicU32::new(520);
+static PET_PLACEMENT_BELOW: AtomicBool = AtomicBool::new(false);
 static PET_VISIBLE: AtomicBool = AtomicBool::new(false);
+static PET_GAZE_LAST_EMIT_MS: AtomicU64 = AtomicU64::new(0);
+static PET_AUTO_MOVE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static BACKEND_SHUTDOWN_STARTED: AtomicBool = AtomicBool::new(false);
 
 struct DesktopState {
@@ -31,6 +37,12 @@ struct DesktopState {
 
 #[derive(Serialize)]
 struct PetPosition {
+  x: f64,
+  y: f64,
+}
+
+#[derive(Clone, Serialize)]
+struct PetGaze {
   x: f64,
   y: f64,
 }
@@ -174,11 +186,20 @@ fn resize_pet_window(window: &WebviewWindow, expanded: bool, pet_scale: f64, cur
 
 #[tauri::command]
 fn set_pet_layout(window: WebviewWindow, expanded: bool, scale: f64, current_expanded: bool, current_placement: String, dialog_width: f64, dialog_height: f64) -> Result<String, String> {
-  resize_pet_window(&window, expanded, scale, current_expanded, &current_placement, dialog_width, dialog_height)
+  PET_SCALE_MILLI.store((scale.clamp(0.7, 1.25) * 1000.0).round() as u32, Ordering::Relaxed);
+  PET_DIALOG_WIDTH.store(dialog_width.clamp(430.0, 720.0).round() as u32, Ordering::Relaxed);
+  PET_DIALOG_HEIGHT.store(dialog_height.clamp(520.0, 760.0).round() as u32, Ordering::Relaxed);
+  let placement = resize_pet_window(&window, expanded, scale, current_expanded, &current_placement, dialog_width, dialog_height)?;
+  PET_PLACEMENT_BELOW.store(placement.starts_with("below"), Ordering::Relaxed);
+  Ok(placement)
 }
 
 #[tauri::command]
 fn resize_pet_dialog(window: WebviewWindow, width: f64, height: f64, scale: f64, placement: String) -> Result<String, String> {
+  PET_SCALE_MILLI.store((scale.clamp(0.7, 1.25) * 1000.0).round() as u32, Ordering::Relaxed);
+  PET_DIALOG_WIDTH.store(width.clamp(430.0, 720.0).round() as u32, Ordering::Relaxed);
+  PET_DIALOG_HEIGHT.store(height.clamp(520.0, 760.0).round() as u32, Ordering::Relaxed);
+  PET_PLACEMENT_BELOW.store(placement.starts_with("below"), Ordering::Relaxed);
   let dpi_scale = window.scale_factor().map_err(|error| error.to_string())?;
   let old_position = window.outer_position().map_err(|error| error.to_string())?.to_logical::<f64>(dpi_scale);
   let old_size = window.outer_size().map_err(|error| error.to_string())?.to_logical::<f64>(dpi_scale);
@@ -211,7 +232,49 @@ fn resize_pet_dialog(window: WebviewWindow, width: f64, height: f64, scale: f64,
 
 #[tauri::command]
 fn start_pet_drag(window: WebviewWindow) -> Result<(), String> {
+  PET_AUTO_MOVE_SEQUENCE.fetch_add(1, Ordering::AcqRel);
   window.start_dragging().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn cancel_pet_auto_move() -> u64 {
+  PET_AUTO_MOVE_SEQUENCE.fetch_add(1, Ordering::AcqRel) + 1
+}
+
+#[tauri::command]
+fn move_pet_by(window: WebviewWindow, delta_x: f64, delta_y: f64, duration_ms: u64) -> Result<u64, String> {
+  let dpi_scale = window.scale_factor().map_err(|error| error.to_string())?;
+  let start = window.outer_position().map_err(|error| error.to_string())?.to_logical::<f64>(dpi_scale);
+  let size = window.outer_size().map_err(|error| error.to_string())?.to_logical::<f64>(dpi_scale);
+  let Some(monitor) = window.current_monitor().map_err(|error| error.to_string())? else {
+    return Err("无法确定桌宠所在屏幕".to_string());
+  };
+  let monitor_scale = monitor.scale_factor();
+  let bounds = monitor.position().to_logical::<f64>(monitor_scale);
+  let monitor_size = monitor.size().to_logical::<f64>(monitor_scale);
+  let max_x = (bounds.x + monitor_size.width - size.width).max(bounds.x);
+  let max_y = (bounds.y + monitor_size.height - size.height).max(bounds.y);
+  let target = LogicalPosition::new(
+    (start.x + delta_x.clamp(-140.0, 140.0)).clamp(bounds.x, max_x),
+    (start.y + delta_y.clamp(-100.0, 100.0)).clamp(bounds.y, max_y),
+  );
+  let token = PET_AUTO_MOVE_SEQUENCE.fetch_add(1, Ordering::AcqRel) + 1;
+  let duration = duration_ms.clamp(240, 1600);
+  std::thread::spawn(move || {
+    let steps = (duration / 16).max(1);
+    for step in 1..=steps {
+      if PET_AUTO_MOVE_SEQUENCE.load(Ordering::Acquire) != token { return; }
+      let progress = step as f64 / steps as f64;
+      let eased = 1.0 - (1.0 - progress).powi(3) + (progress * std::f64::consts::PI * 3.0).sin() * (1.0 - progress) * 0.035;
+      let next = LogicalPosition::new(start.x + (target.x - start.x) * eased, start.y + (target.y - start.y) * eased);
+      let _ = window.set_position(next);
+      std::thread::sleep(std::time::Duration::from_millis(16));
+    }
+    if PET_AUTO_MOVE_SEQUENCE.load(Ordering::Acquire) == token {
+      let _ = window.set_position(target);
+    }
+  });
+  Ok(token)
 }
 
 #[tauri::command]
@@ -267,6 +330,7 @@ fn get_pet_position(window: WebviewWindow, expanded: bool, scale: f64, placement
 
 #[tauri::command]
 fn set_pet_position(window: WebviewWindow, x: f64, y: f64, scale: f64) -> Result<String, String> {
+  PET_SCALE_MILLI.store((scale.clamp(0.7, 1.25) * 1000.0).round() as u32, Ordering::Relaxed);
   let factor = scale.clamp(0.7, 1.25);
   let align_left = x - 59.0 * factor < 0.0;
   let pet_x = if align_left { 21.0 } else { 59.0 };
@@ -326,6 +390,7 @@ fn start_selection_monitor(app: AppHandle) {
   std::thread::spawn(move || {
     use rdev::{listen, simulate, Button, Event, EventType, Key};
     let (selection_sender, selection_receiver) = std::sync::mpsc::sync_channel::<()>(1);
+    let (gaze_sender, gaze_receiver) = std::sync::mpsc::sync_channel::<PetGaze>(1);
     let selection_app = app.clone();
     std::thread::spawn(move || {
       while selection_receiver.recv().is_ok() {
@@ -349,6 +414,12 @@ fn start_selection_monitor(app: AppHandle) {
         }
       }
     });
+    let gaze_app = app.clone();
+    std::thread::spawn(move || {
+      while let Ok(gaze) = gaze_receiver.recv() {
+        let _ = gaze_app.emit_to("pet", "global-cursor-gaze", gaze);
+      }
+    });
     let callback = move |event: Event| {
       if let EventType::MouseMove { x, y } = &event.event_type {
         // Never call into the window event loop from the global mouse hook while the
@@ -358,14 +429,42 @@ fn start_selection_monitor(app: AppHandle) {
         let callback_started = Instant::now();
         if let Some(pet) = app.get_webview_window("pet") {
           let mode = PET_INTERACTION_MODE.load(Ordering::Relaxed);
+          let geometry = if let (Ok(position), Ok(dpi_scale)) = (pet.outer_position(), pet.scale_factor()) {
+            let local_x = (*x - position.x as f64) / dpi_scale;
+            let local_y = (*y - position.y as f64) / dpi_scale;
+            let factor = (PET_SCALE_MILLI.load(Ordering::Relaxed) as f64 / 1000.0).clamp(0.7, 1.25);
+            Some((local_x / factor, local_y / factor))
+          } else {
+            None
+          };
+          if let Some((base_x, base_y)) = geometry {
+            let placement_left = PET_ALIGN_LEFT.load(Ordering::Relaxed);
+            let base_width = if mode == 2 { PET_DIALOG_WIDTH.load(Ordering::Relaxed) as f64 } else { 250.0 };
+            let base_height = if mode == 2 { PET_DIALOG_HEIGHT.load(Ordering::Relaxed) as f64 } else { 320.0 };
+            let pet_left = if placement_left { 36.0 } else { base_width - 176.0 };
+            let pet_top = if mode == 2 {
+              if PET_PLACEMENT_BELOW.load(Ordering::Relaxed) { 32.0 } else { base_height - 214.0 }
+            } else {
+              100.0
+            };
+            let delta_x = base_x - (pet_left + 70.0);
+            let delta_y = base_y - (pet_top + 75.0);
+            let distance = (delta_x * delta_x + delta_y * delta_y).sqrt();
+            let (gaze_x, gaze_y) = if distance < 8.0 {
+              (0.0, 0.0)
+            } else {
+              ((delta_x / distance).clamp(-1.0, 1.0), (delta_y / distance).clamp(-1.0, 1.0))
+            };
+            let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).map(|value| value.as_millis() as u64).unwrap_or(0);
+            let previous = PET_GAZE_LAST_EMIT_MS.load(Ordering::Relaxed);
+            if now_ms.saturating_sub(previous) >= 40
+              && PET_GAZE_LAST_EMIT_MS.compare_exchange(previous, now_ms, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+              let _ = gaze_sender.try_send(PetGaze { x: gaze_x, y: gaze_y });
+            }
+          }
           let interactive = if mode == 2 {
             true
-          } else if let (Ok(position), Ok(size), Ok(scale)) = (pet.outer_position(), pet.outer_size(), pet.scale_factor()) {
-              let local_x = (*x - position.x as f64) / scale;
-              let local_y = (*y - position.y as f64) / scale;
-              let factor = (size.width as f64 / scale / 250.0).max(0.01);
-              let base_x = local_x / factor;
-              let base_y = local_y / factor;
+          } else if let Some((base_x, base_y)) = geometry {
               let placement_left = PET_ALIGN_LEFT.load(Ordering::Relaxed);
               let pet_left = if placement_left { 36.0 } else { 74.0 };
               let over_pet = base_x >= pet_left && base_x <= pet_left + 140.0 && base_y >= 100.0 && base_y <= 250.0;
@@ -466,7 +565,7 @@ pub fn run() {
       always_on_top: Mutex::new(false),
       mini_mode: Mutex::new(false),
     })
-    .invoke_handler(tauri::generate_handler![set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, resize_pet_dialog, start_pet_drag, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, set_pet_interaction_mode, get_autostart_status, set_autostart, export_character_card, record_window_diagnostic])
+    .invoke_handler(tauri::generate_handler![set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, resize_pet_dialog, start_pet_drag, cancel_pet_auto_move, move_pet_by, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, set_pet_interaction_mode, get_autostart_status, set_autostart, export_character_card, record_window_diagnostic])
     .setup(|app| {
       let legacy_data_dir = app.path().app_data_dir()?;
       let data_dir = prepare_install_data_dir(app.handle())?;

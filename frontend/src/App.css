@@ -265,6 +265,10 @@ article {
   gap: 14px;
   margin-bottom: 28px;
 }
+.messages > article {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 96px;
+}
 .message-avatar {
   width: 34px;
   height: 34px;

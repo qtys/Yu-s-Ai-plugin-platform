@@ -1,3 +1,4 @@
+import { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -19,7 +20,7 @@ export function filterMarkdown(content: string): string {
     .trim();
 }
 
-export default function MessageContent({ content, mode }: { content: string; mode: MessageDisplayMode }) {
+function MessageContent({ content, mode }: { content: string; mode: MessageDisplayMode }) {
   if (mode === "plain") return <p>{filterMarkdown(content)}</p>;
   if (mode === "raw") return <p>{content}</p>;
   return (
@@ -34,3 +35,5 @@ export default function MessageContent({ content, mode }: { content: string; mod
     </div>
   );
 }
+
+export default memo(MessageContent);

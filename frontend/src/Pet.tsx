@@ -20,10 +20,128 @@ type TranslationPackage = { from_code: "zh" | "en"; to_code: "zh" | "en"; name: 
 type DownloadProgress = { stage: "testing" | "retrying" | "downloading" | "installing" | "complete" | "error"; percent: number; downloaded?: number; total?: number; error?: string; source?: string; attempt?: number; max_attempts?: number; resumed?: boolean };
 type PetFeature = "chat" | "translation" | "settings";
 type PetMood = "idle" | "tap" | "happy" | "confused";
-type IdleAction = "none" | "squish" | "wiggle" | "sleepy" | "frontflip" | "backflip";
 type PetFrame = "normal" | "blink" | "wink" | "surprised";
+type DirectedAction = "none" | "bounce" | "celebrate" | "lean-left" | "lean-right" | "peek" | "shy" | "squish" | "wiggle" | "tap" | "frontflip" | "backflip" | "custom";
+type GazeMode = "cursor" | "directed" | "none";
+type PetExpression = "idle" | "happy" | "shy" | "surprised" | "sleepy" | "confused";
+type PetMovement = "stay" | "left" | "right" | "toward-cursor" | "away-cursor" | "wander";
+type PetEyePose = "normal" | "wide" | "soft" | "closed" | "wink-left" | "wink-right";
+type PetMouthPose = "neutral" | "smile" | "grin" | "open" | "o" | "pout";
+type PetEffect = "none" | "heart" | "sparkle" | "question" | "sweat" | "star" | "music";
+type MotionKeyframe = { at: number; x: number; y: number; rotate: number; scaleX: number; scaleY: number };
+type MotionSource = "idle" | "proactive" | "chat" | "model" | "feedback" | "user" | "drag";
+type PetMotion = { action: DirectedAction; expression: PetExpression; gazeMode: GazeMode; lookX: number; lookY: number; offsetX: number; offsetY: number; intensity: number; duration: number; movement: PetMovement; moveDistance: number; emotionLabel?: string; eyes?: PetEyePose; mouth?: PetMouthPose; blush?: number; effect?: PetEffect; easing?: string; repeat?: number; keyframes?: MotionKeyframe[]; faceKeyframes?: MotionKeyframe[]; crestKeyframes?: MotionKeyframe[]; generatedLayers?: string[]; motionQuality?: number };
+type MotionDebug = { source: MotionSource; priority: number; startedAt: number; expiresAt: number | null; raw: string };
 type DayPeriod = "morning" | "daytime" | "evening" | "night";
 const PERIOD_LABELS: Record<DayPeriod, string> = { morning: "早晨", daytime: "白天", evening: "傍晚", night: "深夜" };
+const MOTION_PRIORITY: Record<MotionSource, number> = { idle: 10, proactive: 30, chat: 50, model: 70, feedback: 75, user: 85, drag: 100 };
+const MOTION_SOURCE_LABEL: Record<MotionSource, string> = { idle: "随机待机", proactive: "主动发言", chat: "回复生成", model: "模型指令", feedback: "操作反馈", user: "用户点击", drag: "桌宠拖动" };
+const EFFECT_GLYPH: Record<PetEffect, string> = { none: "", heart: "♥", sparkle: "✦", question: "?", sweat: "●", star: "★", music: "♪" };
+
+const EMPTY_MOTION: PetMotion = { action: "none", expression: "idle", gazeMode: "cursor", lookX: 0, lookY: 0, offsetX: 0, offsetY: 0, intensity: 0.7, duration: 900, movement: "stay", moveDistance: 0 };
+
+function replyDrivenMotion(text: string): PetMotion {
+  const value = text.trim();
+  if (!value) return { ...EMPTY_MOTION };
+  if (/[？?]|怎么|为什么|是否|吗[？?]?/.test(value))
+    return { ...EMPTY_MOTION, action: Math.random() > .5 ? "lean-left" : "lean-right", expression: "surprised", gazeMode: "directed", lookX: .7, lookY: -.25, offsetX: 2, offsetY: -1, intensity: .7, duration: 1900 };
+  if (/哈哈|开心|太好|恭喜|成功|好耶|！|!/.test(value))
+    return { ...EMPTY_MOTION, action: "celebrate", expression: "happy", gazeMode: "directed", lookX: 0, lookY: -.35, offsetX: 0, offsetY: -4, intensity: .9, duration: 1700 };
+  if (/抱歉|难过|遗憾|担心|休息|晚安|困/.test(value))
+    return { ...EMPTY_MOTION, action: "shy", expression: "shy", gazeMode: "none", lookX: 0, lookY: 0, offsetX: -2, offsetY: 2, intensity: .55, duration: 2300 };
+  if (/看看|发现|注意|这里|那边|左边|右边/.test(value))
+    return { ...EMPTY_MOTION, action: "peek", expression: "surprised", gazeMode: "directed", lookX: value.includes("左") ? -.9 : .9, lookY: 0, offsetX: value.includes("左") ? -4 : 4, offsetY: 0, intensity: .7, duration: 1800 };
+  return { ...EMPTY_MOTION, action: "bounce", expression: "idle", gazeMode: "cursor", offsetX: (Math.random() - .5) * 3, offsetY: -2, intensity: .6, duration: 1300 };
+}
+
+function parseModelMotion(value: unknown): PetMotion | null {
+  if (!value || typeof value !== "object") return null;
+  const item = value as Partial<PetMotion>;
+  const actions: DirectedAction[] = ["none", "bounce", "celebrate", "lean-left", "lean-right", "peek", "shy", "squish", "wiggle", "tap", "frontflip", "backflip", "custom"];
+  const expressions: PetExpression[] = ["idle", "happy", "shy", "surprised", "sleepy", "confused"];
+  const gazes: GazeMode[] = ["cursor", "directed", "none"];
+  const movements: PetMovement[] = ["stay", "left", "right", "toward-cursor", "away-cursor", "wander"];
+  const eyes: PetEyePose[] = ["normal", "wide", "soft", "closed", "wink-left", "wink-right"];
+  const mouths: PetMouthPose[] = ["neutral", "smile", "grin", "open", "o", "pout"];
+  const easings = ["linear", "ease", "ease-in", "ease-out", "ease-in-out", "spring"];
+  const effects: PetEffect[] = ["none", "heart", "sparkle", "question", "sweat", "star", "music"];
+  if (!actions.includes(item.action as DirectedAction) || !expressions.includes(item.expression as PetExpression) || !gazes.includes(item.gazeMode as GazeMode) || !movements.includes(item.movement as PetMovement)) return null;
+  if (item.eyes && !eyes.includes(item.eyes as PetEyePose)) return null;
+  if (item.mouth && !mouths.includes(item.mouth as PetMouthPose)) return null;
+  const parseFrames = (frames: MotionKeyframe[] | undefined, xLimit: number, yLimit: number, rotateLimit: number, scaleMin: number, scaleMax: number) => Array.isArray(frames) ? frames.slice(0, 7).map((frame) => ({
+    at: Math.max(0, Math.min(1, Number(frame.at) || 0)),
+    x: Math.max(-xLimit, Math.min(xLimit, Number(frame.x) || 0)),
+    y: Math.max(-yLimit, Math.min(yLimit, Number(frame.y) || 0)),
+    rotate: Math.max(-rotateLimit, Math.min(rotateLimit, Number(frame.rotate) || 0)),
+    scaleX: Math.max(scaleMin, Math.min(scaleMax, Number(frame.scaleX) || 1)),
+    scaleY: Math.max(scaleMin, Math.min(scaleMax, Number(frame.scaleY) || 1)),
+  })) : undefined;
+  const keyframes = parseFrames(item.keyframes, 18, 40, 540, .72, 1.3);
+  const faceKeyframes = parseFrames(item.faceKeyframes, 10, 10, 20, .75, 1.25);
+  const crestKeyframes = parseFrames(item.crestKeyframes, 5, 7, 45, .7, 1.35);
+  if (item.action === "custom" && (!keyframes || keyframes.length < 2)) return null;
+  if ([keyframes, faceKeyframes, crestKeyframes].some((frames) => frames && (frames.length < 2 || frames.some((frame, index) => index > 0 && frame.at <= frames[index - 1].at)))) return null;
+  if (item.effect && !effects.includes(item.effect as PetEffect)) return null;
+  return {
+    action: item.action as DirectedAction,
+    expression: item.expression as PetExpression,
+    gazeMode: item.gazeMode as GazeMode,
+    lookX: Math.max(-1, Math.min(1, Number(item.lookX) || 0)),
+    lookY: Math.max(-1, Math.min(1, Number(item.lookY) || 0)),
+    offsetX: Math.max(-6, Math.min(6, Number(item.offsetX) || 0)),
+    offsetY: Math.max(-6, Math.min(6, Number(item.offsetY) || 0)),
+    intensity: Math.max(.3, Math.min(1, Number(item.intensity) || .7)),
+    duration: Math.max(600, Math.min(3500, Number(item.duration) || 1500)),
+    movement: item.movement as PetMovement,
+    moveDistance: Math.max(0, Math.min(120, Number(item.moveDistance) || 0)),
+    emotionLabel: typeof item.emotionLabel === "string" ? item.emotionLabel.slice(0, 24) : undefined,
+    eyes: item.eyes as PetEyePose | undefined,
+    mouth: item.mouth as PetMouthPose | undefined,
+    blush: item.blush === undefined ? undefined : Math.max(0, Math.min(1, Number(item.blush) || 0)),
+    effect: item.effect as PetEffect | undefined,
+    easing: typeof item.easing === "string" && easings.includes(item.easing) ? item.easing : "ease-in-out",
+    repeat: Math.max(1, Math.min(3, Math.round(Number(item.repeat) || 1))),
+    keyframes,
+    faceKeyframes,
+    crestKeyframes,
+    generatedLayers: Array.isArray(item.generatedLayers) ? item.generatedLayers.filter((layer): layer is string => typeof layer === "string").slice(0, 3) : undefined,
+    motionQuality: item.motionQuality === undefined ? undefined : Math.max(0, Math.min(100, Number(item.motionQuality) || 0)),
+  };
+}
+
+function roleAwareIdleMotion(character: Character | null, period: DayPeriod, recent: DirectedAction[]): PetMotion {
+  const profile = `${character?.personality ?? ""} ${character?.speaking_style ?? ""}`;
+  const energetic = /活泼|开朗|元气|可爱|调皮|热情/.test(profile);
+  const shy = /害羞|内向|腼腆|胆小/.test(profile);
+  const calm = /冷静|理性|沉稳|安静|严谨/.test(profile);
+  const sleepy = period === "night" || /慵懒|困倦|嗜睡/.test(profile);
+  const motions: PetMotion[] = sleepy ? [
+    { ...EMPTY_MOTION, action: "squish", expression: "sleepy", gazeMode: "none", intensity: .42, duration: 2200 },
+    { ...EMPTY_MOTION, action: "lean-left", expression: "sleepy", gazeMode: "none", intensity: .35, duration: 2100 },
+    { ...EMPTY_MOTION, action: "wiggle", expression: "idle", intensity: .35, duration: 1500 },
+  ] : energetic ? [
+    { ...EMPTY_MOTION, action: "bounce", expression: "happy", intensity: .8, duration: 1400, movement: "toward-cursor", moveDistance: 38 },
+    { ...EMPTY_MOTION, action: "frontflip", expression: "happy", gazeMode: "directed", lookY: -.5, intensity: .85, duration: 1050 },
+    { ...EMPTY_MOTION, action: "backflip", expression: "happy", intensity: .82, duration: 1050 },
+    { ...EMPTY_MOTION, action: "wiggle", expression: "happy", intensity: .72, duration: 1350, movement: "wander", moveDistance: 52 },
+  ] : shy ? [
+    { ...EMPTY_MOTION, action: "shy", expression: "shy", gazeMode: "none", intensity: .45, duration: 2100, movement: "away-cursor", moveDistance: 28 },
+    { ...EMPTY_MOTION, action: "peek", expression: "surprised", gazeMode: "directed", lookX: .8, intensity: .5, duration: 1800 },
+    { ...EMPTY_MOTION, action: "squish", expression: "shy", gazeMode: "none", intensity: .42, duration: 1600 },
+  ] : calm ? [
+    { ...EMPTY_MOTION, action: "lean-left", expression: "idle", intensity: .35, duration: 1900 },
+    { ...EMPTY_MOTION, action: "lean-right", expression: "idle", intensity: .35, duration: 1900 },
+    { ...EMPTY_MOTION, action: "squish", expression: "idle", intensity: .32, duration: 1700, movement: "wander", moveDistance: 24 },
+  ] : [
+    { ...EMPTY_MOTION, action: "bounce", expression: "happy", intensity: .62, duration: 1350 },
+    { ...EMPTY_MOTION, action: "wiggle", expression: "idle", intensity: .55, duration: 1400, movement: "wander", moveDistance: 34 },
+    { ...EMPTY_MOTION, action: "frontflip", expression: "happy", intensity: .72, duration: 1050 },
+    { ...EMPTY_MOTION, action: "squish", expression: "idle", intensity: .48, duration: 1500 },
+  ];
+  const fresh = motions.filter((motion) => !recent.includes(motion.action));
+  const choices = fresh.length ? fresh : motions;
+  return { ...choices[Math.floor(Math.random() * choices.length)] };
+}
 
 function getDayPeriod(date = new Date()): DayPeriod {
   const hour = date.getHours();
@@ -76,9 +194,16 @@ export default function Pet() {
   const [layoutChanging, setLayoutChanging] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [mood, setMood] = useState<PetMood>("idle");
-  const [idleAction, setIdleAction] = useState<IdleAction>("none");
   const [petFrame, setPetFrame] = useState<PetFrame>("normal");
   const [gaze, setGaze] = useState({ x: 0, y: 0 });
+  const gazeRef = useRef(gaze);
+  const [travelDirection, setTravelDirection] = useState<"none" | "left" | "right">("none");
+  const [directedMotion, setDirectedMotion] = useState<PetMotion>({ ...EMPTY_MOTION });
+  const [activeMotion, setActiveMotion] = useState<MotionDebug>({ source: "idle", priority: 0, startedAt: 0, expiresAt: null, raw: "" });
+  const [motionDebugNow, setMotionDebugNow] = useState(() => Date.now());
+  const gazeModeRef = useRef<GazeMode>("cursor");
+  const [motionEnabled, setMotionEnabled] = useState(() => localStorage.getItem("yus-ai-pet-motion-enabled") !== "false");
+  const [motionStrength, setMotionStrength] = useState(() => Number(localStorage.getItem("yus-ai-pet-motion-strength")) || 75);
   const [proactiveMessage, setProactiveMessage] = useState("");
   const [aiProactiveEnabled, setAiProactiveEnabled] = useState<boolean | null>(null);
   const [proactiveSources, setProactiveSources] = useState<{title: string; url: string}[]>([]);
@@ -147,6 +272,18 @@ export default function Pet() {
   const dialogHeightRef = useRef(dialogHeight);
   const moodTimerRef = useRef<number | undefined>(undefined);
   const frameTimerRef = useRef<number | undefined>(undefined);
+  const motionTimerRef = useRef<number | undefined>(undefined);
+  const slimeRigRef = useRef<HTMLSpanElement | null>(null);
+  const slimeFaceRef = useRef<HTMLSpanElement | null>(null);
+  const slimeCrestRef = useRef<HTMLSpanElement | null>(null);
+  const proceduralAnimationsRef = useRef<Animation[]>([]);
+  const motionPriorityRef = useRef(0);
+  const motionSequenceRef = useRef(0);
+  const queuedMotionRef = useRef<{ motion: PetMotion; source: MotionSource; raw: string } | null>(null);
+  const recentActionsRef = useRef<DirectedAction[]>([]);
+  const recentMotionLabelsRef = useRef<string[]>([]);
+  const autoMoveTimerRef = useRef<number | undefined>(undefined);
+  const pendingAutoMoveRef = useRef<{ motion: PetMotion; expiresAt: number } | null>(null);
   const interactionCountRef = useRef(0);
   const dialogResizeTimerRef = useRef<number | undefined>(undefined);
   const dialogResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -158,6 +295,14 @@ export default function Pet() {
   useEffect(() => { dialogWidthRef.current = dialogWidth; }, [dialogWidth]);
   useEffect(() => { dialogHeightRef.current = dialogHeight; }, [dialogHeight]);
   useEffect(() => { continuousTranslationRef.current = continuousTranslation; }, [continuousTranslation]);
+  useEffect(() => { gazeRef.current = gaze; }, [gaze]);
+  useEffect(() => {
+    if (expanded) return;
+    const pending = pendingAutoMoveRef.current;
+    pendingAutoMoveRef.current = null;
+    if (pending && pending.expiresAt > Date.now()) runAutoMovement(pending.motion);
+  // oxlint-disable-next-line react-hooks/exhaustive-deps -- movement is released only when the dialog finishes closing
+  }, [expanded]);
   useEffect(() => {
     if (desktop) void invoke("set_pet_interaction_mode", {
       mode: expanded ? 2 : menuOpen ? 1 : proactiveMessage ? 3 : 0,
@@ -169,10 +314,22 @@ export default function Pet() {
     window.clearTimeout(menuClickTimerRef.current);
     window.clearTimeout(dialogResizeTimerRef.current);
     window.clearTimeout(frameTimerRef.current);
+    window.clearTimeout(motionTimerRef.current);
+    window.clearTimeout(autoMoveTimerRef.current);
+    proceduralAnimationsRef.current.forEach((animation) => animation.cancel());
+    proceduralAnimationsRef.current = [];
   }, []);
   useEffect(() => { localStorage.setItem("yus-ai-proactive-enabled", String(proactiveEnabled)); }, [proactiveEnabled]);
   useEffect(() => { localStorage.setItem("yus-ai-time-aware-enabled", String(timeAwareEnabled)); }, [timeAwareEnabled]);
   useEffect(() => { localStorage.setItem("yus-ai-role-aware-enabled", String(roleAwareEnabled)); }, [roleAwareEnabled]);
+  useEffect(() => { localStorage.setItem("yus-ai-pet-motion-enabled", String(motionEnabled)); }, [motionEnabled]);
+  useEffect(() => { localStorage.setItem("yus-ai-pet-motion-strength", String(motionStrength)); }, [motionStrength]);
+  useEffect(() => {
+    if (!settingsOpen) return;
+    setMotionDebugNow(Date.now());
+    const timer = window.setInterval(() => setMotionDebugNow(Date.now()), 200);
+    return () => window.clearInterval(timer);
+  }, [settingsOpen]);
   useEffect(() => {
     if (!proactiveMessage) return;
     const timer = window.setTimeout(() => setProactiveMessage(""), 30000);
@@ -185,19 +342,16 @@ export default function Pet() {
 
   useEffect(() => {
     if (expanded || dragging || busy) return;
-    const actions: IdleAction[] = dayPeriod === "night"
-      ? ["sleepy", "sleepy", "squish"]
-      : ["squish", "wiggle", "sleepy", "frontflip", "backflip"];
     const timer = window.setInterval(() => {
-      const action = actions[Math.floor(Math.random() * actions.length)];
-      setIdleAction(action);
-      window.setTimeout(() => setIdleAction("none"), action === "sleepy" ? 2400 : action.endsWith("flip") ? 950 : 1100);
+      const motion = roleAwareIdleMotion(character, dayPeriod, recentActionsRef.current);
+      schedulePetMotion(motion, "idle", `role idle: ${motion.action}`);
     }, 11000);
     return () => window.clearInterval(timer);
-  }, [expanded, dragging, busy, dayPeriod]);
+  // oxlint-disable-next-line react-hooks/exhaustive-deps -- the scheduler uses live refs and this interval must not restart on every render
+  }, [expanded, dragging, busy, dayPeriod, character]);
 
   useEffect(() => {
-    ["blink", "wink", "surprised", "frontflip", "backflip"].forEach((frame) => {
+    ["blink", "wink", "surprised"].forEach((frame) => {
       const image = new Image();
       image.src = `/assets/blue-slime-pet-${frame}.png`;
     });
@@ -223,8 +377,10 @@ export default function Pet() {
   useEffect(() => {
     if (!proactiveEnabled || aiProactiveEnabled !== false || expanded || (timeAwareEnabled && dayPeriod === "night")) return;
     const showGreeting = () => {
+      const greeting = roleAwareGreeting(roleAwareEnabled ? character : null, timeAwareEnabled ? dayPeriod : "daytime");
       setProactiveSources([]);
-      setProactiveMessage(roleAwareGreeting(roleAwareEnabled ? character : null, timeAwareEnabled ? dayPeriod : "daytime"));
+      setProactiveMessage(greeting);
+      schedulePetMotion(replyDrivenMotion(greeting), "proactive", "local greeting", true);
       window.setTimeout(() => setProactiveMessage(""), 9000);
     };
     const today = new Date().toISOString().slice(0, 10);
@@ -236,6 +392,7 @@ export default function Pet() {
     }, 15000);
     const recurring = window.setInterval(showGreeting, 30 * 60 * 1000);
     return () => { window.clearTimeout(first); window.clearInterval(recurring); };
+  // oxlint-disable-next-line react-hooks/exhaustive-deps -- greeting scheduling intentionally changes only with its user-facing inputs
   }, [proactiveEnabled, aiProactiveEnabled, timeAwareEnabled, roleAwareEnabled, dayPeriod, character, expanded]);
 
   useEffect(() => {
@@ -285,9 +442,11 @@ export default function Pet() {
     if (pendingProactive.characterId === character?.id) {
       setProactiveSources(pendingProactive.sources);
       setProactiveMessage(pendingProactive.content);
+      schedulePetMotion(replyDrivenMotion(pendingProactive.content), "proactive", "AI proactive", true);
     }
     setPendingProactive(null);
-  }, [pendingProactive, character?.id, expanded, menuOpen, busy, dragging]);
+  // oxlint-disable-next-line react-hooks/exhaustive-deps -- the scheduler reads the current priority from refs
+  }, [pendingProactive, character?.id, expanded, menuOpen, busy, dragging, motionEnabled]);
 
   useEffect(() => {
     let disposed = false;
@@ -390,6 +549,7 @@ export default function Pet() {
     let unlisten: (() => void) | undefined;
     let unlistenReset: (() => void) | undefined;
     let unlistenSelection: (() => void) | undefined;
+    let unlistenGaze: (() => void) | undefined;
     void listen<string>("pet-control", (event) => {
       if (event.payload === "size-up" || event.payload === "size-down") {
         setPetSize((current) => {
@@ -449,10 +609,17 @@ export default function Pet() {
         if (sequence === translationSequenceRef.current) setTranslationBusy(false);
       });
     }).then((stop) => { if (disposed) stop(); else unlistenSelection = stop; });
+    void listen<{x: number; y: number}>("global-cursor-gaze", (event) => {
+      if (gazeModeRef.current !== "cursor") return;
+      setGaze({
+        x: Math.max(-1, Math.min(1, event.payload.x)),
+        y: Math.max(-1, Math.min(1, event.payload.y)),
+      });
+    }).then((stop) => { if (disposed) stop(); else unlistenGaze = stop; });
     return () => {
       disposed = true;
       void invoke("set_continuous_translation", { enabled: false });
-      unlisten?.(); unlistenReset?.(); unlistenSelection?.();
+      unlisten?.(); unlistenReset?.(); unlistenSelection?.(); unlistenGaze?.();
     };
   }, [desktop]);
 
@@ -482,6 +649,116 @@ export default function Pet() {
     window.clearTimeout(frameTimerRef.current);
     setPetFrame(frame);
     frameTimerRef.current = window.setTimeout(() => setPetFrame("normal"), duration);
+  }
+
+  function cancelAutoMovement() {
+    pendingAutoMoveRef.current = null;
+    window.clearTimeout(autoMoveTimerRef.current);
+    setTravelDirection("none");
+    if (desktop) void invoke("cancel_pet_auto_move");
+  }
+
+  function runAutoMovement(motion: PetMotion) {
+    if (!desktop || expanded || draggingRef.current || motion.movement === "stay" || motion.moveDistance <= 0) return;
+    const distance = Math.min(120, motion.moveDistance);
+    let vector = gazeRef.current;
+    if (Math.hypot(vector.x, vector.y) < .1) vector = { x: Math.random() > .5 ? 1 : -1, y: (Math.random() - .5) * .5 };
+    const length = Math.max(.01, Math.hypot(vector.x, vector.y));
+    let x = vector.x / length;
+    let y = vector.y / length;
+    if (motion.movement === "left") { x = -1; y = 0; }
+    else if (motion.movement === "right") { x = 1; y = 0; }
+    else if (motion.movement === "away-cursor") { x *= -1; y *= -1; }
+    else if (motion.movement === "wander") {
+      const angle = Math.random() * Math.PI * 2;
+      x = Math.cos(angle);
+      y = Math.sin(angle) * .55;
+    }
+    const duration = Math.max(420, Math.min(1500, motion.duration * .72));
+    setTravelDirection(x < 0 ? "left" : "right");
+    window.clearTimeout(autoMoveTimerRef.current);
+    autoMoveTimerRef.current = window.setTimeout(() => setTravelDirection("none"), duration + 120);
+    void invoke("move_pet_by", { deltaX: x * distance, deltaY: y * distance * .55, durationMs: Math.round(duration) });
+  }
+
+  function finishMotion(sequence: number) {
+    if (sequence !== motionSequenceRef.current) return;
+    proceduralAnimationsRef.current.forEach((animation) => animation.cancel());
+    proceduralAnimationsRef.current = [];
+    motionPriorityRef.current = 0;
+    setDirectedMotion({ ...EMPTY_MOTION });
+    gazeModeRef.current = "cursor";
+    setActiveMotion({ source: "idle", priority: 0, startedAt: 0, expiresAt: null, raw: "" });
+    const queued = queuedMotionRef.current;
+    queuedMotionRef.current = null;
+    if (queued) window.setTimeout(() => schedulePetMotion(queued.motion, queued.source, queued.raw, true), 0);
+  }
+
+  function schedulePetMotion(motion: PetMotion, source: MotionSource, raw = "", queueIfBlocked = false) {
+    if (!motionEnabled && ["model", "proactive", "idle"].includes(source)) return false;
+    const priority = MOTION_PRIORITY[source];
+    if (motionPriorityRef.current > priority) {
+      if (queueIfBlocked) {
+        const queued = queuedMotionRef.current;
+        if (!queued || MOTION_PRIORITY[queued.source] <= priority) queuedMotionRef.current = { motion, source, raw };
+      }
+      return false;
+    }
+    const sequence = ++motionSequenceRef.current;
+    window.clearTimeout(motionTimerRef.current);
+    proceduralAnimationsRef.current.forEach((animation) => animation.cancel());
+    proceduralAnimationsRef.current = [];
+    motionPriorityRef.current = priority;
+    setDirectedMotion(motion);
+    gazeModeRef.current = motion.gazeMode;
+    if (motion.gazeMode !== "cursor") setGaze({ x: motion.lookX, y: motion.lookY });
+    if (motion.expression === "surprised") showPetFrame("surprised", Math.min(900, motion.duration));
+    else if (motion.expression === "happy") showPetFrame("wink", Math.min(900, motion.duration));
+    else if (motion.expression === "sleepy") showPetFrame("blink", Math.min(1200, motion.duration));
+    if (motion.expression === "happy") showMood("happy", motion.duration);
+    else if (motion.expression === "confused") showMood("confused", motion.duration);
+    const repeat = motion.action === "custom" ? Math.max(1, Math.min(3, motion.repeat ?? 1)) : 1;
+    const totalDuration = motion.duration * repeat;
+    if (motion.action === "custom" && motion.keyframes && slimeRigRef.current) {
+      const strength = motionStrength / 100 * motion.intensity;
+      const easing = motion.easing === "spring" ? "cubic-bezier(.2,1.35,.35,1)" : motion.easing ?? "ease-in-out";
+      proceduralAnimationsRef.current.push(slimeRigRef.current.animate(
+        motion.keyframes.map((frame) => ({
+          offset: frame.at,
+          transform: `translate(${(frame.x * strength).toFixed(2)}px, ${(frame.y * strength).toFixed(2)}px) rotate(${(frame.rotate * strength).toFixed(2)}deg) scale(${frame.scaleX.toFixed(3)}, ${frame.scaleY.toFixed(3)})`,
+        })),
+        { duration: motion.duration, iterations: repeat, easing, fill: "both" },
+      ));
+      if (motion.faceKeyframes && slimeFaceRef.current) {
+        proceduralAnimationsRef.current.push(slimeFaceRef.current.animate(
+          motion.faceKeyframes.map((frame) => ({
+            offset: frame.at,
+            transform: `translate(${((frame.x + motion.lookX * 2) * strength).toFixed(2)}px, ${((frame.y + motion.lookY * 1.5) * strength).toFixed(2)}px) rotate(${((frame.rotate + motion.lookX) * strength).toFixed(2)}deg) scale(${frame.scaleX.toFixed(3)}, ${frame.scaleY.toFixed(3)})`,
+          })),
+          { duration: motion.duration, iterations: repeat, easing, fill: "both" },
+        ));
+      }
+      if (motion.crestKeyframes && slimeCrestRef.current) {
+        proceduralAnimationsRef.current.push(slimeCrestRef.current.animate(
+          motion.crestKeyframes.map((frame) => ({
+            offset: frame.at,
+            transform: `translate(${(frame.x * strength).toFixed(2)}px, ${(frame.y * strength).toFixed(2)}px) rotate(${(19 + frame.rotate * strength).toFixed(2)}deg) skewY(-7deg) scale(${frame.scaleX.toFixed(3)}, ${frame.scaleY.toFixed(3)})`,
+          })),
+          { duration: motion.duration, iterations: repeat, easing, fill: "both" },
+        ));
+      }
+    }
+    const now = Date.now();
+    setActiveMotion({ source, priority, startedAt: now, expiresAt: now + totalDuration, raw });
+    recentActionsRef.current = [motion.action, ...recentActionsRef.current.filter((action) => action !== motion.action)].slice(0, 2);
+    const motionLabel = motion.emotionLabel || `${motion.action}/${motion.expression}/${motion.effect ?? "none"}`;
+    recentMotionLabelsRef.current = [motionLabel, ...recentMotionLabelsRef.current.filter((label) => label !== motionLabel)].slice(0, 5);
+    if (motion.movement !== "stay" && motion.moveDistance > 0) {
+      if (expanded) pendingAutoMoveRef.current = { motion, expiresAt: now + 5000 };
+      else runAutoMovement(motion);
+    }
+    motionTimerRef.current = window.setTimeout(() => finishMotion(sequence), totalDuration);
+    return true;
   }
 
   async function toggleBubble() {
@@ -561,26 +838,31 @@ export default function Pet() {
 
   function beginDrag(event: React.PointerEvent<HTMLButtonElement>) {
     if (event.button !== 0) return;
+    cancelAutoMovement();
     dragStartRef.current = { x: event.screenX, y: event.screenY };
     draggingRef.current = false;
     didDragRef.current = false;
     showMood("tap", 500);
+    schedulePetMotion({ ...EMPTY_MOTION, action: "tap", expression: "happy", intensity: .75, duration: 520 }, "user", "pointer tap");
     interactionCountRef.current += 1;
     showPetFrame(interactionCountRef.current % 4 === 0 ? "surprised" : "wink", 620);
   }
 
   async function continueDrag(event: React.PointerEvent<HTMLButtonElement>) {
-    const bounds = event.currentTarget.getBoundingClientRect();
-    setGaze({
-      x: Math.max(-1, Math.min(1, (event.clientX - bounds.left) / bounds.width * 2 - 1)),
-      y: Math.max(-1, Math.min(1, (event.clientY - bounds.top) / bounds.height * 2 - 1)),
-    });
+    if (!desktop && gazeModeRef.current === "cursor") {
+      const bounds = event.currentTarget.getBoundingClientRect();
+      setGaze({
+        x: Math.max(-1, Math.min(1, (event.clientX - bounds.left) / bounds.width * 2 - 1)),
+        y: Math.max(-1, Math.min(1, (event.clientY - bounds.top) / bounds.height * 2 - 1)),
+      });
+    }
     const start = dragStartRef.current;
     if (!desktop || !start || draggingRef.current) return;
     if (Math.hypot(event.screenX - start.x, event.screenY - start.y) < 6) return;
     draggingRef.current = true;
     didDragRef.current = true;
     setDragging(true);
+    schedulePetMotion({ ...EMPTY_MOTION, duration: 30000 }, "drag", "native window drag");
     try {
       await invoke("start_pet_drag");
       const snappedPlacement = await invoke<string>("snap_pet_to_edge", {
@@ -589,8 +871,9 @@ export default function Pet() {
         currentPlacement: placement,
       });
       setPlacement(snappedPlacement);
-      showMood("happy", 900);
     } finally {
+      finishMotion(motionSequenceRef.current);
+      schedulePetMotion({ ...EMPTY_MOTION, action: "bounce", expression: "happy", intensity: .65, duration: 900 }, "feedback", "drag completed");
       dragStartRef.current = null;
       setDragging(false);
       window.setTimeout(() => { draggingRef.current = false; }, 0);
@@ -602,7 +885,12 @@ export default function Pet() {
   }
 
   function stopLooking() {
-    setGaze({ x: 0, y: 0 });
+    if (!desktop && gazeModeRef.current === "cursor") setGaze({ x: 0, y: 0 });
+  }
+
+  function playReplyMotion(text: string, modelMotion?: PetMotion | null, raw = "") {
+    if (!motionEnabled || draggingRef.current) return;
+    schedulePetMotion(modelMotion ?? replyDrivenMotion(text), "model", raw || "local semantic fallback", true);
   }
 
   function toggleMenu() {
@@ -822,6 +1110,7 @@ export default function Pet() {
     setInput("");
     setBusy(true);
     setReply("正在想……");
+    schedulePetMotion({ ...EMPTY_MOTION, action: "bounce", duration: 120000, intensity: .35 }, "chat", "waiting for model");
     try {
       let id = conversationRef.current;
       if (!id) {
@@ -836,7 +1125,7 @@ export default function Pet() {
       const response = await fetch(`${API}/conversations/${id}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, pet_motion_enabled: motionEnabled, recent_pet_motions: recentMotionLabelsRef.current }),
       });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
@@ -847,6 +1136,8 @@ export default function Pet() {
       const decoder = new TextDecoder();
       let buffer = "";
       let complete = "";
+      let modelMotion: PetMotion | null = null;
+      let modelMotionRaw = "";
       setReply("");
       while (true) {
         const { value, done } = await reader.read();
@@ -858,6 +1149,10 @@ export default function Pet() {
           if (!line) continue;
           const data = JSON.parse(line);
           if (data.error) throw new Error(data.error);
+          if (data.pet_motion) {
+            modelMotion = parseModelMotion(data.pet_motion);
+            modelMotionRaw = String(data.pet_motion_raw ?? "");
+          }
           if (data.token) {
             complete += data.token;
             setReply(complete);
@@ -868,16 +1163,23 @@ export default function Pet() {
       if (buffer.trim()) {
         const data = JSON.parse(buffer);
         if (data.error) throw new Error(data.error);
+        if (data.pet_motion) {
+          modelMotion = parseModelMotion(data.pet_motion);
+          modelMotionRaw = String(data.pet_motion_raw ?? "");
+        }
         if (data.token) { complete += data.token; setReply(complete); }
       }
-      showMood("happy", 1800);
+      playReplyMotion(complete, modelMotion, modelMotionRaw);
     } catch (error) {
       setReply((error as Error).message);
-      showMood("confused", 1800);
+      schedulePetMotion({ ...EMPTY_MOTION, action: "wiggle", expression: "confused", gazeMode: "none", intensity: .55, duration: 1800 }, "feedback", "chat failed");
     } finally {
+      if (motionPriorityRef.current === MOTION_PRIORITY.chat) finishMotion(motionSequenceRef.current);
       setBusy(false);
     }
   }
+
+  const motionRemaining = activeMotion.expiresAt ? Math.max(0, activeMotion.expiresAt - motionDebugNow) : 0;
 
   return (
     <main className={`pet-stage ${expanded ? "open" : ""} ${placement} period-${dayPeriod}`}>
@@ -953,8 +1255,9 @@ export default function Pet() {
           </div>
           <div className="pet-controls">
             <div className="pet-action-controls">
-              <button type="button" disabled={idleAction.endsWith("flip")} onClick={() => { setIdleAction("frontflip"); window.setTimeout(() => setIdleAction("none"), 950); }}>前空翻</button>
-              <button type="button" disabled={idleAction.endsWith("flip")} onClick={() => { setIdleAction("backflip"); window.setTimeout(() => setIdleAction("none"), 950); }}>后空翻</button>
+              <button type="button" disabled={directedMotion.action.endsWith("flip")} onClick={() => schedulePetMotion({ ...EMPTY_MOTION, action: "frontflip", expression: "happy", intensity: .85, duration: 1050 }, "user", "manual frontflip")}>前空翻</button>
+              <button type="button" disabled={directedMotion.action.endsWith("flip")} onClick={() => schedulePetMotion({ ...EMPTY_MOTION, action: "backflip", expression: "happy", intensity: .85, duration: 1050 }, "user", "manual backflip")}>后空翻</button>
+              <button type="button" disabled={directedMotion.action === "custom"} onClick={() => schedulePetMotion({ ...EMPTY_MOTION, action: "custom", expression: "surprised", emotionLabel: "蓄力斜跳后回头眨眼", eyes: "wide", mouth: "o", blush: .35, effect: "sparkle", intensity: .8, duration: 2100, easing: "spring", repeat: 1, keyframes: [{ at: 0, x: 0, y: 0, rotate: 0, scaleX: 1, scaleY: 1 }, { at: .22, x: -5, y: 4, rotate: -8, scaleX: 1.12, scaleY: .86 }, { at: .48, x: 8, y: -22, rotate: 16, scaleX: .9, scaleY: 1.13 }, { at: .72, x: 3, y: 1, rotate: -5, scaleX: 1.14, scaleY: .86 }, { at: 1, x: 0, y: 0, rotate: 0, scaleX: 1, scaleY: 1 }], faceKeyframes: [{ at: 0, x: 0, y: 0, rotate: 0, scaleX: 1, scaleY: 1 }, { at: .35, x: -5, y: 2, rotate: -5, scaleX: .94, scaleY: .94 }, { at: .62, x: 7, y: -3, rotate: 8, scaleX: 1.08, scaleY: 1.08 }, { at: 1, x: 0, y: 0, rotate: 0, scaleX: 1, scaleY: 1 }], crestKeyframes: [{ at: 0, x: 0, y: 0, rotate: 0, scaleX: 1, scaleY: 1 }, { at: .3, x: -3, y: 2, rotate: -30, scaleX: .82, scaleY: 1.2 }, { at: .58, x: 3, y: -3, rotate: 35, scaleX: 1.12, scaleY: .9 }, { at: .82, x: -1, y: 1, rotate: -16, scaleX: .96, scaleY: 1.08 }, { at: 1, x: 0, y: 0, rotate: 0, scaleX: 1, scaleY: 1 }] }, "user", "manual layered creative preview")}>创意试演</button>
             </div>
             <label>桌宠大小 <input type="range" min="70" max="125" value={petSize} onChange={(event) => updatePetSize(Number(event.target.value))} /><span>{petSize}%</span></label>
             <label>透明度 <input type="range" min="30" max="100" value={petOpacity} onChange={(event) => setPetOpacity(Number(event.target.value))} /><span>{petOpacity}%</span></label>
@@ -964,6 +1267,27 @@ export default function Pet() {
             <label className="proactive-toggle">本地问候 <input type="checkbox" checked={proactiveEnabled} onChange={(event) => setProactiveEnabled(event.target.checked)} /><span>{proactiveEnabled ? "开启" : "关闭"}</span></label>
             <label className="proactive-toggle">时间感知 <input type="checkbox" checked={timeAwareEnabled} onChange={(event) => setTimeAwareEnabled(event.target.checked)} /><span>{timeAwareEnabled ? "开启" : "关闭"}</span></label>
             <label className="proactive-toggle">角色台词 <input type="checkbox" checked={roleAwareEnabled} onChange={(event) => setRoleAwareEnabled(event.target.checked)} /><span>{roleAwareEnabled ? "开启" : "关闭"}</span></label>
+            <label className="proactive-toggle">回复驱动 <input type="checkbox" checked={motionEnabled} onChange={(event) => setMotionEnabled(event.target.checked)} /><span>{motionEnabled ? "开启" : "关闭"}</span></label>
+            <label>灵动强度 <input type="range" min="30" max="100" step="5" value={motionStrength} onChange={(event) => setMotionStrength(Number(event.target.value))} /><span>{motionStrength}%</span></label>
+            <details className="motion-debug">
+              <summary>动作调试</summary>
+              <dl>
+                <div><dt>来源</dt><dd>{activeMotion.priority ? MOTION_SOURCE_LABEL[activeMotion.source] : "空闲"}</dd></div>
+                <div><dt>优先级</dt><dd>{activeMotion.priority}</dd></div>
+                <div><dt>动作</dt><dd>{directedMotion.action}</dd></div>
+                <div><dt>创意</dt><dd>{directedMotion.emotionLabel || "—"}</dd></div>
+                <div><dt>表情</dt><dd>{directedMotion.expression}</dd></div>
+                <div><dt>关键帧</dt><dd>{directedMotion.keyframes?.length ?? 0}</dd></div>
+                <div><dt>分层</dt><dd>身体 {directedMotion.keyframes?.length ?? 0} / 脸 {directedMotion.faceKeyframes?.length ?? 0} / 水滴 {directedMotion.crestKeyframes?.length ?? 0}</dd></div>
+                <div><dt>特效</dt><dd>{directedMotion.effect ?? "none"}</dd></div>
+                <div><dt>完成度</dt><dd>{directedMotion.motionQuality === undefined ? "—" : `${directedMotion.motionQuality}%`}</dd></div>
+                <div><dt>程序补全</dt><dd>{directedMotion.generatedLayers?.join("、") || "无"}</dd></div>
+                <div><dt>视线</dt><dd>{directedMotion.gazeMode}</dd></div>
+                <div><dt>移动</dt><dd>{directedMotion.movement}</dd></div>
+                <div><dt>剩余</dt><dd>{motionRemaining ? `${Math.ceil(motionRemaining / 100) / 10}s` : "—"}</dd></div>
+              </dl>
+              <code>{activeMotion.raw || "当前没有模型动作指令"}</code>
+            </details>
           </div>
         </section>
       )}
@@ -977,8 +1301,16 @@ export default function Pet() {
         </aside>
       )}
       <button
-        className={`pet-character ${busy ? "thinking" : ""} mood-${mood} idle-${idleAction} ${dragging ? "dragging" : ""}`}
-        style={{ opacity: petOpacity / 100, "--gaze-x": gaze.x, "--gaze-y": gaze.y } as React.CSSProperties}
+        className={`pet-character ${busy ? "thinking" : ""} mood-${mood} direct-${directedMotion.action} expression-${directedMotion.expression} eyes-${directedMotion.eyes ?? "normal"} mouth-${directedMotion.mouth ?? "neutral"} frame-${petFrame} travel-${travelDirection} ${dragging ? "dragging" : ""}`}
+        style={{
+          opacity: petOpacity / 100,
+          "--gaze-x": gaze.x,
+          "--gaze-y": gaze.y,
+          "--motion-strength": motionStrength / 100 * directedMotion.intensity,
+          "--motion-x": directedMotion.offsetX,
+          "--motion-y": directedMotion.offsetY,
+          "--blush-strength": directedMotion.blush ?? .58,
+        } as React.CSSProperties}
         onPointerDown={beginDrag}
         onPointerMove={continueDrag}
         onPointerUp={finishDrag}
@@ -988,9 +1320,28 @@ export default function Pet() {
         onDoubleClick={() => { if (!expanded) openLastFeature(); }}
         aria-label="蓝色雨滴史莱姆，拖动移动，点击打开功能菜单"
       >
-        <img src={`/assets/blue-slime-pet${idleAction.endsWith("flip") ? `-${idleAction}` : petFrame === "normal" ? "" : `-${petFrame}`}.png`} alt="蓝色雨滴史莱姆" draggable={false} />
+        <span className="slime-ground-shadow" aria-hidden="true" />
+        <span ref={slimeRigRef} className="slime-rig" aria-hidden="true">
+          <span className="slime-orbit">
+            <img className="slime-body-layer" src="/assets/blue-slime-pet-body-v2.png" alt="" draggable={false} />
+            <span ref={slimeCrestRef} className="slime-crest-layer" />
+            <span className="slime-highlight-layer"><i /><b /></span>
+            <span ref={slimeFaceRef} className="slime-face-layer">
+              <span className="slime-eye slime-eye-left"><span className="slime-pupil"><i /></span><b /></span>
+              <span className="slime-eye slime-eye-right"><span className="slime-pupil"><i /></span><b /></span>
+              <span className="slime-blush slime-blush-left" />
+              <span className="slime-blush slime-blush-right" />
+              <span className="slime-mouth"><i /></span>
+            </span>
+          </span>
+        </span>
         <span className="pet-ripple" />
-        <span className="pet-emote" aria-hidden="true">{busy ? "…" : mood === "happy" ? "♥" : mood === "confused" ? "?" : idleAction === "sleepy" ? "Zzz" : dayPeriod === "night" ? "☾" : ""}</span>
+        {directedMotion.effect && directedMotion.effect !== "none" && (
+          <span className={`motion-effect effect-${directedMotion.effect}`} aria-hidden="true">
+            <i>{EFFECT_GLYPH[directedMotion.effect]}</i><i>{EFFECT_GLYPH[directedMotion.effect]}</i><i>{EFFECT_GLYPH[directedMotion.effect]}</i>
+          </span>
+        )}
+        <span className="pet-emote" aria-hidden="true">{busy ? "…" : mood === "happy" ? "♥" : mood === "confused" ? "?" : directedMotion.expression === "sleepy" ? "Zzz" : dayPeriod === "night" ? "☾" : ""}</span>
       </button>
       {menuOpen && !expanded && (
         <nav className="pet-plugin-menu" aria-label="桌宠功能">

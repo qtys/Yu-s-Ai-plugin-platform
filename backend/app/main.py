@@ -4,6 +4,7 @@ import logging
 import time
 import random
 import zipfile
+import re
 from datetime import datetime
 from collections import deque
 from contextlib import asynccontextmanager
@@ -26,6 +27,242 @@ MODEL_GENERATION_LOCK = asyncio.Lock()
 PROACTIVE_GENERATION_TASK: asyncio.Task | None = None
 
 logger = logging.getLogger("yus_ai.api")
+
+PET_ACTION_OPEN = "<pet_action>"
+PET_ACTION_CLOSE = "</pet_action>"
+PET_ACTION_PROMPT = """【桌宠动作导演工具】
+你可以为蓝色史莱姆创作符合角色性格、本次语气和情绪的表演。若接口提供 perform_pet_action 工具，请在正常正文后调用它一次，且不要再输出动作标签；若没有该工具，才另起一行追加一个 <pet_action> JSON 标签。工具调用和标签都不会展示给用户，不要在正文中解释它们。
+你不是在选择动画菜单，而是在导演一段短表演。除非回复完全中性、适合静止，否则优先使用 action=\"custom\"；预设 none、bounce、celebrate、lean_left、lean_right、peek、shy、squish、wiggle、frontflip、backflip 只作为低调回退。
+自定义表演可独立编排三层，所有关键帧第一帧 at=0、末帧 at=1，且 at 严格递增：
+- body_keyframes（必填，2~7 帧）：at(0~1)、x(-18~18)、y(-40~16)、rotate(-540~540)、scale_x/scale_y(0.72~1.3)。负责重心、蓄力、腾空、落地与果冻形变。
+- face_keyframes（可选，2~7 帧）：at、x(-10~10)、y(-10~10)、rotate(-20~20)、scale_x/scale_y(0.75~1.25)。负责表情的迟疑、追视、后知后觉和反应延迟。
+- crest_keyframes（可选，2~7 帧）：at、x(-5~5)、y(-7~7)、rotate(-45~45)、scale_x/scale_y(0.7~1.35)。负责头顶水滴的惯性、甩动和弹性跟随。
+可选 effect：none、heart、sparkle、question、sweat、star、music；特效必须服务于情绪，不能每次都出现。请设计有起承转合的动作，如“先缩成一团蓄力→斜跳→脸慢半拍跟上→水滴回弹”“听不懂时身体停住→脸探出去→问号浮起”，不要只做整只上下摇晃，也不要每次都翻滚。
+表情参数：expression 只能是 idle、happy、shy、surprised、sleepy、confused；eyes 可选 normal、wide、soft、closed、wink_left、wink_right；mouth 可选 neutral、smile、grin、open、o、pout；blush 为 0~1；emotion_label 用不超过 24 字概括表演意图。
+节奏参数：easing 可选 linear、ease、ease_in、ease_out、ease_in_out、spring；repeat 为 1~3；duration_ms 为 600~3500；intensity 为 0.3~1。视线 gaze 只能是 cursor、none、center、left、right、up、down。桌面移动 movement 只能是 stay、left、right、toward_cursor、away_cursor、wander，move_distance 为 0~120，通常保持 stay。
+自定义示例：<pet_action>{\"expression\":\"confused\",\"emotion_label\":\"身体定住，脸探头求解\",\"action\":\"custom\",\"eyes\":\"wide\",\"mouth\":\"o\",\"blush\":0.2,\"effect\":\"question\",\"gaze\":\"cursor\",\"movement\":\"stay\",\"intensity\":0.75,\"duration_ms\":1800,\"easing\":\"spring\",\"repeat\":1,\"body_keyframes\":[{\"at\":0,\"x\":0,\"y\":0,\"rotate\":0,\"scale_x\":1,\"scale_y\":1},{\"at\":0.3,\"x\":-4,\"y\":2,\"rotate\":-7,\"scale_x\":1.05,\"scale_y\":0.95},{\"at\":0.68,\"x\":1,\"y\":-3,\"rotate\":2,\"scale_x\":0.97,\"scale_y\":1.04},{\"at\":1,\"x\":0,\"y\":0,\"rotate\":0,\"scale_x\":1,\"scale_y\":1}],\"face_keyframes\":[{\"at\":0,\"x\":0,\"y\":0,\"rotate\":0,\"scale_x\":1,\"scale_y\":1},{\"at\":0.45,\"x\":6,\"y\":-2,\"rotate\":5,\"scale_x\":1.05,\"scale_y\":1.05},{\"at\":1,\"x\":0,\"y\":0,\"rotate\":0,\"scale_x\":1,\"scale_y\":1}],\"crest_keyframes\":[{\"at\":0,\"x\":0,\"y\":0,\"rotate\":0,\"scale_x\":1,\"scale_y\":1},{\"at\":0.4,\"x\":-2,\"y\":1,\"rotate\":-22,\"scale_x\":0.9,\"scale_y\":1.12},{\"at\":1,\"x\":0,\"y\":0,\"rotate\":0,\"scale_x\":1,\"scale_y\":1}]}</pet_action>
+只调用一次动作工具或输出一个动作标签，不得输出 CSS、JavaScript 或正文中的动作说明。"""
+
+PET_MOTION_FRAME_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "at": {"type": "number"}, "x": {"type": "number"}, "y": {"type": "number"},
+        "rotate": {"type": "number"}, "scale_x": {"type": "number"}, "scale_y": {"type": "number"},
+    },
+    "required": ["at", "x", "y", "rotate", "scale_x", "scale_y"],
+    "additionalProperties": False,
+}
+PET_ACTION_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "perform_pet_action",
+        "description": "为蓝色史莱姆桌宠编排与当前回复情绪一致的分层短表演。优先使用 custom 并分别设计身体、脸和头顶水滴。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "expression": {"type": "string", "enum": ["idle", "happy", "shy", "surprised", "sleepy", "confused"]},
+                "emotion_label": {"type": "string"},
+                "action": {"type": "string", "enum": ["none", "bounce", "celebrate", "lean_left", "lean_right", "peek", "shy", "squish", "wiggle", "frontflip", "backflip", "custom"]},
+                "eyes": {"type": "string", "enum": ["normal", "wide", "soft", "closed", "wink_left", "wink_right"]},
+                "mouth": {"type": "string", "enum": ["neutral", "smile", "grin", "open", "o", "pout"]},
+                "blush": {"type": "number"},
+                "effect": {"type": "string", "enum": ["none", "heart", "sparkle", "question", "sweat", "star", "music"]},
+                "gaze": {"type": "string", "enum": ["cursor", "none", "center", "left", "right", "up", "down"]},
+                "movement": {"type": "string", "enum": ["stay", "left", "right", "toward_cursor", "away_cursor", "wander"]},
+                "move_distance": {"type": "number"}, "intensity": {"type": "number"}, "duration_ms": {"type": "integer"},
+                "easing": {"type": "string", "enum": ["linear", "ease", "ease_in", "ease_out", "ease_in_out", "spring"]},
+                "repeat": {"type": "integer"},
+                "body_keyframes": {"type": "array", "minItems": 2, "maxItems": 7, "items": PET_MOTION_FRAME_SCHEMA},
+                "face_keyframes": {"type": "array", "minItems": 2, "maxItems": 7, "items": PET_MOTION_FRAME_SCHEMA},
+                "crest_keyframes": {"type": "array", "minItems": 2, "maxItems": 7, "items": PET_MOTION_FRAME_SCHEMA},
+            },
+            "required": ["expression", "emotion_label", "action", "gaze", "movement", "intensity", "duration_ms"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+WEEKDAY_LABELS = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
+
+
+def build_local_time_context(now: datetime | None = None) -> str:
+    current = now if now is not None else datetime.now().astimezone()
+    if current.tzinfo is None:
+        current = current.astimezone()
+    offset_seconds = int((current.utcoffset() or current - current).total_seconds())
+    offset_sign = "+" if offset_seconds >= 0 else "-"
+    offset_minutes = abs(offset_seconds) // 60
+    offset_text = f"UTC{offset_sign}{offset_minutes // 60:02d}:{offset_minutes % 60:02d}"
+    hour = current.hour
+    if hour < 5:
+        period = "凌晨"
+    elif hour < 9:
+        period = "早晨"
+    elif hour < 12:
+        period = "上午"
+    elif hour < 14:
+        period = "中午"
+    elif hour < 18:
+        period = "下午"
+    elif hour < 21:
+        period = "晚上"
+    else:
+        period = "深夜"
+    return (
+        "【当前本机时间（本次请求实时读取，作为时间问题的权威基准）】\n"
+        f"本地日期：{current:%Y年%m月%d日}\n"
+        f"星期：{WEEKDAY_LABELS[current.weekday()]}\n"
+        f"本地时间：{current:%H:%M:%S}（{period}）\n"
+        f"时区：{current.tzname() or '本地时区'}（{offset_text}）\n"
+        f"ISO 时间：{current.isoformat(timespec='seconds')}\n"
+        "规则：当用户询问或谈到现在、今天、日期、星期、早晚、相对时间、倒计时或截止时间时，"
+        "必须以以上本机时间为基准理解和计算，并直接回答；不要声称无法获取当前时间。"
+        "在与时间无关的问题中无需刻意报时。"
+    )
+
+
+def normalize_pet_action(payload: dict) -> dict | None:
+    expressions = {"idle", "happy", "shy", "surprised", "sleepy", "confused"}
+    actions = {"none", "bounce", "celebrate", "lean_left", "lean_right", "peek", "shy", "squish", "wiggle", "frontflip", "backflip", "custom"}
+    movements = {"stay", "left", "right", "toward_cursor", "away_cursor", "wander"}
+    eye_poses = {"normal", "wide", "soft", "closed", "wink_left", "wink_right"}
+    mouth_poses = {"neutral", "smile", "grin", "open", "o", "pout"}
+    easings = {"linear", "ease", "ease_in", "ease_out", "ease_in_out", "spring"}
+    effects = {"none", "heart", "sparkle", "question", "sweat", "star", "music"}
+    gazes = {
+        "cursor": ("cursor", 0.0, 0.0), "none": ("none", 0.0, 0.0), "center": ("directed", 0.0, 0.0),
+        "left": ("directed", -0.9, 0.0), "right": ("directed", 0.9, 0.0),
+        "up": ("directed", 0.0, -0.85), "down": ("directed", 0.0, 0.85),
+    }
+    expression = str(payload.get("expression", "idle")).lower()
+    action = str(payload.get("action", "none")).lower()
+    gaze = str(payload.get("gaze", "cursor")).lower()
+    movement = str(payload.get("movement", "stay")).lower()
+    if expression not in expressions or action not in actions or gaze not in gazes or movement not in movements:
+        return None
+    try:
+        intensity = max(0.3, min(1.0, float(payload.get("intensity", 0.7))))
+        duration = max(600, min(3500, int(payload.get("duration_ms", 1500))))
+        offset_x = max(-6.0, min(6.0, float(payload.get("offset_x", 0))))
+        offset_y = max(-6.0, min(6.0, float(payload.get("offset_y", 0))))
+        move_distance = max(0.0, min(120.0, float(payload.get("move_distance", 0))))
+    except (TypeError, ValueError):
+        return None
+    gaze_mode, look_x, look_y = gazes[gaze]
+    result = {
+        "expression": expression,
+        "action": action.replace("_", "-"),
+        "gazeMode": gaze_mode,
+        "lookX": look_x,
+        "lookY": look_y,
+        "intensity": round(intensity, 2),
+        "duration": duration,
+        "offsetX": round(offset_x, 2),
+        "offsetY": round(offset_y, 2),
+        "movement": movement.replace("_", "-"),
+        "moveDistance": round(move_distance, 1),
+    }
+    emotion_label = str(payload.get("emotion_label", "")).strip()[:24]
+    eyes = str(payload.get("eyes", "")).lower()
+    mouth = str(payload.get("mouth", "")).lower()
+    easing = str(payload.get("easing", "ease_in_out")).lower()
+    effect = str(payload.get("effect", "none")).lower()
+    if eyes and eyes not in eye_poses:
+        return None
+    if mouth and mouth not in mouth_poses:
+        return None
+    if easing not in easings or effect not in effects:
+        return None
+    try:
+        blush = max(0.0, min(1.0, float(payload.get("blush", 0.0))))
+        repeat = max(1, min(3, int(payload.get("repeat", 1))))
+    except (TypeError, ValueError):
+        return None
+    if emotion_label:
+        result["emotionLabel"] = emotion_label
+    if eyes:
+        result["eyes"] = eyes.replace("_", "-")
+    if mouth:
+        result["mouth"] = mouth
+    if "blush" in payload:
+        result["blush"] = round(blush, 2)
+    if effect != "none":
+        result["effect"] = effect
+    if action == "custom":
+        def normalize_frames(name: str, x_limit: float, y_limit: float, rotate_limit: float, scale_min: float, scale_max: float, required: bool = False):
+            raw_frames = payload.get(name)
+            if raw_frames is None and not required:
+                return None
+            if not isinstance(raw_frames, list) or not 2 <= len(raw_frames) <= 7:
+                raise ValueError("invalid keyframes")
+            frames = []
+            for frame in raw_frames:
+                if not isinstance(frame, dict):
+                    raise ValueError("invalid frame")
+                frames.append({
+                    "at": round(max(0.0, min(1.0, float(frame.get("at", 0)))), 3),
+                    "x": round(max(-x_limit, min(x_limit, float(frame.get("x", 0)))), 2),
+                    "y": round(max(-y_limit, min(y_limit, float(frame.get("y", 0)))), 2),
+                    "rotate": round(max(-rotate_limit, min(rotate_limit, float(frame.get("rotate", 0)))), 2),
+                    "scaleX": round(max(scale_min, min(scale_max, float(frame.get("scale_x", 1)))), 3),
+                    "scaleY": round(max(scale_min, min(scale_max, float(frame.get("scale_y", 1)))), 3),
+                })
+            frames.sort(key=lambda frame: frame["at"])
+            frames[0]["at"] = 0.0
+            frames[-1]["at"] = 1.0
+            if any(frames[index]["at"] <= frames[index - 1]["at"] for index in range(1, len(frames))):
+                raise ValueError("unordered keyframes")
+            return frames
+        try:
+            frames = normalize_frames("body_keyframes", 18, 40, 540, 0.72, 1.3, True)
+            face_frames = normalize_frames("face_keyframes", 10, 10, 20, 0.75, 1.25)
+            crest_frames = normalize_frames("crest_keyframes", 5, 7, 45, 0.7, 1.35)
+        except (TypeError, ValueError):
+            return None
+        result["easing"] = easing.replace("_", "-")
+        result["repeat"] = repeat
+        result["keyframes"] = frames
+        generated_layers = []
+        if not face_frames:
+            face_frames = [{
+                "at": frame["at"],
+                "x": round(max(-10.0, min(10.0, -frame["x"] * 0.22)), 2),
+                "y": round(max(-10.0, min(10.0, frame["y"] * 0.08)), 2),
+                "rotate": round(max(-20.0, min(20.0, -frame["rotate"] * 0.08)), 2),
+                "scaleX": round(max(0.75, min(1.25, 2 - frame["scaleX"])), 3),
+                "scaleY": round(max(0.75, min(1.25, 2 - frame["scaleY"])), 3),
+            } for frame in frames]
+            generated_layers.append("face")
+        if not crest_frames:
+            crest_frames = [{
+                "at": frame["at"],
+                "x": round(max(-5.0, min(5.0, -frame["x"] * 0.28)), 2),
+                "y": round(max(-7.0, min(7.0, -frame["y"] * 0.12)), 2),
+                "rotate": round(max(-45.0, min(45.0, -frame["rotate"] * 0.14 - frame["x"] * 1.1)), 2),
+                "scaleX": round(max(0.7, min(1.35, 2 - frame["scaleX"])), 3),
+                "scaleY": round(max(0.7, min(1.35, 2 - frame["scaleY"])), 3),
+            } for frame in frames]
+            generated_layers.append("crest")
+        if face_frames:
+            result["faceKeyframes"] = face_frames
+        if crest_frames:
+            result["crestKeyframes"] = crest_frames
+        result["generatedLayers"] = generated_layers
+        result["motionQuality"] = min(100, 45 + len(frames) * 5 + (0 if "face" in generated_layers else 15) + (0 if "crest" in generated_layers else 15) + (5 if effect != "none" else 0))
+    return result
+
+
+def extract_pet_action(text: str) -> tuple[str, dict | None, str]:
+    match = re.search(r"<pet_action>\s*(\{.*?\})\s*</pet_action>", text, flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return text, None, ""
+    raw = match.group(1).strip()
+    clean = (text[:match.start()] + text[match.end():]).rstrip()
+    try:
+        motion = normalize_pet_action(json.loads(raw))
+    except (json.JSONDecodeError, TypeError):
+        motion = None
+    return clean, motion, raw
 
 
 class SettingsUpdate(BaseModel):
@@ -126,6 +363,8 @@ class ConversationRename(BaseModel):
 
 class ChatRequest(BaseModel):
     content: str = Field(min_length=1)
+    pet_motion_enabled: bool = False
+    recent_pet_motions: list[str] = Field(default_factory=list, max_length=5)
 
 
 class MessageUpdate(BaseModel):
@@ -822,12 +1061,17 @@ async def chat(conversation_id: int, payload: ChatRequest):
         model_messages.append({"role": "system", "content": "以下是用户在本次对话中提供的文档资料。优先依据资料回答；资料不足时明确说明。\n\n" + document_text})
     environment_context = []
     if setting["include_local_time"]:
-        local_time = datetime.now().astimezone().isoformat(timespec="seconds")
-        environment_context.append(f"当前设备本地时间：{local_time}。回答时可以参考时间判断时效性或语境，但不必特意提及时间。")
+        environment_context.append(build_local_time_context())
     if setting["include_location_context"] and setting["location_context"].strip():
         environment_context.append(f"用户设置的位置/地区：{setting['location_context'].strip()}。这是用户提供的概略地区信息；仅在对问题有帮助时参考，不要推断更精确的位置，也不必主动提及。")
     if environment_context:
-        model_messages.append({"role": "system", "content": "【可选环境信息】\n" + "\n".join(environment_context)})
+        model_messages.append({"role": "system", "content": "【本次对话的实时环境信息】\n" + "\n".join(environment_context)})
+    if payload.pet_motion_enabled:
+        action_prompt = PET_ACTION_PROMPT
+        recent_motions = [item.strip()[:40] for item in payload.recent_pet_motions if item.strip()][:5]
+        if recent_motions:
+            action_prompt += "\n最近已经演过这些动作：" + "、".join(recent_motions) + "。本次请换一个不同的构思、节奏或分层组合，不要重复。"
+        model_messages.append({"role": "system", "content": action_prompt})
     model_messages.extend(history)
     model_messages.append({"role": "user", "content": payload.content})
 
@@ -835,8 +1079,14 @@ async def chat(conversation_id: int, payload: ChatRequest):
 
     async def generate():
         complete = ""
+        raw_complete = ""
+        stream_buffer = ""
+        action_started = False
+        tool_call_arguments: dict[int, str] = {}
         saved = False
         max_continuations = 3
+        provider_url = setting["base_url"].lower()
+        tool_call_enabled = payload.pet_motion_enabled and any(domain in provider_url for domain in ("api.openai.com", "api.deepseek.com"))
 
         def save_complete_reply():
             nonlocal saved
@@ -857,6 +1107,9 @@ async def chat(conversation_id: int, payload: ChatRequest):
                         "model": setting["model"], "messages": request_messages, "stream": True,
                         "temperature": setting["temperature"], "max_tokens": setting["max_tokens"],
                     }
+                    if tool_call_enabled:
+                        body["tools"] = [PET_ACTION_TOOL]
+                        body["tool_choice"] = "auto"
                     async with client.stream("POST", f"{setting['base_url'].rstrip('/')}/chat/completions", headers=headers, json=body) as response:
                         if response.status_code >= 400:
                             error = (await response.aread()).decode(errors="replace")
@@ -872,15 +1125,44 @@ async def chat(conversation_id: int, payload: ChatRequest):
                             try:
                                 data = json.loads(payload_text)
                                 choice = data["choices"][0]
-                                token = choice["delta"].get("content", "")
+                                delta = choice["delta"]
+                                token = delta.get("content", "") or ""
+                                for tool_call in delta.get("tool_calls") or []:
+                                    index = int(tool_call.get("index", 0))
+                                    function = tool_call.get("function", {})
+                                    if function.get("name") in (None, "", "perform_pet_action"):
+                                        tool_call_arguments[index] = tool_call_arguments.get(index, "") + (function.get("arguments") or "")
                                 finish_reason = choice.get("finish_reason") or finish_reason
                             except (json.JSONDecodeError, KeyError, IndexError):
                                 continue
                             if token:
-                                complete += token
-                                yield json.dumps({"token": token}, ensure_ascii=False) + "\n"
+                                raw_complete += token
+                                if not payload.pet_motion_enabled:
+                                    complete += token
+                                    yield json.dumps({"token": token}, ensure_ascii=False) + "\n"
+                                elif not action_started:
+                                    stream_buffer += token
+                                    marker_at = stream_buffer.lower().find(PET_ACTION_OPEN)
+                                    if marker_at >= 0:
+                                        visible = stream_buffer[:marker_at]
+                                        action_started = True
+                                        stream_buffer = ""
+                                        if visible:
+                                            complete += visible
+                                            yield json.dumps({"token": visible}, ensure_ascii=False) + "\n"
+                                    else:
+                                        safe_length = max(0, len(stream_buffer) - len(PET_ACTION_OPEN) + 1)
+                                        if safe_length:
+                                            visible = stream_buffer[:safe_length]
+                                            stream_buffer = stream_buffer[safe_length:]
+                                            complete += visible
+                                            yield json.dumps({"token": visible}, ensure_ascii=False) + "\n"
                     if finish_reason != "length":
                         break
+                    if payload.pet_motion_enabled and not action_started and stream_buffer:
+                        complete += stream_buffer
+                        yield json.dumps({"token": stream_buffer}, ensure_ascii=False) + "\n"
+                        stream_buffer = ""
                     if continuation >= max_continuations:
                         logger.warning(
                             "model_chat_still_truncated conversation_id=%s continuations=%s output_chars=%s",
@@ -896,9 +1178,46 @@ async def chat(conversation_id: int, payload: ChatRequest):
                         {"role": "assistant", "content": complete},
                         {"role": "user", "content": "上一个回答因长度限制被截断。请直接从中断处继续完成回答，不要重复已经输出的内容。"},
                     ]
+            if payload.pet_motion_enabled and not action_started and stream_buffer:
+                complete += stream_buffer
+                yield json.dumps({"token": stream_buffer}, ensure_ascii=False) + "\n"
+            pet_motion = None
+            pet_motion_raw = ""
+            if payload.pet_motion_enabled:
+                for arguments in tool_call_arguments.values():
+                    try:
+                        candidate = normalize_pet_action(json.loads(arguments))
+                    except (json.JSONDecodeError, TypeError):
+                        candidate = None
+                    if candidate:
+                        pet_motion = candidate
+                        pet_motion_raw = arguments
+                        break
+                if not pet_motion:
+                    _, pet_motion, pet_motion_raw = extract_pet_action(raw_complete)
+                if pet_motion:
+                    logger.info(
+                        "pet_motion_selected conversation_id=%s mode=%s action=%s emotion=%s body_frames=%s face_frames=%s crest_frames=%s effect=%s quality=%s generated_layers=%s",
+                        conversation_id,
+                        "tool_call" if tool_call_arguments else "tag",
+                        pet_motion.get("action"),
+                        pet_motion.get("emotionLabel", ""),
+                        len(pet_motion.get("keyframes", [])),
+                        len(pet_motion.get("faceKeyframes", [])),
+                        len(pet_motion.get("crestKeyframes", [])),
+                        pet_motion.get("effect", "none"),
+                        pet_motion.get("motionQuality", 0),
+                        ",".join(pet_motion.get("generatedLayers", [])) or "none",
+                    )
+                else:
+                    logger.info("pet_motion_missing conversation_id=%s raw_present=%s", conversation_id, bool(pet_motion_raw))
+            complete = complete.rstrip()
             if complete:
                 save_complete_reply()
                 done_event = {"done": True}
+                if pet_motion:
+                    done_event["pet_motion"] = pet_motion
+                    done_event["pet_motion_raw"] = pet_motion_raw
                 if finish_reason == "length":
                     done_event["truncated"] = True
                 yield json.dumps(done_event, ensure_ascii=False) + "\n"

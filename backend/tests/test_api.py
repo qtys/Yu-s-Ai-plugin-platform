@@ -5,13 +5,14 @@ import asyncio
 import json
 import io
 import zipfile
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
 from fastapi.testclient import TestClient
 
 from app import database
-from app.main import app
+from app.main import app, build_local_time_context, normalize_pet_action
 from app.documents import extract_visuals
 
 
@@ -234,6 +235,44 @@ def test_chat_streams_visible_tokens_and_saves_reply(monkeypatch):
             assert client.get("/api/plugins/proactive").json()["next_due"] >= before_chat_due
 
 
+def test_chat_hides_and_validates_model_pet_action(monkeypatch):
+    chunks = [
+        'data: {"choices":[{"delta":{"content":"别担心，我在这里。\\n<pet_"},"finish_reason":null}]}\n',
+        'data: {"choices":[{"delta":{"content":"action>{\\"expression\\":\\"shy\\",\\"action\\":\\"lean_left\\",\\"gaze\\":\\"none\\",\\"intensity\\":2,\\"duration_ms\\":9000,\\"offset_x\\":-9,\\"offset_y\\":2}</pet_action>"},"finish_reason":"stop"}]}\n',
+        'data: [DONE]\n',
+    ]
+    uploaded = []
+
+    async def stream(request):
+        uploaded.append(json.loads(request.content))
+        return httpx.Response(200, content="".join(chunks).encode())
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr("app.main.httpx.AsyncClient", lambda **kwargs: original_client(transport=httpx.MockTransport(stream), **kwargs))
+    with tempfile.TemporaryDirectory() as directory:
+        database.DATA_DIR = database.Path(directory)
+        database.DB_PATH = database.DATA_DIR / "pet-action.db"
+        with TestClient(app) as client:
+            settings = client.get("/api/settings").json()
+            settings["api_key"] = "mock"
+            client.put("/api/settings", json=settings)
+            character = client.post("/api/characters", json={"name": "动作角色"}).json()
+            conversation = client.post("/api/conversations", json={"character_id": character["id"]}).json()
+            response = client.post(f"/api/conversations/{conversation['id']}/chat", json={"content": "安慰我", "pet_motion_enabled": True})
+            events = [json.loads(line) for line in response.text.splitlines()]
+            visible = "".join(event.get("token", "") for event in events)
+            assert visible.rstrip() == "别担心，我在这里。"
+            assert "pet_action" not in visible
+            assert events[-1]["pet_motion"] == {
+                "expression": "shy", "action": "lean-left", "gazeMode": "none",
+                "lookX": 0.0, "lookY": 0.0, "intensity": 1.0, "duration": 3500,
+                "offsetX": -6.0, "offsetY": 2.0, "movement": "stay", "moveDistance": 0.0,
+            }
+            assert any("桌宠动作导演工具" in message["content"] for message in uploaded[0]["messages"] if message["role"] == "system")
+            messages = client.get(f"/api/conversations/{conversation['id']}/messages").json()
+            assert messages[-1]["content"] == "别担心，我在这里。"
+
+
 def test_chat_environment_context_respects_time_and_location_switches(monkeypatch):
     uploaded_requests = []
 
@@ -270,9 +309,127 @@ def test_chat_environment_context_respects_time_and_location_switches(monkeypatc
             assert saved["location_context"] == "中国上海市"
             assert client.post(f"/api/conversations/{conversation['id']}/chat", json={"content": "第二次"}).status_code == 200
             second_system_text = "\n".join(message["content"] for message in uploaded_requests[-1]["messages"] if message["role"] == "system")
-            assert "当前设备本地时间" in second_system_text
+            assert "当前本机时间" in second_system_text
             assert "中国上海市" in second_system_text
-            assert "不必特意提及时间" in second_system_text
+            assert "不要声称无法获取当前时间" in second_system_text
+
+
+def test_local_time_context_is_explicit_and_machine_independent():
+    fixed = datetime(2026, 9, 22, 14, 5, 6, tzinfo=timezone(timedelta(hours=8), name="CST"))
+    context = build_local_time_context(fixed)
+    assert "2026年09月22日" in context
+    assert "星期二" in context
+    assert "14:05:06（下午）" in context
+    assert "CST（UTC+08:00）" in context
+    assert "2026-09-22T14:05:06+08:00" in context
+    assert "相对时间" in context
+
+
+def test_custom_pet_motion_is_safely_normalized():
+    motion = normalize_pet_action({
+        "expression": "surprised",
+        "emotion_label": "先退缩再鼓起勇气",
+        "action": "custom",
+        "eyes": "wide",
+        "mouth": "o",
+        "blush": 1.8,
+        "gaze": "cursor",
+        "movement": "stay",
+        "duration_ms": 1700,
+        "easing": "spring",
+        "repeat": 9,
+        "effect": "sparkle",
+        "body_keyframes": [
+            {"at": 0, "x": 0, "y": 0, "rotate": 0, "scale_x": 1, "scale_y": 1},
+            {"at": .45, "x": -99, "y": -99, "rotate": 900, "scale_x": .2, "scale_y": 2},
+            {"at": 1, "x": 0, "y": 0, "rotate": 0, "scale_x": 1, "scale_y": 1},
+        ],
+        "face_keyframes": [
+            {"at": 0, "x": 0, "y": 0, "rotate": 0, "scale_x": 1, "scale_y": 1},
+            {"at": 1, "x": 99, "y": -99, "rotate": 80, "scale_x": .1, "scale_y": 4},
+        ],
+        "crest_keyframes": [
+            {"at": 0, "x": 0, "y": 0, "rotate": 0, "scale_x": 1, "scale_y": 1},
+            {"at": 1, "x": -99, "y": 99, "rotate": -90, "scale_x": .1, "scale_y": 4},
+        ],
+    })
+    assert motion is not None
+    assert motion["action"] == "custom"
+    assert motion["emotionLabel"] == "先退缩再鼓起勇气"
+    assert motion["eyes"] == "wide"
+    assert motion["mouth"] == "o"
+    assert motion["blush"] == 1.0
+    assert motion["repeat"] == 3
+    assert motion["easing"] == "spring"
+    assert motion["effect"] == "sparkle"
+    assert motion["keyframes"][1] == {"at": .45, "x": -18.0, "y": -40.0, "rotate": 540.0, "scaleX": .72, "scaleY": 1.3}
+    assert motion["faceKeyframes"][1] == {"at": 1.0, "x": 10, "y": -10, "rotate": 20, "scaleX": .75, "scaleY": 1.25}
+    assert motion["crestKeyframes"][1] == {"at": 1.0, "x": -5, "y": 7, "rotate": -45, "scaleX": .7, "scaleY": 1.35}
+
+
+def test_custom_pet_motion_rejects_invalid_or_unsafe_shapes():
+    assert normalize_pet_action({"expression": "happy", "action": "custom", "gaze": "cursor", "movement": "stay", "body_keyframes": [{"at": 0}]}) is None
+    assert normalize_pet_action({"expression": "happy", "action": "custom", "gaze": "cursor", "movement": "stay", "body_keyframes": [{"at": 0}, {"at": .5}, {"at": .5}, {"at": 1}]}) is None
+    assert normalize_pet_action({"expression": "happy", "action": "custom", "gaze": "cursor", "movement": "stay", "eyes": "url(javascript:bad)", "body_keyframes": [{"at": 0}, {"at": 1}]}) is None
+    assert normalize_pet_action({"expression": "happy", "action": "custom", "gaze": "cursor", "movement": "stay", "effect": "<script>", "body_keyframes": [{"at": 0}, {"at": 1}]}) is None
+    assert normalize_pet_action({"expression": "happy", "action": "custom", "gaze": "cursor", "movement": "stay", "body_keyframes": [{"at": 0}, {"at": 1}], "face_keyframes": [{"at": 0}]}) is None
+
+
+def test_custom_pet_motion_completes_missing_layers():
+    motion = normalize_pet_action({
+        "expression": "happy", "action": "custom", "gaze": "cursor", "movement": "stay",
+        "body_keyframes": [
+            {"at": 0, "x": 0, "y": 0, "rotate": 0, "scale_x": 1, "scale_y": 1},
+            {"at": .5, "x": 8, "y": -12, "rotate": 20, "scale_x": .9, "scale_y": 1.1},
+            {"at": 1, "x": 0, "y": 0, "rotate": 0, "scale_x": 1, "scale_y": 1},
+        ],
+    })
+    assert motion is not None
+    assert motion["generatedLayers"] == ["face", "crest"]
+    assert len(motion["faceKeyframes"]) == 3
+    assert len(motion["crestKeyframes"]) == 3
+    assert 0 < motion["motionQuality"] < 100
+
+
+def test_chat_accepts_streamed_pet_action_tool_call(monkeypatch):
+    arguments = json.dumps({
+        "expression": "happy", "emotion_label": "侧跳后回头", "action": "custom", "gaze": "cursor",
+        "movement": "stay", "intensity": .8, "duration_ms": 1600, "effect": "star",
+        "body_keyframes": [
+            {"at": 0, "x": 0, "y": 0, "rotate": 0, "scale_x": 1, "scale_y": 1},
+            {"at": 1, "x": 0, "y": 0, "rotate": 0, "scale_x": 1, "scale_y": 1},
+        ],
+    }, ensure_ascii=False)
+    chunks = [
+        "data: " + json.dumps({"choices": [{"delta": {"content": "好呀！", "tool_calls": [{"index": 0, "function": {"name": "perform_pet_action", "arguments": arguments[:80]}}]}, "finish_reason": None}]}, ensure_ascii=False) + "\n",
+        "data: " + json.dumps({"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": arguments[80:]}}]}, "finish_reason": "tool_calls"}]}, ensure_ascii=False) + "\n",
+        "data: [DONE]\n",
+    ]
+    uploaded = []
+
+    async def stream(request):
+        uploaded.append(json.loads(request.content))
+        return httpx.Response(200, content="".join(chunks).encode())
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr("app.main.httpx.AsyncClient", lambda **kwargs: original_client(transport=httpx.MockTransport(stream), **kwargs))
+    with tempfile.TemporaryDirectory() as directory:
+        database.DATA_DIR = database.Path(directory)
+        database.DB_PATH = database.DATA_DIR / "pet-tool-call.db"
+        with TestClient(app) as client:
+            settings = client.get("/api/settings").json()
+            settings.update(api_key="mock", base_url="https://api.deepseek.com/v1")
+            client.put("/api/settings", json=settings)
+            character = client.post("/api/characters", json={"name": "工具角色"}).json()
+            conversation = client.post("/api/conversations", json={"character_id": character["id"]}).json()
+            response = client.post(f"/api/conversations/{conversation['id']}/chat", json={"content": "演一个动作", "pet_motion_enabled": True})
+            events = [json.loads(line) for line in response.text.splitlines()]
+            assert "tools" in uploaded[0]
+            assert "tool_choice" in uploaded[0]
+            assert "".join(event.get("token", "") for event in events) == "好呀！"
+            assert events[-1]["pet_motion"]["emotionLabel"] == "侧跳后回头"
+            assert events[-1]["pet_motion"]["effect"] == "star"
+            assert events[-1]["pet_motion"]["generatedLayers"] == ["face", "crest"]
 
 
 def test_chat_auto_continues_when_model_hits_length_limit(monkeypatch):

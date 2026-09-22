@@ -73,8 +73,7 @@ export default function App() {
     [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [activeCharacter, setActiveCharacter] = useState<number | null>(null),
     [activeConversation, setActiveConversation] = useState<number | null>(null);
-  const [input, setInput] = useState(""),
-    [busy, setBusy] = useState(false),
+  const [busy, setBusy] = useState(false),
     [error, setError] = useState("");
   const [pinned, setPinned] = useState(false),
     [mini, setMini] = useState(false);
@@ -113,6 +112,8 @@ export default function App() {
   const abortRef = useRef<AbortController | null>(null);
   const busyRef = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const inputDraftRef = useRef("");
+  const inputResizeFrameRef = useRef(0);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const skipMessageLoadRef = useRef<number | null>(null);
   const desktop = "__TAURI_INTERNALS__" in window;
@@ -120,6 +121,7 @@ export default function App() {
   useEffect(() => {
     busyRef.current = busy;
   }, [busy]);
+  useEffect(() => () => window.cancelAnimationFrame(inputResizeFrameRef.current), []);
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ block: "end" });
   }, [messages]);
@@ -466,7 +468,7 @@ export default function App() {
   }
   async function send(event: FormEvent) {
     event.preventDefault();
-    const content = input.trim();
+    const content = (inputRef.current?.value ?? inputDraftRef.current).trim();
     if (!content || busy) return;
     let id = activeConversation;
     try {
@@ -482,8 +484,11 @@ export default function App() {
         setConversations((c) => [value, ...c]);
         setMessages(await request<Message[]>(`/conversations/${id}/messages`));
       }
-      setInput("");
-      if (inputRef.current) inputRef.current.style.height = "auto";
+      if (inputRef.current) {
+        inputRef.current.value = "";
+        inputRef.current.style.height = "";
+      }
+      inputDraftRef.current = "";
       setBusy(true);
       busyRef.current = true;
       setError("");
@@ -851,16 +856,16 @@ export default function App() {
               </div>
               <div className="form-section-title">
                 <strong>对话环境信息</strong>
-                <small>按开关把设备本地时间或你填写的地区作为可选上下文传给模型</small>
+                <small>每次发送消息时，实时读取设备时间并传给模型</small>
               </div>
-              <Field label="提供当前设备本地时间"><input type="checkbox" checked={settings.include_local_time} onChange={(e) => setSettings({ ...settings, include_local_time: e.target.checked })} /></Field>
+              <Field label="让模型感知当前日期、星期和时间"><input type="checkbox" checked={settings.include_local_time} onChange={(e) => setSettings({ ...settings, include_local_time: e.target.checked })} /></Field>
               <Field label="向模型提供位置/地区"><input type="checkbox" checked={settings.include_location_context} onChange={(e) => setSettings({ ...settings, include_location_context: e.target.checked })} /></Field>
               {settings.include_location_context && (
                 <Field label="位置或地区">
                   <input maxLength={200} value={settings.location_context} onChange={(e) => setSettings({ ...settings, location_context: e.target.value })} placeholder="例如：中国上海市浦东新区" />
                 </Field>
               )}
-              <small>位置由你手动填写，仅在开启位置开关后随对话发送；不会自动读取 GPS。时间与位置都只是参考信息，模型可以在无关问题中忽略它们。</small>
+              <small>时间来自本机时钟，涉及现在、今天、星期和相对时间时作为回答基准；位置由你手动填写，不会自动读取 GPS。</small>
               <div className="form-section-title">
                 <strong>离线翻译下载</strong>
                 <small>留空使用 Argos 官方源；国内镜像需提供相同的 .argosmodel 文件</small>
@@ -1064,14 +1069,18 @@ export default function App() {
                 <textarea
                   ref={inputRef}
                   rows={1}
-                  value={input}
-                  onChange={(e) => {
-                    setInput(e.target.value);
-                    e.target.style.height = "auto";
-                    e.target.style.height = `${Math.min(e.target.scrollHeight, 144)}px`;
+                  defaultValue={inputDraftRef.current}
+                  onInput={(e) => {
+                    const field = e.currentTarget;
+                    inputDraftRef.current = field.value;
+                    window.cancelAnimationFrame(inputResizeFrameRef.current);
+                    inputResizeFrameRef.current = window.requestAnimationFrame(() => {
+                      field.style.height = "0px";
+                      field.style.height = `${Math.min(field.scrollHeight, 144)}px`;
+                    });
                   }}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
+                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                       e.preventDefault();
                       e.currentTarget.form?.requestSubmit();
                     }
