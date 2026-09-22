@@ -2,11 +2,11 @@
 
 Yu's AI 是一款本地优先的 Windows 私人 AI 聊天软件。它将角色扮演、多模型 API、长期记忆、文档阅读、离线翻译和桌面宠物整合在同一个应用中，并为后续插件能力预留扩展空间。
 
-当前版本：**0.15.3**
+当前版本：**0.15.4**
 
 > ### ⬇ 下载 Windows 安装版
 >
-> [**下载最新版 Yus AI 安装程序（Windows x64）**](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/latest/download/Yus-AI-0.15.3-x64-setup.exe)
+> [**下载最新版 Yus AI 安装程序（Windows x64）**](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/latest/download/Yus-AI-0.15.4-x64-setup.exe)
 
 无需配置开发环境，下载安装后即可运行。其他版本、安装包校验值和发布说明可在 [GitHub Releases](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases) 查看。
 
@@ -53,7 +53,7 @@ Yu's AI 面向希望拥有长期陪伴式 AI、角色聊天和桌面助手体验
 项目当前提供 Windows NSIS 安装包。自行构建后的安装包位于：
 
 ```text
-frontend\src-tauri\target\release\bundle\nsis\Yus AI_0.15.3_x64-setup.exe
+frontend\src-tauri\target\release\bundle\nsis\Yus AI_0.15.4_x64-setup.exe
 ```
 
 安装后直接启动 **Yus AI**，不需要手动启动后端。首次使用建议：
@@ -311,6 +311,12 @@ cd ..\backend
 ## 四、更新日志
 
 完整记录见 [CHANGELOG.md](CHANGELOG.md)。
+
+### 0.15.4（2026-09-22）
+
+- 修复 GitHub API 限流后使用官方发布页时，近似 MB 大小被误作精确字节数导致下载完成仍报错的问题。
+- 断点续传改用 HTTP `Content-Length` / `Content-Range` 获取精确总大小。
+- 已完整下载的 `.part` 遇到 HTTP 416 时直接进行 SHA-256 校验并完成更新。
 
 ### 0.15.3（2026-09-22）
 

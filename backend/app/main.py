@@ -431,6 +431,11 @@ def _version_tuple(value: str) -> tuple[int, ...]:
     return tuple(int(number) for number in numbers[:4]) or (0,)
 
 
+def _content_range_total(value: str | None) -> int:
+    match = re.search(r"/(\d+)$", (value or "").strip())
+    return int(match.group(1)) if match else 0
+
+
 def _create_backup_archive(prefix: str, app_version: str, preferences: dict[str, str] | None = None) -> dict:
     data_dir = database.DATA_DIR.resolve()
     backup_dir = data_dir / "backups"
@@ -603,6 +608,7 @@ def _release_from_github_page(page_url: str, page_html: str, assets_html: str) -
         "asset": {
             "name": asset_name,
             "size": int(float(asset_match.group("size")) * units[asset_match.group("unit").upper()]),
+            "size_exact": False,
             "url": f"https://github.com{asset_path}",
             "digest": f"sha256:{asset_match.group('digest').lower()}",
         },
@@ -650,6 +656,7 @@ async def _latest_release() -> dict:
         "asset": {
             "name": Path(str(asset.get("name", "setup.exe"))).name,
             "size": int(asset.get("size") or 0),
+            "size_exact": True,
             "url": asset.get("browser_download_url"),
             "digest": asset.get("digest") or "",
         },
@@ -660,12 +667,12 @@ async def _latest_release() -> dict:
 async def lifespan(_: FastAPI):
     configure_logging()
     init_db()
-    logger.info("backend_started version=0.15.3")
+    logger.info("backend_started version=0.15.4")
     yield
     logger.info("backend_stopped")
 
 
-app = FastAPI(title="Yu's AI API", version="0.15.3", lifespan=lifespan)
+app = FastAPI(title="Yu's AI API", version="0.15.4", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://tauri.localhost", "tauri://localhost"],
@@ -789,7 +796,7 @@ async def download_system_update():
             update_dir.mkdir(parents=True, exist_ok=True)
             destination = update_dir / Path(asset["name"]).name
             partial = destination.with_suffix(destination.suffix + ".part")
-            expected_size = int(asset.get("size") or 0)
+            expected_size = int(asset.get("size") or 0) if asset.get("size_exact", True) else 0
             expected_digest = str(asset.get("digest") or "")
             if destination.exists() and expected_digest.startswith("sha256:") and _sha256(destination).lower() == expected_digest.split(":", 1)[1].lower():
                 yield json.dumps({"stage": "complete", "percent": 100, "path": str(destination), "sha256": _sha256(destination), "version": release["version"]}, ensure_ascii=False) + "\n"
@@ -804,18 +811,28 @@ async def download_system_update():
             timeout = httpx.Timeout(connect=30, read=None, write=30, pool=30)
             async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, trust_env=False) as client:
                 async with client.stream("GET", url, headers=headers) as response:
-                    response.raise_for_status()
-                    append = resume_at > 0 and response.status_code == 206
-                    downloaded = resume_at if append else 0
-                    mode = "ab" if append else "wb"
-                    with partial.open(mode) as file:
-                        async for chunk in response.aiter_bytes(256 * 1024):
-                            if not chunk:
-                                continue
-                            file.write(chunk)
-                            downloaded += len(chunk)
-                            percent = min(99, int(downloaded * 100 / expected_size)) if expected_size else 0
-                            yield json.dumps({"stage": "downloading", "percent": percent, "downloaded": downloaded, "total": expected_size, "resumed": append}, ensure_ascii=False) + "\n"
+                    range_total = _content_range_total(response.headers.get("Content-Range"))
+                    complete_partial = response.status_code == 416 and resume_at > 0 and range_total == resume_at
+                    if complete_partial:
+                        expected_size = range_total
+                        logger.info("update_partial_already_complete bytes=%s", resume_at)
+                    else:
+                        response.raise_for_status()
+                        append = resume_at > 0 and response.status_code == 206
+                        if range_total:
+                            expected_size = range_total
+                        elif response.status_code == 200 and response.headers.get("Content-Length", "").isdigit():
+                            expected_size = int(response.headers["Content-Length"])
+                        downloaded = resume_at if append else 0
+                        mode = "ab" if append else "wb"
+                        with partial.open(mode) as file:
+                            async for chunk in response.aiter_bytes(256 * 1024):
+                                if not chunk:
+                                    continue
+                                file.write(chunk)
+                                downloaded += len(chunk)
+                                percent = min(99, int(downloaded * 100 / expected_size)) if expected_size else 0
+                                yield json.dumps({"stage": "downloading", "percent": percent, "downloaded": downloaded, "total": expected_size, "resumed": append}, ensure_ascii=False) + "\n"
             if expected_size and partial.stat().st_size != expected_size:
                 raise ValueError("安装包大小与发布信息不一致")
             digest = _sha256(partial)

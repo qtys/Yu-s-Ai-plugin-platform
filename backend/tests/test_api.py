@@ -537,7 +537,7 @@ def test_update_check_and_verified_download(monkeypatch):
         with TestClient(app) as client:
             check = client.get("/api/system/update").json()
             assert check["available"] is True
-            assert check["current_version"] == "0.15.3"
+            assert check["current_version"] == "0.15.4"
             response = client.post("/api/system/update/download")
             events = [json.loads(line) for line in response.text.splitlines()]
             assert events[-1]["stage"] == "complete"
@@ -575,5 +575,42 @@ def test_update_check_falls_back_to_official_release_page(monkeypatch):
     release = asyncio.run(_latest_release())
     assert release["version"] == "9.8.7"
     assert release["asset"]["size"] == 150 * 1024 * 1024
+    assert release["asset"]["size_exact"] is False
     assert release["asset"]["digest"] == f"sha256:{digest}"
     assert observed_options[0]["trust_env"] is False
+
+
+def test_update_accepts_verified_partial_when_server_reports_range_complete(monkeypatch):
+    installer = b"already complete partial update"
+    digest = hashlib.sha256(installer).hexdigest()
+
+    async def latest_release():
+        return {
+            "version": "9.9.9", "name": "测试更新", "notes": "", "published_at": None,
+            "release_url": "https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/tag/v9.9.9",
+            "asset": {
+                "name": "Yus-AI-9.9.9-x64-setup.exe", "size": len(installer) + 1024, "size_exact": False,
+                "url": "https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/download/v9.9.9/Yus-AI-9.9.9-x64-setup.exe",
+                "digest": f"sha256:{digest}",
+            },
+        }
+
+    async def range_complete(_request):
+        return httpx.Response(416, headers={"Content-Range": f"bytes */{len(installer)}"})
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr("app.main._latest_release", latest_release)
+    monkeypatch.setattr("app.main.httpx.AsyncClient", lambda **kwargs: original_client(transport=httpx.MockTransport(range_complete), **kwargs))
+    with tempfile.TemporaryDirectory() as directory:
+        database.DATA_DIR = database.Path(directory)
+        database.DB_PATH = database.DATA_DIR / "update-range.db"
+        update_dir = database.DATA_DIR / "updates"
+        update_dir.mkdir()
+        partial = update_dir / "Yus-AI-9.9.9-x64-setup.exe.part"
+        partial.write_bytes(installer)
+        with TestClient(app) as client:
+            response = client.post("/api/system/update/download")
+            events = [json.loads(line) for line in response.text.splitlines()]
+        assert events[-1]["stage"] == "complete"
+        assert (update_dir / "Yus-AI-9.9.9-x64-setup.exe").read_bytes() == installer
+        assert not partial.exists()
