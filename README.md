@@ -2,11 +2,11 @@
 
 Yu's AI 是一款本地优先的 Windows 私人 AI 聊天软件。它将角色扮演、多模型 API、长期记忆、文档阅读、离线翻译和桌面宠物整合在同一个应用中，并为后续插件能力预留扩展空间。
 
-当前版本：**0.14.0**
+当前版本：**0.15.1**
 
 > ### ⬇ 下载 Windows 安装版
 >
-> [**下载最新版 Yus AI 安装程序（Windows x64）**](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/latest/download/Yus-AI-0.14.0-x64-setup.exe)
+> [**下载最新版 Yus AI 安装程序（Windows x64）**](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/latest/download/Yus-AI-0.15.1-x64-setup.exe)
 
 无需配置开发环境，下载安装后即可运行。其他版本、安装包校验值和发布说明可在 [GitHub Releases](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases) 查看。
 
@@ -53,7 +53,7 @@ Yu's AI 面向希望拥有长期陪伴式 AI、角色聊天和桌面助手体验
 项目当前提供 Windows NSIS 安装包。自行构建后的安装包位于：
 
 ```text
-frontend\src-tauri\target\release\bundle\nsis\Yus AI_0.14.0_x64-setup.exe
+frontend\src-tauri\target\release\bundle\nsis\Yus AI_0.15.1_x64-setup.exe
 ```
 
 安装后直接启动 **Yus AI**，不需要手动启动后端。首次使用建议：
@@ -145,6 +145,22 @@ Yu's AI 使用 OpenAI Chat Completions 兼容格式，可连接 DeepSeek 等兼�
 - 启动项位于当前用户的 `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`，无需管理员权限。
 - 覆盖升级会保留自启选择，并在安装路径变化时修正路径。
 
+### 2.10 应用内更新
+
+在“模型设置 → 更新与数据安全”中点击“检查更新”。软件会读取本仓库最新的 GitHub Release，并显示版本号、发布说明和安装包大小。更新检查不会继承可能与打包后端冲突的系统代理环境；GitHub API 限流时会自动切换到 GitHub 官方 Release 页面。
+
+下载支持进度显示和 `.part` 断点续传。下载完成后必须通过 GitHub Release 资源提供的 SHA-256 摘要校验，校验成功才允许启动安装程序；下载地址也必须属于本项目的 GitHub Release。安装前程序会正常关闭本地服务，安装目录中的数据库不会被删除。
+
+更新采用手动确认方式，不会静默下载或在后台自动安装。
+
+### 2.11 数据备份与恢复
+
+“创建备份”会先使用 SQLite Backup API 生成一致性数据库快照，再把数据库、上传文档、角色导出和桌面偏好写入 `.yus-backup`。备份包括角色、聊天、长期记忆、模型设置、API Key、主动互动配置、桌宠位置、主题、桌宠大小/透明度、气泡尺寸及文档索引，不包含日志、临时文件和可重新下载的翻译语言包。
+
+恢复时会检查 ZIP 路径安全、备份格式、数据库完整性和外键关系。替换当前数据前，软件会自动在安装目录创建一份 `Yus-AI-pre-restore-*.yus-backup` 安全快照；恢复完成后自动重启。
+
+> 备份包含 API Key 和私人聊天内容。请存放在可信位置，不要上传到公开仓库或公共网盘。
+
 ---
 
 ## 三、功能细节
@@ -192,12 +208,16 @@ Yu's AI 使用 OpenAI Chat Completions 兼容格式，可连接 DeepSeek 等兼�
 <安装目录>\data\translation-models\
 <安装目录>\data\character-exports\
 <安装目录>\data\temp\
+<安装目录>\data\backups\
+<安装目录>\data\updates\
 <安装目录>\logs\
 ```
 
 - `yus_ai.db`：角色、会话、消息、设置、桌宠位置和记忆。
 - `translation-models`：离线翻译语言包。
 - `character-exports`：导出的角色卡。
+- `backups`：应用内创建的备份及恢复前安全快照。
+- `updates`：已下载并通过摘要校验的安装程序；未完成下载使用 `.part` 文件。
 - `logs`：运行日志和诊断信息。
 
 首次运行新版时，如安装目录没有数据库，程序会尝试复制旧版用户数据并保留旧文件。日志不会记录 API Key、Authorization Header、聊天正文或系统提示词。
@@ -266,6 +286,8 @@ cd frontend
 npm run desktop:build
 ```
 
+版本规则：从 `0.15.1` 起，每次对外更新默认将补丁版本递增 `0.0.1`（例如 `0.15.1 → 0.15.2`），并同步修改后端版本、Tauri 配置、Cargo 包版本、README、CHANGELOG、Git 标签和 Release 安装包名称。
+
 测试：
 
 ```powershell
@@ -289,6 +311,17 @@ cd ..\backend
 ## 四、更新日志
 
 完整记录见 [CHANGELOG.md](CHANGELOG.md)。
+
+### 0.15.1（2026-09-22）
+
+- 新增应用内更新检查，可显示 GitHub Release 版本、说明和安装包大小。
+- 修复部分代理/隧道环境下更新检查立即失败的问题，并增加 GitHub 官方发布页备用检查路径。
+- 展开窗口进入或切换对话时自动定位到最新消息，并在 Markdown 或图片完成布局后校正到底部。
+- 更新下载支持实时进度、断点续传、可信 Release 地址限制和 SHA-256 强制校验。
+- 下载完成后由用户确认启动安装程序，不进行静默更新。
+- 新增 `.yus-backup` 数据备份，使用 SQLite 一致性快照并包含上传文档和角色导出。
+- 新增备份恢复、ZIP 路径安全检查、数据库完整性检查和恢复后自动重启。
+- 恢复前自动创建安全快照，降低误选备份或旧数据覆盖的风险。
 
 ### 0.14.0（2026-09-22）
 

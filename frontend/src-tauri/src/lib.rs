@@ -1,4 +1,4 @@
-use std::{fs::OpenOptions, io::Write, sync::{Arc, Mutex}};
+use std::{fs::OpenOptions, io::Write, process::Command as StdCommand, sync::{Arc, Mutex}};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -524,6 +524,61 @@ fn export_character_card(character_name: String, content: String) -> Result<Stri
 }
 
 #[tauri::command]
+fn copy_backup_file(source: String, destination: String) -> Result<String, String> {
+  let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+  let install_dir = executable.parent().ok_or("无法确定软件安装目录")?;
+  let backup_dir = install_dir.join("data").join("backups");
+  let source_path = std::fs::canonicalize(&source).map_err(|error| error.to_string())?;
+  let backup_root = std::fs::canonicalize(&backup_dir).map_err(|error| error.to_string())?;
+  if !source_path.starts_with(&backup_root) || source_path.extension().and_then(|value| value.to_str()) != Some("yus-backup") {
+    return Err("只能导出由 Yu's AI 创建的备份".to_string());
+  }
+  let mut destination_path = std::path::PathBuf::from(destination);
+  if destination_path.extension().and_then(|value| value.to_str()) != Some("yus-backup") {
+    destination_path.set_extension("yus-backup");
+  }
+  if let Some(parent) = destination_path.parent() {
+    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+  }
+  std::fs::copy(&source_path, &destination_path).map_err(|error| error.to_string())?;
+  Ok(destination_path.to_string_lossy().into_owned())
+}
+
+fn spawn_after_exit(path: &std::path::Path) -> Result<(), String> {
+  StdCommand::new("powershell.exe")
+    .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", "Start-Sleep -Milliseconds 900; Start-Process -FilePath $args[0]"])
+    .arg(path)
+    .spawn()
+    .map_err(|error| error.to_string())?;
+  Ok(())
+}
+
+#[tauri::command]
+fn install_update(app: AppHandle, installer_path: String) -> Result<(), String> {
+  let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+  let install_dir = executable.parent().ok_or("无法确定软件安装目录")?;
+  let update_dir = install_dir.join("data").join("updates");
+  let installer = std::fs::canonicalize(installer_path).map_err(|error| error.to_string())?;
+  let update_root = std::fs::canonicalize(update_dir).map_err(|error| error.to_string())?;
+  if !installer.starts_with(update_root) || installer.extension().and_then(|value| value.to_str()).map(|value| value.eq_ignore_ascii_case("exe")) != Some(true) {
+    return Err("安装包不在受信任的更新目录中".to_string());
+  }
+  stop_backend(&app);
+  spawn_after_exit(&installer)?;
+  app.exit(0);
+  Ok(())
+}
+
+#[tauri::command]
+fn restart_application(app: AppHandle) -> Result<(), String> {
+  let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+  stop_backend(&app);
+  spawn_after_exit(&executable)?;
+  app.exit(0);
+  Ok(())
+}
+
+#[tauri::command]
 fn show_main_window(app: AppHandle) -> Result<(), String> {
   let _ = app.emit_to("pet", "pet-reset", ());
   if let Some(pet) = app.get_webview_window("pet") {
@@ -556,6 +611,7 @@ pub fn run() {
       }
     }))
     .plugin(tauri_plugin_shell::init())
+    .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_log::Builder::default().level(log::LevelFilter::Info).build())
     .plugin(tauri_plugin_autostart::Builder::new().app_name("Yus AI").build())
     .manage(DesktopState {
@@ -565,7 +621,7 @@ pub fn run() {
       always_on_top: Mutex::new(false),
       mini_mode: Mutex::new(false),
     })
-    .invoke_handler(tauri::generate_handler![set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, resize_pet_dialog, start_pet_drag, cancel_pet_auto_move, move_pet_by, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, set_pet_interaction_mode, get_autostart_status, set_autostart, export_character_card, record_window_diagnostic])
+    .invoke_handler(tauri::generate_handler![set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, resize_pet_dialog, start_pet_drag, cancel_pet_auto_move, move_pet_by, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, set_pet_interaction_mode, get_autostart_status, set_autostart, export_character_card, copy_backup_file, install_update, restart_application, record_window_diagnostic])
     .setup(|app| {
       let legacy_data_dir = app.path().app_data_dir()?;
       let data_dir = prepare_install_data_dir(app.handle())?;

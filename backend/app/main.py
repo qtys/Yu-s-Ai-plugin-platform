@@ -5,6 +5,13 @@ import time
 import random
 import zipfile
 import re
+import hashlib
+import os
+import shutil
+import sqlite3
+import uuid
+from html import unescape
+from urllib.parse import unquote
 from datetime import datetime
 from collections import deque
 from contextlib import asynccontextmanager
@@ -17,6 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from . import database
 from .database import connect, init_db
 from .logging_config import LOG_FILE, configure_logging
 from .translation import install_package, package_status, translate_text
@@ -24,7 +32,12 @@ from .proactive import EmptyProactiveReply, generate_proactive
 from .documents import DOCUMENT_DIR, chunk_pages, decode_document, extract_pages, extract_visuals, relevant_chunks, remove_original, save_original
 
 MODEL_GENERATION_LOCK = asyncio.Lock()
+SYSTEM_OPERATION_LOCK = asyncio.Lock()
 PROACTIVE_GENERATION_TASK: asyncio.Task | None = None
+
+GITHUB_LATEST_RELEASE_URL = "https://api.github.com/repos/qtys/Yu-s-Ai-plugin-platform/releases/latest"
+GITHUB_RELEASES_LATEST_URL = "https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/latest"
+BACKUP_FORMAT_VERSION = 1
 
 logger = logging.getLogger("yus_ai.api")
 
@@ -392,21 +405,267 @@ class DiagnosticCommand(BaseModel):
     marker: str | None = Field(default=None, max_length=120)
 
 
+class BackupRestoreRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=2000)
+
+
+class BackupCreateRequest(BaseModel):
+    preferences: dict[str, str] = Field(default_factory=dict)
+
+
 def rows(query: str, params: tuple = ()) -> list[dict]:
     with connect() as db:
         return [dict(row) for row in db.execute(query, params).fetchall()]
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _version_tuple(value: str) -> tuple[int, ...]:
+    numbers = re.findall(r"\d+", value.lstrip("vV").split("-", 1)[0])
+    return tuple(int(number) for number in numbers[:4]) or (0,)
+
+
+def _create_backup_archive(prefix: str, app_version: str, preferences: dict[str, str] | None = None) -> dict:
+    data_dir = database.DATA_DIR.resolve()
+    backup_dir = data_dir / "backups"
+    temp_dir = data_dir / "temp"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
+    safe_prefix = re.sub(r"[^A-Za-z0-9_-]", "-", prefix)[:48] or "Yus-AI-backup"
+    output = backup_dir / f"{safe_prefix}-{timestamp}.yus-backup"
+    snapshot_db = temp_dir / f"backup-{uuid.uuid4().hex}.db"
+    source = sqlite3.connect(database.DB_PATH)
+    target = sqlite3.connect(snapshot_db)
+    try:
+        source.backup(target)
+        integrity = target.execute("PRAGMA integrity_check").fetchone()[0]
+        if integrity != "ok":
+            raise ValueError(f"数据库完整性检查失败：{integrity}")
+        counts = {
+            "characters": target.execute("SELECT COUNT(*) FROM characters").fetchone()[0],
+            "conversations": target.execute("SELECT COUNT(*) FROM conversations").fetchone()[0],
+            "messages": target.execute("SELECT COUNT(*) FROM messages").fetchone()[0],
+            "documents": target.execute("SELECT COUNT(*) FROM documents").fetchone()[0],
+        }
+    finally:
+        target.close()
+        source.close()
+    manifest = {
+        "format": "yus-ai-backup",
+        "format_version": BACKUP_FORMAT_VERSION,
+        "app_version": app_version,
+        "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "includes": ["database", "documents", "character-exports", "desktop-preferences"],
+        "excludes": ["api-logs", "temporary-files", "translation-models"],
+        "counts": counts,
+    }
+    try:
+        with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+            archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+            safe_preferences = {
+                key: value[:4000] for key, value in (preferences or {}).items()
+                if key.startswith("yus-ai-") and len(key) <= 120 and isinstance(value, str)
+            }
+            archive.writestr("preferences.json", json.dumps(safe_preferences, ensure_ascii=False, indent=2))
+            archive.write(snapshot_db, "database/yus_ai.db")
+            for folder_name in ("documents", "character-exports"):
+                folder = data_dir / folder_name
+                if not folder.exists():
+                    continue
+                for item in folder.rglob("*"):
+                    if item.is_file():
+                        archive.write(item, (Path(folder_name) / item.relative_to(folder)).as_posix())
+        return {
+            "path": str(output), "filename": output.name, "size": output.stat().st_size,
+            "sha256": _sha256(output), "created_at": manifest["created_at"], "counts": counts,
+        }
+    finally:
+        snapshot_db.unlink(missing_ok=True)
+
+
+def _restore_backup_archive(source_path: str, app_version: str) -> dict:
+    source = Path(source_path).expanduser().resolve()
+    if not source.is_file() or source.suffix.lower() not in {".yus-backup", ".zip"}:
+        raise ValueError("请选择有效的 .yus-backup 备份文件")
+    data_dir = database.DATA_DIR.resolve()
+    staging = data_dir / "temp" / f"restore-{uuid.uuid4().hex}"
+    rollback = data_dir / "temp" / f"restore-rollback-{uuid.uuid4().hex}"
+    staging.mkdir(parents=True, exist_ok=False)
+    moved: list[tuple[Path, Path]] = []
+    installed: list[Path] = []
+    try:
+        with zipfile.ZipFile(source) as archive:
+            infos = archive.infolist()
+            if len(infos) > 10000 or sum(info.file_size for info in infos) > 2 * 1024 * 1024 * 1024:
+                raise ValueError("备份文件内容过大或条目过多")
+            names = {info.filename for info in infos}
+            if "manifest.json" not in names or "database/yus_ai.db" not in names:
+                raise ValueError("备份缺少清单或数据库")
+            manifest = json.loads(archive.read("manifest.json"))
+            if manifest.get("format") != "yus-ai-backup" or int(manifest.get("format_version", 0)) > BACKUP_FORMAT_VERSION:
+                raise ValueError("备份格式不兼容，请升级软件后再恢复")
+            for info in infos:
+                normalized = Path(info.filename.replace("\\", "/"))
+                parts = normalized.parts
+                allowed = info.filename in {"manifest.json", "preferences.json", "database/yus_ai.db"} or (parts and parts[0] in {"documents", "character-exports"})
+                if not allowed or normalized.is_absolute() or ".." in parts:
+                    raise ValueError(f"备份包含不安全路径：{info.filename}")
+                if info.is_dir() or info.filename in {"manifest.json", "preferences.json"}:
+                    continue
+                destination = staging / normalized
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(info) as input_file, destination.open("wb") as output_file:
+                    shutil.copyfileobj(input_file, output_file, 1024 * 1024)
+        restored_db = staging / "database" / "yus_ai.db"
+        check = sqlite3.connect(restored_db)
+        try:
+            integrity = check.execute("PRAGMA integrity_check").fetchone()[0]
+            foreign_errors = check.execute("PRAGMA foreign_key_check").fetchmany(1)
+            if integrity != "ok" or foreign_errors:
+                raise ValueError("备份数据库完整性检查未通过")
+        finally:
+            check.close()
+        if "preferences.json" in names:
+            with zipfile.ZipFile(source) as preferences_archive:
+                preferences = json.loads(preferences_archive.read("preferences.json"))
+        else:
+            preferences = {}
+        if not isinstance(preferences, dict):
+            preferences = {}
+        preferences = {key: value for key, value in preferences.items() if isinstance(key, str) and key.startswith("yus-ai-") and isinstance(value, str)}
+        safety_backup = _create_backup_archive("Yus-AI-pre-restore", app_version)
+        rollback.mkdir(parents=True, exist_ok=False)
+        for folder_name in ("documents", "character-exports"):
+            current = data_dir / folder_name
+            replacement = staging / folder_name
+            old = rollback / folder_name
+            if current.exists():
+                os.replace(current, old)
+                moved.append((old, current))
+            if replacement.exists():
+                os.replace(replacement, current)
+                installed.append(current)
+        for suffix in ("-wal", "-shm"):
+            Path(f"{database.DB_PATH}{suffix}").unlink(missing_ok=True)
+        os.replace(restored_db, database.DB_PATH)
+        init_db()
+        shutil.rmtree(rollback, ignore_errors=True)
+        return {
+            "ok": True, "requires_restart": True, "source": str(source),
+            "safety_backup": safety_backup["path"], "manifest": manifest, "preferences": preferences,
+        }
+    except Exception:
+        for current in installed:
+            if current.exists():
+                shutil.rmtree(current, ignore_errors=True)
+        for old, current in reversed(moved):
+            if old.exists() and not current.exists():
+                os.replace(old, current)
+        raise
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(rollback, ignore_errors=True)
+
+
+def _release_from_github_page(page_url: str, page_html: str, assets_html: str) -> dict:
+    tag_match = re.search(r"/releases/tag/([^/?#\"'\s<>]+)", page_url + "\n" + page_html)
+    if not tag_match:
+        raise ValueError("GitHub 发布页缺少版本号")
+    tag = unquote(tag_match.group(1))
+    asset_match = re.search(
+        r'<li\b[^>]*>(?:(?!</li>).)*?href="(?P<url>/qtys/Yu-s-Ai-plugin-platform/releases/download/[^\"]*?x64[^\"]*?setup\.exe)"'
+        r'(?:(?!</li>).)*?sha256:(?P<digest>[0-9a-fA-F]{64})'
+        r'(?:(?!</li>).)*?>(?P<size>[0-9.]+)\s*(?P<unit>[KMGT]?B)</span>'
+        r'(?:(?!</li>).)*?datetime="(?P<published>[^"]+)"',
+        assets_html, re.IGNORECASE | re.DOTALL,
+    )
+    if not asset_match:
+        raise ValueError("GitHub 发布页没有可校验的 Windows x64 安装包")
+    units = {"B": 1, "KB": 1024, "MB": 1024 ** 2, "GB": 1024 ** 3, "TB": 1024 ** 4}
+    asset_path = unescape(asset_match.group("url"))
+    asset_name = Path(unquote(asset_path.rsplit("/", 1)[-1])).name
+    title_match = re.search(r"<title>(.*?)</title>", page_html, re.IGNORECASE | re.DOTALL)
+    title = unescape(re.sub(r"\s+", " ", title_match.group(1))).strip() if title_match else tag
+    title = title.split(" · ", 1)[0]
+    return {
+        "version": tag.lstrip("vV"),
+        "name": title,
+        "notes": "GitHub API 当前不可用，已通过官方发布页完成安全检查。完整更新说明请打开发布页查看。",
+        "published_at": asset_match.group("published"),
+        "release_url": f"https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/tag/{tag}",
+        "asset": {
+            "name": asset_name,
+            "size": int(float(asset_match.group("size")) * units[asset_match.group("unit").upper()]),
+            "url": f"https://github.com{asset_path}",
+            "digest": f"sha256:{asset_match.group('digest').lower()}",
+        },
+    }
+
+
+async def _latest_release() -> dict:
+    headers = {
+        "Accept": "application/vnd.github+json", "User-Agent": "Yus-AI-Updater",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    # GitHub traffic may be routed through a desktop tunnel (for example Meta),
+    # whose synthetic DNS/proxy environment is not usable from the packaged
+    # Python sidecar.  The model clients already bypass that inherited
+    # environment; keep the updater on the same reliable direct route.
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True, trust_env=False) as client:
+        try:
+            response = await client.get(GITHUB_LATEST_RELEASE_URL, headers=headers)
+            response.raise_for_status()
+            release = response.json()
+        except (httpx.HTTPError, json.JSONDecodeError, KeyError, TypeError) as api_error:
+            logger.info("update_api_unavailable fallback=github_page error_type=%s", type(api_error).__name__)
+            page = await client.get(GITHUB_RELEASES_LATEST_URL, headers={"User-Agent": "Yus-AI-Updater"})
+            page.raise_for_status()
+            tag_match = re.search(r"/releases/tag/([^/?#\"'\s<>]+)", str(page.url) + "\n" + page.text)
+            if not tag_match:
+                raise ValueError("GitHub 发布页缺少版本号") from api_error
+            tag = unquote(tag_match.group(1))
+            assets = await client.get(
+                f"https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/expanded_assets/{tag}",
+                headers={"User-Agent": "Yus-AI-Updater"},
+            )
+            assets.raise_for_status()
+            return _release_from_github_page(str(page.url), page.text, assets.text)
+    assets = release.get("assets") or []
+    asset = next((item for item in assets if item.get("name", "").lower().endswith("setup.exe") and "x64" in item.get("name", "").lower()), None)
+    if not asset:
+        raise ValueError("最新版本没有 Windows x64 安装包")
+    return {
+        "version": str(release.get("tag_name", "")).lstrip("vV"),
+        "name": release.get("name") or release.get("tag_name") or "最新版本",
+        "notes": str(release.get("body") or "")[:12000],
+        "published_at": release.get("published_at"),
+        "release_url": release.get("html_url"),
+        "asset": {
+            "name": Path(str(asset.get("name", "setup.exe"))).name,
+            "size": int(asset.get("size") or 0),
+            "url": asset.get("browser_download_url"),
+            "digest": asset.get("digest") or "",
+        },
+    }
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     configure_logging()
     init_db()
-    logger.info("backend_started version=0.14.0")
+    logger.info("backend_started version=0.15.1")
     yield
     logger.info("backend_stopped")
 
 
-app = FastAPI(title="Yu's AI API", version="0.14.0", lifespan=lifespan)
+app = FastAPI(title="Yu's AI API", version="0.15.1", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://tauri.localhost", "tauri://localhost"],
@@ -489,6 +748,118 @@ async def diagnostic_command(payload: DiagnosticCommand):
     except httpx.HTTPError as exc:
         logger.warning("model_connection_test_failed error_type=%s", type(exc).__name__)
         return {"ok": False, "error": type(exc).__name__}
+
+
+@app.get("/api/system/update")
+async def check_system_update():
+    try:
+        release = await _latest_release()
+    except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+        logger.warning(
+            "update_check_failed error_type=%s detail=%r cause=%r",
+            type(exc).__name__, str(exc), exc.__cause__,
+        )
+        if isinstance(exc, httpx.ConnectError):
+            detail = "无法连接 GitHub，请检查网络或代理设置"
+        elif isinstance(exc, httpx.TimeoutException):
+            detail = "连接 GitHub 超时，请稍后重试"
+        else:
+            detail = f"无法检查更新：{str(exc) or type(exc).__name__}"
+        raise HTTPException(502, detail) from exc
+    release["current_version"] = app.version
+    release["available"] = _version_tuple(release["version"]) > _version_tuple(app.version)
+    logger.info("update_checked current=%s latest=%s available=%s", app.version, release["version"], release["available"])
+    return release
+
+
+@app.post("/api/system/update/download")
+async def download_system_update():
+    async def generate():
+        try:
+            release = await _latest_release()
+            if _version_tuple(release["version"]) <= _version_tuple(app.version):
+                yield json.dumps({"error": "当前已经是最新版本"}, ensure_ascii=False) + "\n"
+                return
+            asset = release["asset"]
+            url = str(asset.get("url") or "")
+            expected_prefix = "https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/download/"
+            if not url.startswith(expected_prefix):
+                raise ValueError("安装包下载地址不可信")
+            update_dir = database.DATA_DIR / "updates"
+            update_dir.mkdir(parents=True, exist_ok=True)
+            destination = update_dir / Path(asset["name"]).name
+            partial = destination.with_suffix(destination.suffix + ".part")
+            expected_size = int(asset.get("size") or 0)
+            expected_digest = str(asset.get("digest") or "")
+            if destination.exists() and expected_digest.startswith("sha256:") and _sha256(destination).lower() == expected_digest.split(":", 1)[1].lower():
+                yield json.dumps({"stage": "complete", "percent": 100, "path": str(destination), "sha256": _sha256(destination), "version": release["version"]}, ensure_ascii=False) + "\n"
+                return
+            resume_at = partial.stat().st_size if partial.exists() else 0
+            if expected_size and resume_at >= expected_size:
+                partial.unlink(missing_ok=True)
+                resume_at = 0
+            headers = {"User-Agent": "Yus-AI-Updater"}
+            if resume_at:
+                headers["Range"] = f"bytes={resume_at}-"
+            timeout = httpx.Timeout(connect=30, read=None, write=30, pool=30)
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, trust_env=False) as client:
+                async with client.stream("GET", url, headers=headers) as response:
+                    response.raise_for_status()
+                    append = resume_at > 0 and response.status_code == 206
+                    downloaded = resume_at if append else 0
+                    mode = "ab" if append else "wb"
+                    with partial.open(mode) as file:
+                        async for chunk in response.aiter_bytes(256 * 1024):
+                            if not chunk:
+                                continue
+                            file.write(chunk)
+                            downloaded += len(chunk)
+                            percent = min(99, int(downloaded * 100 / expected_size)) if expected_size else 0
+                            yield json.dumps({"stage": "downloading", "percent": percent, "downloaded": downloaded, "total": expected_size, "resumed": append}, ensure_ascii=False) + "\n"
+            if expected_size and partial.stat().st_size != expected_size:
+                raise ValueError("安装包大小与发布信息不一致")
+            digest = _sha256(partial)
+            if not expected_digest.startswith("sha256:"):
+                raise ValueError("GitHub 发布资源缺少 SHA-256 摘要")
+            if digest.lower() != expected_digest.split(":", 1)[1].lower():
+                partial.unlink(missing_ok=True)
+                raise ValueError("安装包 SHA-256 校验失败，文件已删除")
+            os.replace(partial, destination)
+            logger.info("update_downloaded version=%s bytes=%s sha256=%s", release["version"], destination.stat().st_size, digest)
+            yield json.dumps({"stage": "complete", "percent": 100, "path": str(destination), "sha256": digest, "version": release["version"]}, ensure_ascii=False) + "\n"
+        except (httpx.HTTPError, OSError, ValueError, KeyError, TypeError) as exc:
+            logger.warning("update_download_failed error_type=%s detail=%s", type(exc).__name__, str(exc))
+            yield json.dumps({"error": str(exc) or type(exc).__name__}, ensure_ascii=False) + "\n"
+    return StreamingResponse(generate(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache, no-transform"})
+
+
+@app.post("/api/system/backups")
+async def create_system_backup(payload: BackupCreateRequest | None = None):
+    async with SYSTEM_OPERATION_LOCK:
+        try:
+            preferences = payload.preferences if payload else {}
+            if len(preferences) > 100:
+                raise ValueError("桌面偏好条目过多")
+            result = await asyncio.to_thread(_create_backup_archive, "Yus-AI-backup", app.version, preferences)
+        except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as exc:
+            logger.warning("backup_create_failed error_type=%s detail=%s", type(exc).__name__, str(exc))
+            raise HTTPException(500, f"创建备份失败：{exc}") from exc
+    logger.info("backup_created filename=%s bytes=%s", result["filename"], result["size"])
+    return result
+
+
+@app.post("/api/system/backups/restore")
+async def restore_system_backup(payload: BackupRestoreRequest):
+    if MODEL_GENERATION_LOCK.locked():
+        raise HTTPException(409, "模型正在生成内容，请等待对话结束后再恢复")
+    async with SYSTEM_OPERATION_LOCK:
+        try:
+            result = await asyncio.to_thread(_restore_backup_archive, payload.path, app.version)
+        except (OSError, sqlite3.Error, ValueError, KeyError, json.JSONDecodeError, zipfile.BadZipFile) as exc:
+            logger.warning("backup_restore_failed error_type=%s detail=%s", type(exc).__name__, str(exc))
+            raise HTTPException(400, f"恢复备份失败：{exc}") from exc
+    logger.info("backup_restored source=%s safety_backup=%s", result["source"], result["safety_backup"])
+    return result
 
 
 @app.get("/api/settings")

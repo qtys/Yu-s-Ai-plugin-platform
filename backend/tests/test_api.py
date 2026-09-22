@@ -5,6 +5,7 @@ import asyncio
 import json
 import io
 import zipfile
+import hashlib
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -12,7 +13,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from app import database
-from app.main import app, build_local_time_context, normalize_pet_action
+from app.main import app, build_local_time_context, normalize_pet_action, _latest_release
 from app.documents import extract_visuals
 
 
@@ -471,3 +472,108 @@ def test_chat_auto_continues_when_model_hits_length_limit(monkeypatch):
             assert calls[1]["messages"][-2] == {"role": "assistant", "content": "第一段"}
             messages = client.get(f"/api/conversations/{conversation['id']}/messages").json()
             assert messages[-1]["content"] == "第一段接下去"
+
+
+def test_backup_restore_round_trip_preserves_snapshot_and_creates_safety_copy():
+    with tempfile.TemporaryDirectory() as directory:
+        database.DATA_DIR = database.Path(directory)
+        database.DB_PATH = database.DATA_DIR / "backup-restore.db"
+        document_dir = database.DATA_DIR / "documents"
+        document_dir.mkdir(parents=True)
+        (document_dir / "sample.txt").write_text("原始附件", encoding="utf-8")
+        with TestClient(app) as client:
+            original = client.post("/api/characters", json={"name": "备份中的角色"}).json()
+            backup_response = client.post("/api/system/backups", json={"preferences": {"yus-ai-theme": "paper", "untrusted": "ignored"}})
+            assert backup_response.status_code == 200
+            backup = backup_response.json()
+            assert database.Path(backup["path"]).is_file()
+            assert backup["counts"]["characters"] == 1
+            with zipfile.ZipFile(backup["path"]) as archive:
+                assert {"manifest.json", "preferences.json", "database/yus_ai.db", "documents/sample.txt"}.issubset(archive.namelist())
+                assert json.loads(archive.read("preferences.json")) == {"yus-ai-theme": "paper"}
+            client.delete(f"/api/characters/{original['id']}")
+            client.post("/api/characters", json={"name": "恢复前的新角色"})
+            (document_dir / "sample.txt").write_text("已经改变", encoding="utf-8")
+            restore_response = client.post("/api/system/backups/restore", json={"path": backup["path"]})
+            assert restore_response.status_code == 200
+            restored = restore_response.json()
+            assert restored["requires_restart"] is True
+            assert restored["preferences"] == {"yus-ai-theme": "paper"}
+            assert database.Path(restored["safety_backup"]).is_file()
+            assert [item["name"] for item in client.get("/api/characters").json()] == ["备份中的角色"]
+            assert (document_dir / "sample.txt").read_text(encoding="utf-8") == "原始附件"
+
+
+def test_update_check_and_verified_download(monkeypatch):
+    installer = b"verified installer payload"
+    digest = hashlib.sha256(installer).hexdigest()
+
+    async def latest_release():
+        return {
+            "version": "9.9.9", "name": "测试更新", "notes": "更新说明", "published_at": "2026-09-22T00:00:00Z",
+            "release_url": "https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/tag/v9.9.9",
+            "asset": {
+                "name": "Yus-AI-9.9.9-x64-setup.exe", "size": len(installer),
+                "url": "https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/download/v9.9.9/Yus-AI-9.9.9-x64-setup.exe",
+                "digest": f"sha256:{digest}",
+            },
+        }
+
+    async def download(_request):
+        return httpx.Response(200, content=installer)
+
+    original_client = httpx.AsyncClient
+    updater_client_options = []
+
+    def updater_client(**kwargs):
+        updater_client_options.append(kwargs.copy())
+        return original_client(transport=httpx.MockTransport(download), **kwargs)
+
+    monkeypatch.setattr("app.main._latest_release", latest_release)
+    monkeypatch.setattr("app.main.httpx.AsyncClient", updater_client)
+    with tempfile.TemporaryDirectory() as directory:
+        database.DATA_DIR = database.Path(directory)
+        database.DB_PATH = database.DATA_DIR / "update.db"
+        with TestClient(app) as client:
+            check = client.get("/api/system/update").json()
+            assert check["available"] is True
+            assert check["current_version"] == "0.15.1"
+            response = client.post("/api/system/update/download")
+            events = [json.loads(line) for line in response.text.splitlines()]
+            assert events[-1]["stage"] == "complete"
+            assert events[-1]["sha256"] == digest
+            assert database.Path(events[-1]["path"]).read_bytes() == installer
+            assert updater_client_options[-1]["trust_env"] is False
+
+
+def test_update_check_falls_back_to_official_release_page(monkeypatch):
+    digest = "a" * 64
+
+    async def github(request):
+        if request.url.host == "api.github.com":
+            return httpx.Response(403, text="rate limit exceeded")
+        if "expanded_assets" in request.url.path:
+            return httpx.Response(200, text=(
+                '<li class="Box-row"><a href="/qtys/Yu-s-Ai-plugin-platform/releases/download/'
+                'v9.8.7/Yus-AI-9.8.7-x64-setup.exe">setup</a>'
+                f'<span>sha256:{digest}</span><span>150 MB</span>'
+                '<relative-time datetime="2026-09-22T00:00:00Z"></relative-time></li>'
+            ))
+        return httpx.Response(200, text=(
+            '<html><head><title>Release Yus AI v9.8.7 · GitHub</title></head>'
+            '<body><a href="/qtys/Yu-s-Ai-plugin-platform/releases/tag/v9.8.7">release</a></body></html>'
+        ))
+
+    original_client = httpx.AsyncClient
+    observed_options = []
+
+    def github_client(**kwargs):
+        observed_options.append(kwargs.copy())
+        return original_client(transport=httpx.MockTransport(github), **kwargs)
+
+    monkeypatch.setattr("app.main.httpx.AsyncClient", github_client)
+    release = asyncio.run(_latest_release())
+    assert release["version"] == "9.8.7"
+    assert release["asset"]["size"] == 150 * 1024 * 1024
+    assert release["asset"]["digest"] == f"sha256:{digest}"
+    assert observed_options[0]["trust_env"] is False

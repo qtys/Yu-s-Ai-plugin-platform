@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import MessageContent from "./MessageContent";
 import type { MessageDisplayMode } from "./MessageContent";
 import "./App.css";
@@ -38,6 +39,9 @@ type Settings = {
   location_context: string;
 };
 type Theme = "violet" | "midnight" | "sand" | "paper";
+type UpdateInfo = { current_version: string; version: string; name: string; notes: string; published_at: string; release_url: string; available: boolean; asset: { name: string; size: number; digest: string } };
+type UpdateProgress = { stage: "downloading" | "complete"; percent: number; downloaded?: number; total?: number; resumed?: boolean; path?: string; sha256?: string; version?: string };
+type BackupInfo = { path: string; filename: string; size: number; sha256: string; created_at: string; counts: { characters: number; conversations: number; messages: number; documents: number } };
 const themes: { id: Theme; name: string; description: string }[] = [
   { id: "violet", name: "暮紫", description: "柔和紫色与深色背景" },
   { id: "midnight", name: "午夜蓝", description: "冷静蓝色与深海层次" },
@@ -55,6 +59,13 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error(data.detail ?? `请求失败 (${response.status})`);
   }
   return response.json();
+}
+
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const index = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024)));
+  return `${(value / 1024 ** index).toFixed(index > 1 ? 1 : 0)} ${units[index]}`;
 }
 
 function documentStatusText(item: DocumentItem) {
@@ -83,6 +94,10 @@ export default function App() {
   const [backendReady, setBackendReady] = useState(false);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [autostartBusy, setAutostartBusy] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null);
+  const [maintenanceBusy, setMaintenanceBusy] = useState<"update" | "backup" | "restore" | null>(null);
+  const [maintenanceStatus, setMaintenanceStatus] = useState("");
   const [panel, setPanel] = useState<"chat" | "characters" | "settings">(
     "chat",
   );
@@ -114,7 +129,10 @@ export default function App() {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const inputDraftRef = useRef("");
   const inputResizeFrameRef = useRef(0);
+  const messagesRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const keepMessagesAtBottomRef = useRef(true);
+  const forceLatestMessageRef = useRef(true);
   const skipMessageLoadRef = useRef<number | null>(null);
   const desktop = "__TAURI_INTERNALS__" in window;
 
@@ -122,9 +140,31 @@ export default function App() {
     busyRef.current = busy;
   }, [busy]);
   useEffect(() => () => window.cancelAnimationFrame(inputResizeFrameRef.current), []);
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ block: "end" });
-  }, [messages]);
+  function requestLatestMessage() {
+    forceLatestMessageRef.current = true;
+    keepMessagesAtBottomRef.current = true;
+  }
+  function scrollMessagesToBottom() {
+    const container = messagesRef.current;
+    if (container) container.scrollTop = container.scrollHeight;
+    else messagesEndRef.current?.scrollIntoView({ block: "end" });
+  }
+  useLayoutEffect(() => {
+    if (panel !== "chat" || (!forceLatestMessageRef.current && !keepMessagesAtBottomRef.current)) return;
+    scrollMessagesToBottom();
+    const firstFrame = window.requestAnimationFrame(() => {
+      scrollMessagesToBottom();
+      window.requestAnimationFrame(scrollMessagesToBottom);
+    });
+    const settleTimer = window.setTimeout(() => {
+      scrollMessagesToBottom();
+      forceLatestMessageRef.current = false;
+    }, 180);
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      window.clearTimeout(settleTimer);
+    };
+  }, [messages, activeConversation, panel]);
   useEffect(() => {
     if (!desktop) return;
     let disposed = false;
@@ -187,7 +227,10 @@ export default function App() {
       let cancelled = false;
       request<Message[]>(`/conversations/${activeConversation}/messages`)
         .then((data) => {
-          if (!cancelled) setMessages(data);
+          if (!cancelled) {
+            requestLatestMessage();
+            setMessages(data);
+          }
         })
         .catch((e) => setError(e.message));
       request<DocumentItem[]>(`/conversations/${activeConversation}/documents`)
@@ -236,6 +279,7 @@ export default function App() {
           );
           if (!cancelled) {
             skipMessageLoadRef.current = conversationId;
+            requestLatestMessage();
             setActiveConversation(conversationId);
             setMessages(messageData);
           }
@@ -466,6 +510,106 @@ export default function App() {
     } catch (cause) { setError(`修改开机自启失败：${String(cause)}`); }
     finally { setAutostartBusy(false); }
   }
+  async function checkForUpdates() {
+    if (maintenanceBusy) return;
+    setMaintenanceBusy("update");
+    setMaintenanceStatus("正在连接 GitHub 检查更新……");
+    setUpdateProgress(null);
+    try {
+      const value = await request<UpdateInfo>("/system/update");
+      setUpdateInfo(value);
+      setMaintenanceStatus(value.available ? `发现新版本 ${value.version}` : `当前 ${value.current_version} 已是最新版本`);
+      setError("");
+    } catch (cause) {
+      setMaintenanceStatus("");
+      setError((cause as Error).message);
+    } finally { setMaintenanceBusy(null); }
+  }
+  async function downloadAndInstallUpdate() {
+    if (!desktop || maintenanceBusy) return;
+    setMaintenanceBusy("update");
+    setMaintenanceStatus("正在准备更新下载……");
+    setUpdateProgress(null);
+    try {
+      const response = await fetch(`${API}/system/update/download`, { method: "POST" });
+      if (!response.ok || !response.body) throw new Error(`下载更新失败 (${response.status})`);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let completed: UpdateProgress | null = null;
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line) continue;
+          const event = JSON.parse(line) as UpdateProgress & { error?: string };
+          if (event.error) throw new Error(event.error);
+          setUpdateProgress(event);
+          if (event.stage === "complete") completed = event;
+        }
+      }
+      if (buffer.trim()) {
+        const event = JSON.parse(buffer) as UpdateProgress & { error?: string };
+        if (event.error) throw new Error(event.error);
+        setUpdateProgress(event);
+        if (event.stage === "complete") completed = event;
+      }
+      if (!completed?.path) throw new Error("安装包下载未完成");
+      setMaintenanceStatus(`版本 ${completed.version} 已下载并通过 SHA-256 校验`);
+      const accepted = await confirm("更新包已经校验完成。现在将退出 Yu's AI 并启动安装程序，数据库和安装目录中的用户数据会保留。是否继续？", { title: "安装更新", kind: "info" });
+      if (accepted) await invoke("install_update", { installerPath: completed.path });
+    } catch (cause) {
+      setError(`应用更新失败：${(cause as Error).message}`);
+      setMaintenanceStatus("");
+    } finally { setMaintenanceBusy(null); }
+  }
+  async function createBackup() {
+    if (!desktop || maintenanceBusy) return;
+    setMaintenanceBusy("backup");
+    setMaintenanceStatus("正在创建数据库一致性快照并整理附件……");
+    try {
+      const preferences: Record<string, string> = {};
+      for (let index = 0; index < localStorage.length; index++) {
+        const key = localStorage.key(index);
+        if (key?.startsWith("yus-ai-")) preferences[key] = localStorage.getItem(key) ?? "";
+      }
+      const backup = await request<BackupInfo>("/system/backups", { method: "POST", body: JSON.stringify({ preferences }) });
+      const destination = await save({ defaultPath: backup.filename, filters: [{ name: "Yu's AI 数据备份", extensions: ["yus-backup"] }] });
+      if (destination) {
+        const savedPath = await invoke<string>("copy_backup_file", { source: backup.path, destination });
+        setMaintenanceStatus(`备份已保存：${savedPath} · ${formatBytes(backup.size)}`);
+      } else {
+        setMaintenanceStatus(`已在安装目录保留备份：${backup.path}`);
+      }
+      setError("");
+    } catch (cause) {
+      setMaintenanceStatus("");
+      setError(`数据备份失败：${(cause as Error).message}`);
+    } finally { setMaintenanceBusy(null); }
+  }
+  async function restoreBackup() {
+    if (!desktop || maintenanceBusy || busy) return;
+    const selected = await open({ multiple: false, directory: false, filters: [{ name: "Yu's AI 数据备份", extensions: ["yus-backup", "zip"] }] });
+    if (typeof selected !== "string") return;
+    const accepted = await confirm("恢复会用备份中的角色、聊天、记忆、设置和文档替换当前数据。程序会先自动创建一份恢复前快照，然后重新启动。是否继续？", { title: "恢复数据备份", kind: "warning" });
+    if (!accepted) return;
+    setMaintenanceBusy("restore");
+    setMaintenanceStatus("正在校验备份并创建恢复前安全快照……");
+    try {
+      const result = await request<{ ok: boolean; requires_restart: boolean; safety_backup: string; preferences: Record<string, string> }>("/system/backups/restore", { method: "POST", body: JSON.stringify({ path: selected }) });
+      for (const [key, value] of Object.entries(result.preferences ?? {})) {
+        if (key.startsWith("yus-ai-") && typeof value === "string") localStorage.setItem(key, value);
+      }
+      setMaintenanceStatus(`恢复完成，安全快照：${result.safety_backup}`);
+      if (result.requires_restart) await invoke("restart_application");
+    } catch (cause) {
+      setMaintenanceStatus("");
+      setError(`恢复备份失败：${(cause as Error).message}`);
+    } finally { setMaintenanceBusy(null); }
+  }
   async function send(event: FormEvent) {
     event.preventDefault();
     const content = (inputRef.current?.value ?? inputDraftRef.current).trim();
@@ -661,6 +805,7 @@ export default function App() {
                 className="conversation-open"
                 title={x.title}
                 onClick={() => {
+                  requestLatestMessage();
                   setActiveConversation(x.id);
                   setPanel("chat");
                 }}
@@ -780,6 +925,42 @@ export default function App() {
                 >
                   <span><i /></span>{autostartBusy ? "正在设置…" : autostartEnabled ? "已开启" : "已关闭"}
                 </button>
+              </div>
+            )}
+            {desktop && (
+              <div className="maintenance-panel">
+                <div className="form-section-title">
+                  <strong>更新与数据安全</strong>
+                  <small>从 GitHub 校验更新；备份保留角色、聊天、记忆、设置与上传文档</small>
+                </div>
+                <div className="maintenance-grid">
+                  <section>
+                    <div className="maintenance-icon">↻</div>
+                    <div><strong>应用内更新</strong><small>{updateInfo ? `当前 ${updateInfo.current_version} · 最新 ${updateInfo.version}` : "手动检查，不会在后台自动下载安装"}</small></div>
+                    <button type="button" onClick={() => void checkForUpdates()} disabled={maintenanceBusy !== null}>{maintenanceBusy === "update" && !updateProgress ? "检查中…" : "检查更新"}</button>
+                    {updateInfo?.available && <button type="button" className="primary" onClick={() => void downloadAndInstallUpdate()} disabled={maintenanceBusy !== null}>{maintenanceBusy === "update" ? "下载中…" : `下载 ${formatBytes(updateInfo.asset.size)}`}</button>}
+                  </section>
+                  {updateInfo?.available && (
+                    <div className="update-release">
+                      <strong>{updateInfo.name}</strong>
+                      <small>{updateInfo.notes || "此版本没有发布说明。"}</small>
+                    </div>
+                  )}
+                  {updateProgress && (
+                    <div className="update-progress">
+                      <div><span style={{ width: `${updateProgress.percent}%` }} /></div>
+                      <small>{updateProgress.stage === "complete" ? "下载完成并已通过 SHA-256 校验" : `${updateProgress.resumed ? "断点续传" : "下载中"} ${updateProgress.percent}% · ${formatBytes(updateProgress.downloaded ?? 0)} / ${formatBytes(updateProgress.total ?? 0)}`}</small>
+                    </div>
+                  )}
+                  <section>
+                    <div className="maintenance-icon">▣</div>
+                    <div><strong>数据备份与恢复</strong><small>语言包和日志不进入备份，需要时可以重新下载</small></div>
+                    <button type="button" onClick={() => void createBackup()} disabled={maintenanceBusy !== null}>{maintenanceBusy === "backup" ? "备份中…" : "创建备份"}</button>
+                    <button type="button" className="restore-button" onClick={() => void restoreBackup()} disabled={maintenanceBusy !== null || busy}>{maintenanceBusy === "restore" ? "恢复中…" : "恢复备份"}</button>
+                  </section>
+                </div>
+                {maintenanceStatus && <p className="maintenance-status" role="status">{maintenanceStatus}</p>}
+                <small className="maintenance-warning">备份文件包含 API Key 和聊天内容，请存放在可信位置，不要上传到公开网盘或仓库。</small>
               </div>
             )}
             <form onSubmit={saveSettings}>
@@ -987,7 +1168,17 @@ export default function App() {
         )}
         {panel === "chat" && (
           <section className="chat-page">
-            <div className="messages">
+            <div
+              className="messages"
+              ref={messagesRef}
+              onScroll={(event) => {
+                const target = event.currentTarget;
+                keepMessagesAtBottomRef.current = target.scrollHeight - target.scrollTop - target.clientHeight < 96;
+              }}
+              onLoadCapture={() => {
+                if (forceLatestMessageRef.current || keepMessagesAtBottomRef.current) scrollMessagesToBottom();
+              }}
+            >
               {!messages.length && (
                 <div className="welcome">
                   <div className="welcome-orb">雨</div>

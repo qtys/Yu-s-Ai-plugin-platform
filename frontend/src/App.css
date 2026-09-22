@@ -478,6 +478,40 @@ article p {
   background: var(--panel);
   border-radius: 18px;
 }
+.maintenance-panel {
+  display: grid;
+  gap: 16px;
+  margin: 0 0 24px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--panel);
+}
+.maintenance-grid { display: grid; gap: 12px; }
+.maintenance-grid > section {
+  display: grid;
+  grid-template-columns: 42px minmax(0,1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: color-mix(in srgb,var(--panel) 92%,var(--accent) 8%);
+}
+.maintenance-grid > section > div:nth-child(2) { display:flex; min-width:0; flex-direction:column; gap:4px; }
+.maintenance-grid > section small,.maintenance-warning,.maintenance-status { color:var(--muted); }
+.maintenance-icon { display:grid; place-items:center; width:42px; height:42px; border-radius:12px; background:color-mix(in srgb,var(--accent) 20%,transparent); color:var(--accent2); font-size:21px; font-weight:800; }
+.maintenance-grid button { border:1px solid var(--line); border-radius:9px; padding:9px 12px; background:var(--panel); color:var(--text); white-space:nowrap; }
+.maintenance-grid button.primary { background:var(--accent); border-color:transparent; color:white; }
+.maintenance-grid button.restore-button { color:#de8294; }
+.maintenance-grid button:disabled { cursor:not-allowed; opacity:.55; }
+.update-release { display:flex; max-height:130px; overflow:auto; flex-direction:column; gap:6px; padding:13px 15px; border-left:3px solid var(--accent); border-radius:8px; background:color-mix(in srgb,var(--panel) 88%,var(--accent) 12%); }
+.update-release small { white-space:pre-wrap; line-height:1.55; }
+.update-progress { display:grid; gap:7px; }
+.update-progress > div { height:7px; overflow:hidden; border-radius:999px; background:color-mix(in srgb,var(--line) 80%,transparent); }
+.update-progress > div span { display:block; height:100%; border-radius:inherit; background:linear-gradient(90deg,var(--accent),var(--accent2)); transition:width .18s ease; }
+.maintenance-status { margin:0; padding:10px 12px; border-radius:9px; background:color-mix(in srgb,#56b98a 12%,transparent); color:#70c99e; overflow-wrap:anywhere; }
+.maintenance-warning { line-height:1.5; }
 .form-page label {
   display: flex;
   flex-direction: column;
@@ -580,6 +614,9 @@ article p {
   .form-page form {
     padding: 18px;
   }
+  .maintenance-panel { padding:18px; }
+  .maintenance-grid > section { grid-template-columns:42px minmax(0,1fr); }
+  .maintenance-grid > section button { width:100%; }
   .form-grid {
     grid-template-columns: 1fr;
   }
