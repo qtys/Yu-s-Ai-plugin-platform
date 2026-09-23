@@ -674,7 +674,7 @@ export default function Pet() {
   }, [expanded, dragging, busy]);
 
   useEffect(() => {
-    if (!isPluginEnabled(plugins, "proactive") || !proactiveEnabled || aiProactiveEnabled !== false || expanded || (timeAwareEnabled && dayPeriod === "night")) return;
+    if (!isPluginEnabled(plugins, "proactive") || !proactiveEnabled || aiProactiveEnabled !== false || expanded) return;
     const showGreeting = () => {
       const greeting = roleAwareGreeting(roleAwareEnabled ? character : null, timeAwareEnabled ? dayPeriod : "daytime");
       setProactiveSources([]);

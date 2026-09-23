@@ -744,12 +744,12 @@ async def lifespan(_: FastAPI):
     UPDATE_RELEASE_CACHE = None
     configure_logging()
     init_db()
-    logger.info("backend_started version=0.15.14")
+    logger.info("backend_started version=0.15.15")
     yield
     logger.info("backend_stopped")
 
 
-app = FastAPI(title="Yu's AI API", version="0.15.14", lifespan=lifespan)
+app = FastAPI(title="Yu's AI API", version="0.15.15", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://tauri.localhost", "tauri://localhost"],
@@ -1091,8 +1091,8 @@ async def proactive_generate(payload: ProactiveRequest):
     with connect() as db:
         db.execute("BEGIN IMMEDIATE")
         config = dict(db.execute("SELECT * FROM proactive_plugin WHERE id=1").fetchone())
-        if not config["enabled"] or now.hour < 7 or now.hour >= 23:
-            return {"skipped": True, "reason": "disabled_or_quiet_hours"}
+        if not config["enabled"]:
+            return {"skipped": True, "reason": "disabled"}
         if time.time() < config["next_due"]:
             return {"skipped": True, "reason": "cooldown"}
         character = db.execute("SELECT * FROM characters WHERE id=?", (payload.character_id,)).fetchone()

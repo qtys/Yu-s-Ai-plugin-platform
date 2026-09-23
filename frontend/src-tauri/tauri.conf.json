@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Yus AI",
-  "version": "0.15.14",
+  "version": "0.15.15",
   "identifier": "com.qtys.yus-ai",
   "build": {
     "frontendDist": "../dist",

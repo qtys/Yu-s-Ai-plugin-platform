@@ -63,6 +63,43 @@ def test_proactive_opt_in_cooldown_and_saved_history(monkeypatch):
             assert client.put("/api/plugins/proactive", json=config).status_code == 422
 
 
+def test_proactive_can_generate_during_previous_quiet_hours(monkeypatch):
+    class FixedDate(datetime):
+        current_hour = 2
+
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 24, cls.current_hour, 30, tzinfo=timezone.utc)
+
+    monkeypatch.setattr("app.main.datetime", FixedDate)
+    generated_at = []
+
+    async def fake_generate(setting, config, prompt, history, now):
+        generated_at.append(now)
+        return "夜里也可以聊聊。", "daily", [], 10, ""
+
+    monkeypatch.setattr("app.main.generate_proactive", fake_generate)
+    with tempfile.TemporaryDirectory() as directory:
+        monkeypatch.setattr(database, "DATA_DIR", database.Path(directory))
+        monkeypatch.setattr(database, "DB_PATH", database.Path(directory) / "night-proactive.db")
+        with TestClient(app) as client:
+            character = client.post("/api/characters", json={"name": "夜间角色"}).json()
+            settings = client.get("/api/settings").json()
+            settings["api_key"] = "mock"
+            client.put("/api/settings", json=settings)
+            config = client.get("/api/plugins/proactive").json()
+            config["enabled"] = True
+            client.put("/api/plugins/proactive", json=config)
+            for hour in (2, 23):
+                FixedDate.current_hour = hour
+                with database.connect() as db:
+                    db.execute("UPDATE proactive_plugin SET next_due=0 WHERE id=1")
+                result = client.post("/api/plugins/proactive/generate", json={"character_id": character["id"]})
+                assert result.status_code == 200
+                assert result.json()["content"] == "夜里也可以聊聊。"
+    assert len(generated_at) == 2
+
+
 def test_frequency_change_reschedules_cooldown(monkeypatch):
     with tempfile.TemporaryDirectory() as directory:
         monkeypatch.setattr(database, "DATA_DIR", database.Path(directory))

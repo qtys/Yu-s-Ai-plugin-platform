@@ -1,12 +1,14 @@
 # Yu's AI Plugin Platform
 
+![Yu's AI 双桌宠项目封面](docs/images/project-cover.png)
+
 Yu's AI 是一款本地优先的 Windows 私人 AI 聊天软件。它将角色扮演、多模型 API、长期记忆、文档阅读、离线翻译和桌面宠物整合在同一个应用中，并为后续插件能力预留扩展空间。
 
-当前发布版：**0.15.14**
+当前发布版：**0.15.15** · Windows x64 · 角色聊天 + 桌面陪伴
 
 > ### ⬇ 下载 Windows 安装版
 >
-> [**下载最新版 Yus AI 安装程序（Windows x64）**](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/latest/download/Yus-AI-0.15.14-x64-setup.exe)
+> [**下载最新版 Yus AI 安装程序（Windows x64）**](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/latest/download/Yus-AI-0.15.15-x64-setup.exe)
 
 无需配置开发环境，下载安装后即可运行。其他版本、安装包校验值和发布说明可在 [GitHub Releases](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases) 查看。
 
@@ -20,6 +22,27 @@ Yu's AI 是一款本地优先的 Windows 私人 AI 聊天软件。它将角色�
 ## 一、软件介绍
 
 Yu's AI 面向希望拥有长期陪伴式 AI、角色聊天和桌面助手体验的个人用户。它不是单纯的网页聊天页面，而是带有系统托盘、开机自启、桌宠窗口、本地数据库和离线能力的 Windows 桌面软件。
+
+### 界面预览
+
+下图来自实际聊天界面，使用隔离的演示角色与对话，不含个人数据、真实 API Key 或私有文件。
+
+![Yu's AI 聊天界面：角色列表、最近对话与流式聊天区域](docs/images/chat-midnight.png)
+
+### 两位桌面伙伴
+
+<table>
+  <tr>
+    <th>蓝雨史莱姆</th>
+    <th>Q 版爱丽丝</th>
+  </tr>
+  <tr>
+    <td align="center"><img src="frontend/public/assets/blue-slime-pet.png" alt="蓝色雨滴史莱姆桌宠素材" width="300"></td>
+    <td align="center"><img src="frontend/public/assets/alice-v3-head-original.png" alt="金发 Q 版爱丽丝桌宠头部素材" width="300"></td>
+  </tr>
+</table>
+
+封面为项目宣传图；上方聊天图为真实程序的演示数据截图，桌宠图片为程序使用的素材。
 
 ### 核心能力
 
@@ -53,7 +76,7 @@ Yu's AI 面向希望拥有长期陪伴式 AI、角色聊天和桌面助手体验
 项目当前提供 Windows NSIS 安装包。自行构建后的安装包位于：
 
 ```text
-frontend\src-tauri\target\release\bundle\nsis\Yus AI_0.15.14_x64-setup.exe
+frontend\src-tauri\target\release\bundle\nsis\Yus AI_0.15.15_x64-setup.exe
 ```
 
 安装后直接启动 **Yus AI**，不需要手动启动后端。首次使用建议：
@@ -136,7 +159,7 @@ Yu's AI 使用 OpenAI Chat Completions 兼容格式，可连接 DeepSeek 等兼�
 
 在“模型设置”启用角色主动互动后，可以设置固定间隔或随机时间区间、承接最近聊天的概率（0%–50%，默认 15%）、时间关心开关及概率、输出 token 上限、近期 RSS 新闻、时间感知和角色台词。
 
-主动发言会遵循角色卡，但不会作为后续模型上下文上传。早晨、午间、下午、晚间和临睡前可随机触发符合当前时间的自然关心；同一时间窗口每天最多一次，且不会武断地认定用户没吃饭、生病或正在工作。只有抽中“承接最近聊天”时，才会向主动模型提供最近两条消息作为轻微线索；其他时候完全不发送聊天历史，而是按人设随机聊日常、兴趣、轻松话题或可选时事。用户正在聊天时主动发言暂停；失败时不显示打扰性提示，只写入日志。23:00–07:00 默认静默。
+主动发言会遵循角色卡，但不会作为后续模型上下文上传。早晨、午间、下午、晚间和临睡前可随机触发符合当前时间的自然关心；同一时间窗口每天最多一次，且不会武断地认定用户没吃饭、生病或正在工作。只有抽中“承接最近聊天”时，才会向主动模型提供最近两条消息作为轻微线索；其他时候完全不发送聊天历史，而是按人设随机聊日常、兴趣、轻松话题或可选时事。主动发言全天按设定频率触发，不设置夜间禁用；用户正在聊天时暂停，失败时不显示打扰性提示，只写入日志。
 
 ### 2.9 开机自启与单实例
 
@@ -313,6 +336,11 @@ cd ..\backend
 ## 四、更新日志
 
 完整记录见 [CHANGELOG.md](CHANGELOG.md)。
+
+### 0.15.15（2026-09-24）
+
+- 主动发言不再因 23:00–07:00 的夜间规则被阻止；桌宠本地问候也可在深夜显示。
+- 项目首页加入封面、无私人数据的聊天界面预览和两款桌宠素材。
 
 ### 0.15.14（2026-09-24）
 

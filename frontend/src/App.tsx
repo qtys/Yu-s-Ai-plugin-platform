@@ -1197,7 +1197,7 @@ export default function App() {
                 ))}
               </div>
               </>}
-              {isPluginEnabled(plugins, "proactive") && <><div className="form-section-title"><strong>角色主动互动插件</strong><small>启用后使用当前模型 API，按角色卡和本地时间生成问题、笑话或真实新闻话题。会消耗 token；23:00–07:00 不打扰。</small></div>
+              {isPluginEnabled(plugins, "proactive") && <><div className="form-section-title"><strong>角色主动互动插件</strong><small>启用后使用当前模型 API，按角色卡和本地时间生成问题、笑话或真实新闻话题。会消耗 token；全天按设定频率触发。</small></div>
               <Field label="启用主动模型调用"><input type="checkbox" checked={proactivePlugin.enabled} onChange={(e) => setProactivePlugin({ ...proactivePlugin, enabled: e.target.checked })} /></Field>
               <Field label="随机时间主动发言"><input type="checkbox" checked={proactivePlugin.randomize_interval} onChange={(e) => setProactivePlugin({ ...proactivePlugin, randomize_interval: e.target.checked })} /></Field>
               {proactivePlugin.randomize_interval ? (
