@@ -541,7 +541,7 @@ def test_update_check_and_verified_download(monkeypatch):
         with TestClient(app) as client:
             check = client.get("/api/system/update").json()
             assert check["available"] is True
-            assert check["current_version"] == "0.15.11"
+            assert check["current_version"] == "0.15.12"
             response = client.post("/api/system/update/download")
             events = [json.loads(line) for line in response.text.splitlines()]
             assert events[-1]["stage"] == "complete"
