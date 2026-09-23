@@ -200,6 +200,14 @@ export default function App() {
             );
             if (!cancelled) setConversations(conversationData);
           }
+          if (desktop && !cancelled) {
+            try {
+              const status = await request<{ version: string }>("/diagnostics/status");
+              if (!cancelled) await invoke("confirm_update_startup", { backendVersion: status.version });
+            } catch (cause) {
+              console.warn("旧更新安装包清理未完成，将在下次启动时重试：", cause);
+            }
+          }
           return;
         } catch {
           await new Promise((resolve) => setTimeout(resolve, 500));

@@ -579,6 +579,102 @@ fn spawn_after_exit(path: &std::path::Path) -> Result<(), String> {
   Ok(())
 }
 
+fn installer_version(file_name: &str) -> Option<(u64, u64, u64)> {
+  let version = file_name.strip_prefix("Yus-AI-")?.strip_suffix("-x64-setup.exe")?;
+  let mut parts = version.split('.');
+  let parse_part = |part: Option<&str>| -> Option<u64> {
+    let value = part?;
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) { return None; }
+    value.parse().ok()
+  };
+  let parsed = (parse_part(parts.next())?, parse_part(parts.next())?, parse_part(parts.next())?);
+  if parts.next().is_some() { return None; }
+  Some(parsed)
+}
+
+fn cleanup_update_installers(update_dir: &std::path::Path, current_version: (u64, u64, u64)) -> std::io::Result<(usize, u64)> {
+  if !update_dir.is_dir() { return Ok((0, 0)); }
+  let trusted_dir = std::fs::canonicalize(update_dir)?;
+  let mut removed = 0;
+  let mut reclaimed = 0;
+  for entry in std::fs::read_dir(update_dir)? {
+    let entry = entry?;
+    if !entry.file_type()?.is_file() { continue; }
+    let file_name = entry.file_name();
+    let Some(file_name) = file_name.to_str() else { continue; };
+    let Some(version) = installer_version(file_name) else { continue; };
+    if version > current_version { continue; }
+    let path = entry.path();
+    if std::fs::canonicalize(&path)?.parent() != Some(trusted_dir.as_path()) { continue; }
+    let size = entry.metadata()?.len();
+    match std::fs::remove_file(&path) {
+      Ok(()) => { removed += 1; reclaimed += size; },
+      Err(error) => log::warn!("update_installer_cleanup_failed path={} error={error}", path.display()),
+    }
+  }
+  Ok((removed, reclaimed))
+}
+
+#[cfg(test)]
+mod update_cleanup_tests {
+  use super::{cleanup_update_installers, installer_version};
+
+  #[test]
+  fn recognizes_only_versioned_release_installers() {
+    assert_eq!(installer_version("Yus-AI-0.15.11-x64-setup.exe"), Some((0, 15, 11)));
+    assert_eq!(installer_version("Yus-AI-0.15.11-x64-setup.exe.part"), None);
+    assert_eq!(installer_version("Yus-AI-0.15-x64-setup.exe"), None);
+    assert_eq!(installer_version("Other-0.15.11-x64-setup.exe"), None);
+  }
+
+  #[test]
+  fn removes_installed_or_older_versions_but_keeps_newer_and_partial_downloads() {
+    let directory = std::env::temp_dir().join(format!(
+      "yus-ai-update-cleanup-test-{}-{}",
+      std::process::id(),
+      std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    for name in [
+      "Yus-AI-0.15.10-x64-setup.exe",
+      "Yus-AI-0.15.11-x64-setup.exe",
+      "Yus-AI-0.15.12-x64-setup.exe",
+      "Yus-AI-0.15.10-x64-setup.exe.part",
+      "unrelated.exe",
+    ] {
+      std::fs::write(directory.join(name), b"test").unwrap();
+    }
+    let result = cleanup_update_installers(&directory, (0, 15, 11)).unwrap();
+    assert_eq!(result, (2, 8));
+    assert!(!directory.join("Yus-AI-0.15.10-x64-setup.exe").exists());
+    assert!(!directory.join("Yus-AI-0.15.11-x64-setup.exe").exists());
+    assert!(directory.join("Yus-AI-0.15.12-x64-setup.exe").exists());
+    assert!(directory.join("Yus-AI-0.15.10-x64-setup.exe.part").exists());
+    assert!(directory.join("unrelated.exe").exists());
+    std::fs::remove_dir_all(directory).unwrap();
+  }
+}
+
+#[tauri::command]
+fn confirm_update_startup(app: AppHandle, backend_version: String) -> Result<(), String> {
+  let app_version = app.package_info().version.to_string();
+  if backend_version != app_version {
+    return Err(format!("前后端版本不一致，暂不清理安装包：app={app_version} backend={backend_version}"));
+  }
+  let current_version = installer_version(&format!("Yus-AI-{app_version}-x64-setup.exe"))
+    .ok_or("当前版本号不是有效的安装包版本号")?;
+  let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+  let install_dir = executable.parent().ok_or("无法确定软件安装目录")?;
+  let update_dir = install_dir.join("data").join("updates");
+  let (removed, reclaimed) = cleanup_update_installers(&update_dir, current_version)
+    .map_err(|error| format!("清理旧安装包失败：{error}"))?;
+  if removed > 0 {
+    write_window_diagnostic("update_installers_cleaned", &format!("count={removed} bytes={reclaimed} version={app_version}"));
+    log::info!("update_installers_cleaned count={removed} bytes={reclaimed} version={app_version}");
+  }
+  Ok(())
+}
+
 #[tauri::command]
 fn install_update(app: AppHandle, installer_path: String) -> Result<(), String> {
   write_window_diagnostic("update_install_requested", &format!("path={installer_path}"));
@@ -651,7 +747,7 @@ pub fn run() {
       always_on_top: Mutex::new(false),
       mini_mode: Mutex::new(false),
     })
-    .invoke_handler(tauri::generate_handler![set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, resize_pet_dialog, start_pet_drag, cancel_pet_auto_move, move_pet_by, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, set_pet_interaction_mode, get_autostart_status, set_autostart, export_character_card, copy_backup_file, install_update, restart_application, record_window_diagnostic])
+    .invoke_handler(tauri::generate_handler![set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, resize_pet_dialog, start_pet_drag, cancel_pet_auto_move, move_pet_by, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, set_pet_interaction_mode, get_autostart_status, set_autostart, export_character_card, copy_backup_file, install_update, confirm_update_startup, restart_application, record_window_diagnostic])
     .setup(|app| {
       let legacy_data_dir = app.path().app_data_dir()?;
       let data_dir = prepare_install_data_dir(app.handle())?;
