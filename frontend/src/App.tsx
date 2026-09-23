@@ -40,7 +40,7 @@ type Settings = {
 };
 type Theme = "violet" | "midnight" | "sand" | "paper";
 type UpdateInfo = { current_version: string; version: string; name: string; notes: string; published_at: string; release_url: string; available: boolean; asset: { name: string; size: number; digest: string } };
-type UpdateProgress = { stage: "downloading" | "complete"; percent: number; downloaded?: number; total?: number; resumed?: boolean; path?: string; sha256?: string; version?: string };
+type UpdateProgress = { stage: "downloading" | "retrying" | "complete"; percent: number; downloaded?: number; total?: number; resumed?: boolean; attempt?: number; max_attempts?: number; reason?: string; path?: string; sha256?: string; version?: string };
 type BackupInfo = { path: string; filename: string; size: number; sha256: string; created_at: string; counts: { characters: number; conversations: number; messages: number; documents: number } };
 const themes: { id: Theme; name: string; description: string }[] = [
   { id: "violet", name: "暮紫", description: "柔和紫色与深色背景" },
@@ -949,7 +949,7 @@ export default function App() {
                   {updateProgress && (
                     <div className="update-progress">
                       <div><span style={{ width: `${updateProgress.percent}%` }} /></div>
-                      <small>{updateProgress.stage === "complete" ? "下载完成并已通过 SHA-256 校验" : `${updateProgress.resumed ? "断点续传" : "下载中"} ${updateProgress.percent}% · ${formatBytes(updateProgress.downloaded ?? 0)} / ${formatBytes(updateProgress.total ?? 0)}`}</small>
+                      <small>{updateProgress.stage === "complete" ? "下载完成并已通过 SHA-256 校验" : updateProgress.stage === "retrying" ? `${updateProgress.reason ?? "连接中断"}，正在重试 ${updateProgress.attempt}/${updateProgress.max_attempts} · 已保留 ${formatBytes(updateProgress.downloaded ?? 0)}` : `${updateProgress.resumed ? "断点续传" : "下载中"} ${updateProgress.percent}% · ${formatBytes(updateProgress.downloaded ?? 0)} / ${formatBytes(updateProgress.total ?? 0)}`}</small>
                     </div>
                   )}
                   <section>

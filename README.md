@@ -2,11 +2,11 @@
 
 Yu's AI 是一款本地优先的 Windows 私人 AI 聊天软件。它将角色扮演、多模型 API、长期记忆、文档阅读、离线翻译和桌面宠物整合在同一个应用中，并为后续插件能力预留扩展空间。
 
-当前版本：**0.15.10**
+当前版本：**0.15.11**
 
 > ### ⬇ 下载 Windows 安装版
 >
-> [**下载最新版 Yus AI 安装程序（Windows x64）**](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/latest/download/Yus-AI-0.15.10-x64-setup.exe)
+> [**下载最新版 Yus AI 安装程序（Windows x64）**](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/latest/download/Yus-AI-0.15.11-x64-setup.exe)
 
 无需配置开发环境，下载安装后即可运行。其他版本、安装包校验值和发布说明可在 [GitHub Releases](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases) 查看。
 
@@ -53,7 +53,7 @@ Yu's AI 面向希望拥有长期陪伴式 AI、角色聊天和桌面助手体验
 项目当前提供 Windows NSIS 安装包。自行构建后的安装包位于：
 
 ```text
-frontend\src-tauri\target\release\bundle\nsis\Yus AI_0.15.10_x64-setup.exe
+frontend\src-tauri\target\release\bundle\nsis\Yus AI_0.15.11_x64-setup.exe
 ```
 
 安装后直接启动 **Yus AI**，不需要手动启动后端。首次使用建议：
@@ -148,9 +148,9 @@ Yu's AI 使用 OpenAI Chat Completions 兼容格式，可连接 DeepSeek 等兼�
 
 ### 2.10 应用内更新
 
-在“模型设置 → 更新与数据安全”中点击“检查更新”。软件会读取本仓库最新的 GitHub Release，并显示版本号、发布说明和安装包大小。更新检查不会继承可能与打包后端冲突的系统代理环境；GitHub API 限流时会自动切换到 GitHub 官方 Release 页面。
+在“模型设置 → 更新与数据安全”中点击“检查更新”。软件会读取本仓库最新的 GitHub Release，并显示版本号、发布说明和安装包大小。短时间内重复检查会复用结果，下载也会沿用已经验证的发布信息，避免重复请求触发 GitHub API 限流；GitHub API 不可用时自动切换到官方 Release 页面，并重试暂时的连接失败。
 
-下载支持进度显示和 `.part` 断点续传。下载完成后必须通过 GitHub Release 资源提供的 SHA-256 摘要校验，校验成功才允许启动安装程序；下载地址也必须属于本项目的 GitHub Release。安装前程序会正常关闭本地服务，安装目录中的数据库不会被删除。
+下载支持进度显示、失败重试和 `.part` 断点续传；服务器返回的续传起点也会核对，避免拼接错误。下载完成后必须通过 GitHub Release 资源提供的 SHA-256 摘要校验，校验成功才允许启动安装程序；下载地址也必须属于本项目的 GitHub Release。安装前程序会正常关闭本地服务，安装目录中的数据库不会被删除。
 
 更新采用手动确认方式，不会静默下载或在后台自动安装。
 
@@ -312,6 +312,13 @@ cd ..\backend
 ## 四、更新日志
 
 完整记录见 [CHANGELOG.md](CHANGELOG.md)。
+
+### 0.15.11（2026-09-23）
+
+- 应用内更新下载复用已检查的 GitHub 发布信息，减少 API 限流导致的重复失败。
+- GitHub 页面查询和安装包下载增加连接失败重试；断线后保留进度，并验证续传区间起点。
+- 更新界面显示重试原因和已保留的下载量；错误信息区分发布信息获取与安装包下载阶段。
+- 安装包必须与 GitHub Release 的大小及 SHA-256 一致，校验失败时绝不启动安装。
 
 ### 0.15.10（2026-09-23）
 

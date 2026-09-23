@@ -509,8 +509,10 @@ def test_backup_restore_round_trip_preserves_snapshot_and_creates_safety_copy():
 def test_update_check_and_verified_download(monkeypatch):
     installer = b"verified installer payload"
     digest = hashlib.sha256(installer).hexdigest()
+    release_requests = []
 
     async def latest_release():
+        release_requests.append(True)
         return {
             "version": "9.9.9", "name": "测试更新", "notes": "更新说明", "published_at": "2026-09-22T00:00:00Z",
             "release_url": "https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/tag/v9.9.9",
@@ -539,21 +541,27 @@ def test_update_check_and_verified_download(monkeypatch):
         with TestClient(app) as client:
             check = client.get("/api/system/update").json()
             assert check["available"] is True
-            assert check["current_version"] == "0.15.10"
+            assert check["current_version"] == "0.15.11"
             response = client.post("/api/system/update/download")
             events = [json.loads(line) for line in response.text.splitlines()]
             assert events[-1]["stage"] == "complete"
             assert events[-1]["sha256"] == digest
             assert database.Path(events[-1]["path"]).read_bytes() == installer
             assert updater_client_options[-1]["trust_env"] is False
+            assert len(release_requests) == 1  # download reuses the successful check
 
 
 def test_update_check_falls_back_to_official_release_page(monkeypatch):
     digest = "a" * 64
+    page_attempts = []
 
     async def github(request):
         if request.url.host == "api.github.com":
             return httpx.Response(403, text="rate limit exceeded")
+        if request.url.path.endswith("/releases/latest"):
+            page_attempts.append(True)
+            if len(page_attempts) == 1:
+                raise httpx.ConnectTimeout("temporary GitHub timeout", request=request)
         if "expanded_assets" in request.url.path:
             return httpx.Response(200, text=(
                 '<li class="Box-row"><a href="/qtys/Yu-s-Ai-plugin-platform/releases/download/'
@@ -580,6 +588,7 @@ def test_update_check_falls_back_to_official_release_page(monkeypatch):
     assert release["asset"]["size_exact"] is False
     assert release["asset"]["digest"] == f"sha256:{digest}"
     assert observed_options[0]["trust_env"] is False
+    assert len(page_attempts) == 2
 
 
 def test_update_accepts_verified_partial_when_server_reports_range_complete(monkeypatch):
@@ -616,3 +625,156 @@ def test_update_accepts_verified_partial_when_server_reports_range_complete(monk
         assert events[-1]["stage"] == "complete"
         assert (update_dir / "Yus-AI-9.9.9-x64-setup.exe").read_bytes() == installer
         assert not partial.exists()
+
+
+def test_update_retries_interrupted_stream_and_resumes_from_verified_offset(monkeypatch):
+    installer = b"a" * (300 * 1024) + b"b" * (300 * 1024)
+    digest = hashlib.sha256(installer).hexdigest()
+    requests = []
+
+    async def latest_release():
+        return {
+            "version": "9.9.9", "name": "测试更新", "notes": "", "published_at": None,
+            "release_url": "https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/tag/v9.9.9",
+            "asset": {
+                "name": "Yus-AI-9.9.9-x64-setup.exe", "size": len(installer),
+                "url": "https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/download/v9.9.9/Yus-AI-9.9.9-x64-setup.exe",
+                "digest": f"sha256:{digest}",
+            },
+        }
+
+    class InterruptedStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield installer[:300 * 1024]
+            raise httpx.ReadError("connection reset")
+
+        async def aclose(self):
+            pass
+
+    async def download(request):
+        requests.append(request.headers.get("Range"))
+        if len(requests) == 1:
+            return httpx.Response(200, headers={"Content-Length": str(len(installer))}, stream=InterruptedStream())
+        offset = int(request.headers["Range"].split("=", 1)[1].split("-", 1)[0])
+        return httpx.Response(206, headers={"Content-Range": f"bytes {offset}-{len(installer) - 1}/{len(installer)}"}, content=installer[offset:])
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr("app.main._latest_release", latest_release)
+    monkeypatch.setattr("app.main.httpx.AsyncClient", lambda **kwargs: original_client(transport=httpx.MockTransport(download), **kwargs))
+    with tempfile.TemporaryDirectory() as directory:
+        database.DATA_DIR = database.Path(directory)
+        database.DB_PATH = database.DATA_DIR / "update-retry.db"
+        with TestClient(app) as client:
+            response = client.post("/api/system/update/download")
+            events = [json.loads(line) for line in response.text.splitlines()]
+        assert requests == [None, "bytes=262144-"]
+        assert any(event.get("stage") == "retrying" and event["downloaded"] == 262144 for event in events)
+        assert events[-1]["stage"] == "complete"
+        assert database.Path(events[-1]["path"]).read_bytes() == installer
+
+
+def test_update_rejects_mismatched_resume_range_and_restarts(monkeypatch):
+    installer = b"correct installer"
+    digest = hashlib.sha256(installer).hexdigest()
+    requests = []
+
+    async def latest_release():
+        return {
+            "version": "9.9.9", "name": "测试更新", "notes": "", "published_at": None,
+            "release_url": "https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/tag/v9.9.9",
+            "asset": {
+                "name": "Yus-AI-9.9.9-x64-setup.exe", "size": len(installer),
+                "url": "https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/download/v9.9.9/Yus-AI-9.9.9-x64-setup.exe",
+                "digest": f"sha256:{digest}",
+            },
+        }
+
+    async def download(request):
+        requests.append(request.headers.get("Range"))
+        if len(requests) == 1:
+            return httpx.Response(206, headers={"Content-Range": f"bytes 0-{len(installer) - 1}/{len(installer)}"}, content=installer)
+        return httpx.Response(200, content=installer)
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr("app.main._latest_release", latest_release)
+    monkeypatch.setattr("app.main.httpx.AsyncClient", lambda **kwargs: original_client(transport=httpx.MockTransport(download), **kwargs))
+    with tempfile.TemporaryDirectory() as directory:
+        database.DATA_DIR = database.Path(directory)
+        database.DB_PATH = database.DATA_DIR / "update-range-restart.db"
+        update_dir = database.DATA_DIR / "updates"
+        update_dir.mkdir()
+        (update_dir / "Yus-AI-9.9.9-x64-setup.exe.part").write_bytes(installer[:5])
+        with TestClient(app) as client:
+            response = client.post("/api/system/update/download")
+            events = [json.loads(line) for line in response.text.splitlines()]
+        assert requests == ["bytes=5-", None]
+        assert any(event.get("stage") == "retrying" for event in events)
+        assert events[-1]["stage"] == "complete"
+        assert database.Path(events[-1]["path"]).read_bytes() == installer
+
+
+def test_update_hash_mismatch_never_installs_file(monkeypatch):
+    installer = b"incorrect installer"
+    digest = hashlib.sha256(b"correct installer").hexdigest()
+
+    async def latest_release():
+        return {
+            "version": "9.9.9", "name": "测试更新", "notes": "", "published_at": None,
+            "release_url": "https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/tag/v9.9.9",
+            "asset": {
+                "name": "Yus-AI-9.9.9-x64-setup.exe", "size": len(installer),
+                "url": "https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/download/v9.9.9/Yus-AI-9.9.9-x64-setup.exe",
+                "digest": f"sha256:{digest}",
+            },
+        }
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr("app.main._latest_release", latest_release)
+    monkeypatch.setattr("app.main.httpx.AsyncClient", lambda **kwargs: original_client(transport=httpx.MockTransport(lambda _request: httpx.Response(200, content=installer)), **kwargs))
+    with tempfile.TemporaryDirectory() as directory:
+        database.DATA_DIR = database.Path(directory)
+        database.DB_PATH = database.DATA_DIR / "update-hash.db"
+        with TestClient(app) as client:
+            response = client.post("/api/system/update/download")
+            events = [json.loads(line) for line in response.text.splitlines()]
+        assert "SHA-256 校验失败" in events[-1]["error"]
+        assert not list((database.DATA_DIR / "updates").iterdir())
+
+
+def test_update_terminal_timeout_keeps_partial_for_next_try(monkeypatch):
+    installer = b"complete installer"
+    requests = []
+
+    async def latest_release():
+        return {
+            "version": "9.9.9", "name": "测试更新", "notes": "", "published_at": None,
+            "release_url": "https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/tag/v9.9.9",
+            "asset": {
+                "name": "Yus-AI-9.9.9-x64-setup.exe", "size": len(installer),
+                "url": "https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/download/v9.9.9/Yus-AI-9.9.9-x64-setup.exe",
+                "digest": f"sha256:{hashlib.sha256(installer).hexdigest()}",
+            },
+        }
+
+    async def download(request):
+        requests.append(request.headers.get("Range"))
+        raise httpx.ConnectTimeout("temporary timeout", request=request)
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr("app.main._latest_release", latest_release)
+    monkeypatch.setattr("app.main.httpx.AsyncClient", lambda **kwargs: original_client(transport=httpx.MockTransport(download), **kwargs))
+    with tempfile.TemporaryDirectory() as directory:
+        database.DATA_DIR = database.Path(directory)
+        database.DB_PATH = database.DATA_DIR / "update-timeout.db"
+        update_dir = database.DATA_DIR / "updates"
+        update_dir.mkdir()
+        partial = update_dir / "Yus-AI-9.9.9-x64-setup.exe.part"
+        partial.write_bytes(installer[:5])
+        with TestClient(app) as client:
+            response = client.post("/api/system/update/download")
+            events = [json.loads(line) for line in response.text.splitlines()]
+        assert requests == ["bytes=5-", "bytes=5-", "bytes=5-"]
+        assert sum(event.get("stage") == "retrying" for event in events) == 2
+        assert "连接 GitHub 超时" in events[-1]["error"]
+        assert "已保留下载进度" in events[-1]["error"]
+        assert partial.read_bytes() == installer[:5]

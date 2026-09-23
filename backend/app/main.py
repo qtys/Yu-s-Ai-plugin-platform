@@ -33,6 +33,9 @@ from .documents import DOCUMENT_DIR, chunk_pages, decode_document, extract_pages
 
 MODEL_GENERATION_LOCK = asyncio.Lock()
 SYSTEM_OPERATION_LOCK = asyncio.Lock()
+UPDATE_RELEASE_LOCK = asyncio.Lock()
+UPDATE_DOWNLOAD_LOCK = asyncio.Lock()
+UPDATE_RELEASE_CACHE: tuple[float, dict] | None = None
 PROACTIVE_GENERATION_TASK: asyncio.Task | None = None
 
 GITHUB_LATEST_RELEASE_URL = "https://api.github.com/repos/qtys/Yu-s-Ai-plugin-platform/releases/latest"
@@ -446,6 +449,11 @@ def _content_range_total(value: str | None) -> int:
     return int(match.group(1)) if match else 0
 
 
+def _content_range_start(value: str | None) -> int | None:
+    match = re.match(r"bytes (\d+)-\d+/(?:\d+|\*)$", (value or "").strip())
+    return int(match.group(1)) if match else None
+
+
 def _create_backup_archive(prefix: str, app_version: str, preferences: dict[str, str] | None = None) -> dict:
     data_dir = database.DATA_DIR.resolve()
     backup_dir = data_dir / "backups"
@@ -625,6 +633,23 @@ def _release_from_github_page(page_url: str, page_html: str, assets_html: str) -
     }
 
 
+async def _github_get_with_retry(client: httpx.AsyncClient, url: str, headers: dict, attempts: int = 3) -> httpx.Response:
+    for attempt in range(1, attempts + 1):
+        try:
+            response = await client.get(url, headers=headers)
+            if response.status_code in {500, 502, 503, 504} and attempt < attempts:
+                logger.info("update_metadata_retry attempt=%s/%s status=%s", attempt, attempts, response.status_code)
+            else:
+                response.raise_for_status()
+                return response
+        except httpx.RequestError as exc:
+            if attempt >= attempts:
+                raise
+            logger.info("update_metadata_retry attempt=%s/%s error_type=%s", attempt, attempts, type(exc).__name__)
+        await asyncio.sleep(0.6 * attempt)
+    raise RuntimeError("更新信息请求重试异常结束")
+
+
 async def _latest_release() -> dict:
     headers = {
         "Accept": "application/vnd.github+json", "User-Agent": "Yus-AI-Updater",
@@ -634,24 +659,22 @@ async def _latest_release() -> dict:
     # whose synthetic DNS/proxy environment is not usable from the packaged
     # Python sidecar.  The model clients already bypass that inherited
     # environment; keep the updater on the same reliable direct route.
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True, trust_env=False) as client:
+    timeout = httpx.Timeout(connect=15, read=25, write=15, pool=15)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, trust_env=False) as client:
         try:
-            response = await client.get(GITHUB_LATEST_RELEASE_URL, headers=headers)
-            response.raise_for_status()
+            response = await _github_get_with_retry(client, GITHUB_LATEST_RELEASE_URL, headers, attempts=2)
             release = response.json()
         except (httpx.HTTPError, json.JSONDecodeError, KeyError, TypeError) as api_error:
             logger.info("update_api_unavailable fallback=github_page error_type=%s", type(api_error).__name__)
-            page = await client.get(GITHUB_RELEASES_LATEST_URL, headers={"User-Agent": "Yus-AI-Updater"})
-            page.raise_for_status()
+            page = await _github_get_with_retry(client, GITHUB_RELEASES_LATEST_URL, {"User-Agent": "Yus-AI-Updater"})
             tag_match = re.search(r"/releases/tag/([^/?#\"'\s<>]+)", str(page.url) + "\n" + page.text)
             if not tag_match:
                 raise ValueError("GitHub 发布页缺少版本号") from api_error
             tag = unquote(tag_match.group(1))
-            assets = await client.get(
+            assets = await _github_get_with_retry(client,
                 f"https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/expanded_assets/{tag}",
                 headers={"User-Agent": "Yus-AI-Updater"},
             )
-            assets.raise_for_status()
             return _release_from_github_page(str(page.url), page.text, assets.text)
     assets = release.get("assets") or []
     asset = next((item for item in assets if item.get("name", "").lower().endswith("setup.exe") and "x64" in item.get("name", "").lower()), None)
@@ -673,16 +696,54 @@ async def _latest_release() -> dict:
     }
 
 
+async def _release_for_update(max_age_seconds: float) -> dict:
+    global UPDATE_RELEASE_CACHE
+    async with UPDATE_RELEASE_LOCK:
+        if UPDATE_RELEASE_CACHE and time.monotonic() - UPDATE_RELEASE_CACHE[0] < max_age_seconds:
+            return UPDATE_RELEASE_CACHE[1]
+        release = await _latest_release()
+        asset = release.get("asset") or {}
+        url = str(asset.get("url") or "")
+        name = str(asset.get("name") or "")
+        digest = str(asset.get("digest") or "")
+        if (not url.startswith("https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/download/")
+                or not name.lower().endswith("x64-setup.exe") or Path(name).name != name
+                or not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest)):
+            raise ValueError("GitHub 发布信息缺少可信的安装包地址或 SHA-256 摘要")
+        UPDATE_RELEASE_CACHE = (time.monotonic(), release)
+        return release
+
+
+class _UpdateIncompleteError(ValueError):
+    pass
+
+
+class _UpdateOversizeError(ValueError):
+    pass
+
+
+def _update_error_detail(exc: Exception) -> str:
+    if isinstance(exc, httpx.TimeoutException):
+        return "连接 GitHub 超时"
+    if isinstance(exc, httpx.ConnectError):
+        return "无法连接 GitHub"
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"GitHub 返回 HTTP {exc.response.status_code}"
+    return str(exc) or type(exc).__name__
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    global UPDATE_RELEASE_CACHE
+    UPDATE_RELEASE_CACHE = None
     configure_logging()
     init_db()
-    logger.info("backend_started version=0.15.10")
+    logger.info("backend_started version=0.15.11")
     yield
     logger.info("backend_stopped")
 
 
-app = FastAPI(title="Yu's AI API", version="0.15.10", lifespan=lifespan)
+app = FastAPI(title="Yu's AI API", version="0.15.11", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://tauri.localhost", "tauri://localhost"],
@@ -770,7 +831,7 @@ async def diagnostic_command(payload: DiagnosticCommand):
 @app.get("/api/system/update")
 async def check_system_update():
     try:
-        release = await _latest_release()
+        release = await _release_for_update(60)
     except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
         logger.warning(
             "update_check_failed error_type=%s detail=%r cause=%r",
@@ -792,71 +853,107 @@ async def check_system_update():
 @app.post("/api/system/update/download")
 async def download_system_update():
     async def generate():
-        try:
-            release = await _latest_release()
-            if _version_tuple(release["version"]) <= _version_tuple(app.version):
-                yield json.dumps({"error": "当前已经是最新版本"}, ensure_ascii=False) + "\n"
-                return
-            asset = release["asset"]
-            url = str(asset.get("url") or "")
-            expected_prefix = "https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/download/"
-            if not url.startswith(expected_prefix):
-                raise ValueError("安装包下载地址不可信")
-            update_dir = database.DATA_DIR / "updates"
-            update_dir.mkdir(parents=True, exist_ok=True)
-            destination = update_dir / Path(asset["name"]).name
-            partial = destination.with_suffix(destination.suffix + ".part")
-            expected_size = int(asset.get("size") or 0) if asset.get("size_exact", True) else 0
-            expected_digest = str(asset.get("digest") or "")
-            if destination.exists() and expected_digest.startswith("sha256:") and _sha256(destination).lower() == expected_digest.split(":", 1)[1].lower():
-                yield json.dumps({"stage": "complete", "percent": 100, "path": str(destination), "sha256": _sha256(destination), "version": release["version"]}, ensure_ascii=False) + "\n"
-                return
-            resume_at = partial.stat().st_size if partial.exists() else 0
-            if expected_size and resume_at >= expected_size:
-                partial.unlink(missing_ok=True)
-                resume_at = 0
-            headers = {"User-Agent": "Yus-AI-Updater"}
-            if resume_at:
-                headers["Range"] = f"bytes={resume_at}-"
-            timeout = httpx.Timeout(connect=30, read=None, write=30, pool=30)
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, trust_env=False) as client:
-                async with client.stream("GET", url, headers=headers) as response:
-                    range_total = _content_range_total(response.headers.get("Content-Range"))
-                    complete_partial = response.status_code == 416 and resume_at > 0 and range_total == resume_at
-                    if complete_partial:
-                        expected_size = range_total
-                        logger.info("update_partial_already_complete bytes=%s", resume_at)
-                    else:
-                        response.raise_for_status()
-                        append = resume_at > 0 and response.status_code == 206
-                        if range_total:
-                            expected_size = range_total
-                        elif response.status_code == 200 and response.headers.get("Content-Length", "").isdigit():
-                            expected_size = int(response.headers["Content-Length"])
-                        downloaded = resume_at if append else 0
-                        mode = "ab" if append else "wb"
-                        with partial.open(mode) as file:
-                            async for chunk in response.aiter_bytes(256 * 1024):
-                                if not chunk:
-                                    continue
-                                file.write(chunk)
-                                downloaded += len(chunk)
-                                percent = min(99, int(downloaded * 100 / expected_size)) if expected_size else 0
-                                yield json.dumps({"stage": "downloading", "percent": percent, "downloaded": downloaded, "total": expected_size, "resumed": append}, ensure_ascii=False) + "\n"
-            if expected_size and partial.stat().st_size != expected_size:
-                raise ValueError("安装包大小与发布信息不一致")
-            digest = _sha256(partial)
-            if not expected_digest.startswith("sha256:"):
-                raise ValueError("GitHub 发布资源缺少 SHA-256 摘要")
-            if digest.lower() != expected_digest.split(":", 1)[1].lower():
-                partial.unlink(missing_ok=True)
-                raise ValueError("安装包 SHA-256 校验失败，文件已删除")
-            os.replace(partial, destination)
-            logger.info("update_downloaded version=%s bytes=%s sha256=%s", release["version"], destination.stat().st_size, digest)
-            yield json.dumps({"stage": "complete", "percent": 100, "path": str(destination), "sha256": digest, "version": release["version"]}, ensure_ascii=False) + "\n"
-        except (httpx.HTTPError, OSError, ValueError, KeyError, TypeError) as exc:
-            logger.warning("update_download_failed error_type=%s detail=%s", type(exc).__name__, str(exc))
-            yield json.dumps({"error": str(exc) or type(exc).__name__}, ensure_ascii=False) + "\n"
+        async with UPDATE_DOWNLOAD_LOCK:
+            phase = "获取发布信息"
+            try:
+                # Reuse the server-validated result from the check button. A second
+                # GitHub metadata request was the cause of intermittent failures.
+                release = await _release_for_update(30 * 60)
+                if _version_tuple(release["version"]) <= _version_tuple(app.version):
+                    yield json.dumps({"error": "当前已经是最新版本"}, ensure_ascii=False) + "\n"
+                    return
+                asset = release["asset"]
+                url = asset["url"]
+                update_dir = database.DATA_DIR / "updates"
+                update_dir.mkdir(parents=True, exist_ok=True)
+                destination = update_dir / asset["name"]
+                partial = destination.with_suffix(destination.suffix + ".part")
+                expected_size = int(asset.get("size") or 0) if asset.get("size_exact", True) else 0
+                release_size = expected_size
+                expected_digest = asset["digest"].split(":", 1)[1].lower()
+
+                if destination.exists() and _sha256(destination).lower() == expected_digest:
+                    yield json.dumps({"stage": "complete", "percent": 100, "path": str(destination), "sha256": expected_digest, "version": release["version"]}, ensure_ascii=False) + "\n"
+                    return
+                if partial.exists():
+                    if _sha256(partial).lower() == expected_digest:
+                        os.replace(partial, destination)
+                        yield json.dumps({"stage": "complete", "percent": 100, "path": str(destination), "sha256": expected_digest, "version": release["version"]}, ensure_ascii=False) + "\n"
+                        return
+                    if expected_size and partial.stat().st_size >= expected_size:
+                        partial.unlink()
+
+                phase = "下载安装包"
+                timeout = httpx.Timeout(connect=20, read=45, write=30, pool=20)
+                max_attempts = 3
+                async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, trust_env=False) as client:
+                    for attempt in range(1, max_attempts + 1):
+                        resume_at = partial.stat().st_size if partial.exists() else 0
+                        headers = {"User-Agent": "Yus-AI-Updater"}
+                        if resume_at:
+                            headers["Range"] = f"bytes={resume_at}-"
+                        try:
+                            async with client.stream("GET", url, headers=headers) as response:
+                                range_header = response.headers.get("Content-Range")
+                                range_total = _content_range_total(range_header)
+                                if response.status_code == 416:
+                                    if resume_at and range_total == resume_at:
+                                        expected_size = range_total
+                                        logger.info("update_partial_already_complete bytes=%s", resume_at)
+                                        break
+                                    partial.unlink(missing_ok=True)
+                                    raise _UpdateIncompleteError("断点位置与服务器不一致，已从头重试")
+                                response.raise_for_status()
+                                if response.status_code not in {200, 206}:
+                                    raise ValueError(f"安装包服务器返回意外状态 {response.status_code}")
+                                if response.status_code == 206 and _content_range_start(range_header) != resume_at:
+                                    partial.unlink(missing_ok=True)
+                                    raise _UpdateIncompleteError("服务器返回的断点位置不一致，已从头重试")
+                                append = resume_at > 0 and response.status_code == 206
+                                if range_total:
+                                    if release_size and range_total != release_size:
+                                        raise ValueError("服务器文件大小与 GitHub 发布信息不一致")
+                                    expected_size = range_total
+                                elif response.status_code == 200 and response.headers.get("Content-Length", "").isdigit():
+                                    if release_size and int(response.headers["Content-Length"]) != release_size:
+                                        raise ValueError("服务器文件大小与 GitHub 发布信息不一致")
+                                    expected_size = int(response.headers["Content-Length"])
+                                downloaded = resume_at if append else 0
+                                with partial.open("ab" if append else "wb") as file:
+                                    async for chunk in response.aiter_bytes(256 * 1024):
+                                        if not chunk:
+                                            continue
+                                        file.write(chunk)
+                                        downloaded += len(chunk)
+                                        if expected_size and downloaded > expected_size:
+                                            raise _UpdateOversizeError("安装包大小超过发布信息，已中止下载")
+                                        percent = min(99, int(downloaded * 100 / expected_size)) if expected_size else 0
+                                        yield json.dumps({"stage": "downloading", "percent": percent, "downloaded": downloaded, "total": expected_size, "resumed": append}, ensure_ascii=False) + "\n"
+                            if expected_size and partial.stat().st_size != expected_size:
+                                raise _UpdateIncompleteError("连接提前结束，安装包尚未下载完整")
+                            break
+                        except (httpx.RequestError, httpx.HTTPStatusError, _UpdateIncompleteError) as exc:
+                            retryable = not isinstance(exc, httpx.HTTPStatusError) or exc.response.status_code in {429, 500, 502, 503, 504}
+                            if not retryable or attempt >= max_attempts:
+                                raise
+                            downloaded = partial.stat().st_size if partial.exists() else 0
+                            logger.warning("update_download_retry attempt=%s/%s bytes=%s error_type=%s", attempt, max_attempts, downloaded, type(exc).__name__)
+                            yield json.dumps({"stage": "retrying", "percent": min(99, int(downloaded * 100 / expected_size)) if expected_size else 0, "downloaded": downloaded, "total": expected_size, "resumed": bool(downloaded), "attempt": attempt, "max_attempts": max_attempts, "reason": _update_error_detail(exc)}, ensure_ascii=False) + "\n"
+                            await asyncio.sleep(0.8 * attempt)
+
+                digest = _sha256(partial)
+                if digest.lower() != expected_digest:
+                    partial.unlink(missing_ok=True)
+                    raise ValueError("安装包 SHA-256 校验失败，文件已删除")
+                os.replace(partial, destination)
+                logger.info("update_downloaded version=%s bytes=%s sha256=%s", release["version"], destination.stat().st_size, digest)
+                yield json.dumps({"stage": "complete", "percent": 100, "path": str(destination), "sha256": digest, "version": release["version"]}, ensure_ascii=False) + "\n"
+            except (httpx.HTTPError, OSError, ValueError, KeyError, TypeError) as exc:
+                if isinstance(exc, _UpdateOversizeError):
+                    partial.unlink(missing_ok=True)
+                logger.warning("update_download_failed phase=%s error_type=%s detail=%s", phase, type(exc).__name__, str(exc))
+                suffix = "；已保留下载进度，可重试" if phase == "下载安装包" and isinstance(exc, (httpx.RequestError, _UpdateIncompleteError)) else ""
+                yield json.dumps({"error": f"{phase}失败：{_update_error_detail(exc)}{suffix}"}, ensure_ascii=False) + "\n"
     return StreamingResponse(generate(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache, no-transform"})
 
 
