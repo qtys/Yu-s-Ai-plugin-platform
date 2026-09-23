@@ -19,6 +19,7 @@ type DisplaySettings = { message_display_mode: MessageDisplayMode };
 type TranslationPackage = { from_code: "zh" | "en"; to_code: "zh" | "en"; name: string; size_mb: number; installed: boolean };
 type DownloadProgress = { stage: "testing" | "retrying" | "downloading" | "installing" | "complete" | "error"; percent: number; downloaded?: number; total?: number; error?: string; source?: string; attempt?: number; max_attempts?: number; resumed?: boolean };
 type PetFeature = "chat" | "translation" | "settings";
+type PetModel = "slime" | "alice";
 type PetMood = "idle" | "tap" | "happy" | "confused";
 type PetFrame = "normal" | "blink" | "wink" | "surprised";
 type DirectedAction = "none" | "bounce" | "celebrate" | "lean-left" | "lean-right" | "peek" | "shy" | "squish" | "wiggle" | "tap" | "frontflip" | "backflip" | "custom";
@@ -38,6 +39,69 @@ const PERIOD_LABELS: Record<DayPeriod, string> = { morning: "早晨", daytime: "
 const MOTION_PRIORITY: Record<MotionSource, number> = { idle: 10, proactive: 30, chat: 50, model: 70, feedback: 75, user: 85, drag: 100 };
 const MOTION_SOURCE_LABEL: Record<MotionSource, string> = { idle: "随机待机", proactive: "主动发言", chat: "回复生成", model: "模型指令", feedback: "操作反馈", user: "用户点击", drag: "桌宠拖动" };
 const EFFECT_GLYPH: Record<PetEffect, string> = { none: "", heart: "♥", sparkle: "✦", question: "?", sweat: "●", star: "★", music: "♪" };
+const PET_MODEL_LABEL: Record<PetModel, string> = { slime: "蓝雨史莱姆", alice: "爱丽丝 Q 版" };
+
+function AliceHeadRig({ faceRef }: { faceRef: React.RefObject<SVGGElement | null> }) {
+  const original = "/assets/alice-v3-head-original.png";
+  const blank = "/assets/alice-v3-head-blank.png";
+  const eyeWhites = "/assets/alice-v3-eye-whites.png";
+  const image = (href: string) => <image href={href} width="1355" height="1161" preserveAspectRatio="none" />;
+  return <svg className="alice-head-image" viewBox="0 0 1355 1161" aria-hidden="true">
+    <defs>
+      <clipPath id="alice-left-eye-clip"><ellipse cx="468" cy="742" rx="165" ry="135" /></clipPath>
+      <clipPath id="alice-right-eye-clip"><ellipse cx="884" cy="780" rx="170" ry="140" /></clipPath>
+      <clipPath id="alice-left-iris-source"><ellipse cx="478" cy="760" rx="81" ry="83" /></clipPath>
+      <clipPath id="alice-right-iris-source"><ellipse cx="864" cy="791" rx="85" ry="86" /></clipPath>
+      <clipPath id="alice-left-eye-aperture"><ellipse cx="471" cy="759" rx="103" ry="89" /></clipPath>
+      <clipPath id="alice-right-eye-aperture"><ellipse cx="870" cy="794" rx="106" ry="93" /></clipPath>
+      <clipPath id="alice-left-lash-clip"><rect x="302" y="608" width="335" height="82" /><rect x="302" y="825" width="335" height="33" /></clipPath>
+      <clipPath id="alice-right-lash-clip"><rect x="714" y="642" width="342" height="84" /><rect x="714" y="867" width="342" height="33" /></clipPath>
+      <clipPath id="alice-left-brow-clip"><ellipse cx="469" cy="555" rx="143" ry="56" /></clipPath>
+      <clipPath id="alice-right-brow-clip"><ellipse cx="882" cy="582" rx="142" ry="55" /></clipPath>
+      <clipPath id="alice-left-blush-clip"><ellipse cx="426" cy="877" rx="84" ry="34" /></clipPath>
+      <clipPath id="alice-right-blush-clip"><ellipse cx="858" cy="920" rx="86" ry="34" /></clipPath>
+      <clipPath id="alice-nose-clip"><ellipse cx="654" cy="849" rx="36" ry="38" /></clipPath>
+      <clipPath id="alice-mouth-clip"><ellipse cx="655" cy="918" rx="100" ry="58" /></clipPath>
+    </defs>
+    {image(blank)}
+    <g ref={faceRef} className="alice-facial-features">
+      <g className="alice-brow-piece alice-brow-piece-left" clipPath="url(#alice-left-brow-clip)">{image(original)}</g>
+      <g className="alice-brow-piece alice-brow-piece-right" clipPath="url(#alice-right-brow-clip)">{image(original)}</g>
+      <g className="alice-blush-piece alice-blush-piece-left" clipPath="url(#alice-left-blush-clip)">{image(original)}</g>
+      <g className="alice-blush-piece alice-blush-piece-right" clipPath="url(#alice-right-blush-clip)">{image(original)}</g>
+      <g className="alice-eye-piece alice-eye-piece-left" clipPath="url(#alice-left-eye-clip)">
+        {image(eyeWhites)}
+        <g clipPath="url(#alice-left-eye-aperture)"><g className="alice-iris-gaze"><g transform="translate(478 760) scale(.88) translate(-478 -760)" clipPath="url(#alice-left-iris-source)">{image(original)}</g></g></g>
+        <g clipPath="url(#alice-left-lash-clip)">{image(eyeWhites)}</g>
+      </g>
+      <g className="alice-eye-piece alice-eye-piece-right" clipPath="url(#alice-right-eye-clip)">
+        {image(eyeWhites)}
+        <g clipPath="url(#alice-right-eye-aperture)"><g className="alice-iris-gaze"><g transform="translate(864 791) scale(.88) translate(-864 -791)" clipPath="url(#alice-right-iris-source)">{image(original)}</g></g></g>
+        <g clipPath="url(#alice-right-lash-clip)">{image(eyeWhites)}</g>
+      </g>
+      <g className="alice-nose-piece" clipPath="url(#alice-nose-clip)">{image(original)}</g>
+      <g className="alice-mouth-piece" clipPath="url(#alice-mouth-clip)">{image(original)}</g>
+      <g className="alice-eyelid alice-eyelid-left"><path d="M350 748 Q468 826 579 761" /></g>
+      <g className="alice-eyelid alice-eyelid-right"><path d="M771 786 Q879 856 993 788" /></g>
+      <g className="alice-mouth-drawing">
+        <path className="alice-mouth-smile" d="M596 898 Q655 967 717 898" />
+        <path className="alice-mouth-pout" d="M616 927 Q654 898 693 927" />
+        <path className="alice-mouth-open" d="M610 902 Q655 887 702 902 Q699 969 655 969 Q611 969 610 902Z" />
+        <ellipse className="alice-mouth-o" cx="655" cy="930" rx="35" ry="48" />
+      </g>
+    </g>
+  </svg>;
+}
+
+function AliceEffectGlyph({ effect }: { effect: PetEffect }) {
+  return <svg viewBox="0 0 28 28" aria-hidden="true">
+    {effect === "heart" && <path d="M14 24 3 13C-1 7 5 1 11 5l3 3 3-3c6-4 12 2 8 8Z" />}
+    {(effect === "sparkle" || effect === "star") && <path d={effect === "star" ? "M14 1 17.4 10.4 27 10.6 19.4 16.8 22.2 26 14 20.5 5.8 26 8.6 16.8 1 10.6 10.6 10.4Z" : "M14 1 17 11 27 14 17 17 14 27 11 17 1 14 11 11Z"} />}
+    {effect === "question" && <><path d="M7 9a7 7 0 1 1 10 6c-3 1-3 3-3 5" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"/><circle cx="14" cy="25" r="2"/></>}
+    {effect === "sweat" && <path d="M14 1C9 9 5 14 5 19a9 9 0 0 0 18 0c0-5-4-10-9-18Z" />}
+    {effect === "music" && <path d="M10 5 24 2v16a4 4 0 1 1-3-3.9V7l-8 2v13a4 4 0 1 1-3-3.9Z" />}
+  </svg>;
+}
 
 const EMPTY_MOTION: PetMotion = { action: "none", expression: "idle", gazeMode: "cursor", lookX: 0, lookY: 0, offsetX: 0, offsetY: 0, intensity: 0.7, duration: 900, movement: "stay", moveDistance: 0 };
 
@@ -112,6 +176,25 @@ function parseModelMotion(value: unknown): PetMotion | null {
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+function adaptMotionForModel(motion: PetMotion, model: PetModel): PetMotion {
+  if (model === "slime") return motion;
+  const soften = (frames: MotionKeyframe[] | undefined, face = false) => frames?.map((frame) => ({
+    ...frame,
+    x: clamp(frame.x, face ? -5 : -14, face ? 5 : 14),
+    y: clamp(frame.y, face ? -5 : -28, face ? 5 : 10),
+    rotate: clamp(frame.rotate, face ? -12 : -32, face ? 12 : 32),
+    scaleX: clamp(frame.scaleX, face ? .94 : .9, face ? 1.06 : 1.1),
+    scaleY: clamp(frame.scaleY, face ? .94 : .9, face ? 1.06 : 1.1),
+  }));
+  return {
+    ...motion,
+    keyframes: soften(motion.keyframes),
+    faceKeyframes: soften(motion.faceKeyframes, true),
+    crestKeyframes: soften(motion.crestKeyframes, true),
+    generatedLayers: motion.generatedLayers?.map((layer) => layer.replace("水滴", "发饰")),
+  };
 }
 
 function randomBetween(min: number, max: number) {
@@ -250,6 +333,75 @@ function synthesizeIdlePrimitive(character: Character | null, period: DayPeriod,
   return Array.from({ length: 14 }, createCandidate).sort((left, right) => right.novelty - left.novelty)[0];
 }
 
+function synthesizeAliceIdlePrimitive(character: Character | null, period: DayPeriod, recent: PrimitiveSignature[]) {
+  const profile = `${character?.personality ?? ""} ${character?.speaking_style ?? ""}`;
+  const energetic = /活泼|开朗|元气|可爱|调皮/.test(profile);
+  const quiet = period === "night" || /冷静|沉稳|安静|严谨/.test(profile);
+  const createCandidate = () => {
+    const direction = Math.random() < .5 ? -1 : 1;
+    const lift = randomBetween(2, energetic ? 12 : quiet ? 5 : 8);
+    const sidestep = direction * randomBetween(1, energetic ? 10 : 6);
+    const tilt = direction * randomBetween(3, quiet ? 8 : 14);
+    const glance = randomBetween(-4, 4);
+    const delay = randomBetween(.07, .15);
+    const frames: MotionKeyframe[] = Array.from({ length: 7 }, (_, index) => {
+      const at = index / 6;
+      const rise = Math.sin(Math.PI * at) ** 2;
+      const step = Math.sin(Math.PI * Math.max(0, at - .16) / .84) ** 2;
+      return {
+        at,
+        x: sidestep * step,
+        y: -lift * rise,
+        rotate: tilt * rise + glance * Math.sin(2 * Math.PI * at) * rise,
+        scaleX: 1 + .018 * rise,
+        scaleY: 1 - .014 * rise,
+      };
+    });
+    const face = frames.map((frame) => ({
+      at: frame.at,
+      x: -frame.x * .15,
+      y: -Math.sin(Math.PI * Math.max(0, frame.at - delay)) * 1.5,
+      rotate: -frame.rotate * .24,
+      scaleX: 1,
+      scaleY: 1,
+    }));
+    const crest = frames.map((frame, index) => {
+      const previous = frames[Math.max(0, index - 1)];
+      return {
+        at: frame.at,
+        x: clamp((previous.x - frame.x) * .7, -5, 5),
+        y: clamp((previous.y - frame.y) * .3, -5, 5),
+        rotate: clamp(-frame.rotate * .8 + (previous.rotate - frame.rotate) * 1.2, -30, 30),
+        scaleX: 1,
+        scaleY: 1,
+      };
+    });
+    const duration = Math.round(randomBetween(1700, quiet ? 2850 : 2450));
+    const signature: PrimitiveSignature = [Math.abs(sidestep) / 16, lift / 30, Math.abs(tilt) / 70, .04, 1 / 4, 1 / 4, duration / 2900, direction];
+    const novelty = recent.length ? Math.min(...recent.map((item) => signatureDistance(signature, item))) : 1;
+    const motion: PetMotion = {
+      ...EMPTY_MOTION,
+      action: "custom",
+      expression: quiet && Math.random() < .3 ? "sleepy" : energetic && Math.random() < .25 ? "happy" : "idle",
+      gazeMode: Math.random() < .7 ? "cursor" : "none",
+      intensity: randomBetween(.65, .95),
+      duration,
+      emotionLabel: `即兴·${direction < 0 ? "左" : "右"}${lift > 8 ? "轻跃" : "侧身"}`,
+      eyes: quiet && Math.random() < .22 ? "soft" : Math.random() < .16 ? (direction < 0 ? "wink-left" : "wink-right") : "normal",
+      mouth: energetic && Math.random() < .45 ? "smile" : "neutral",
+      effect: "none",
+      easing: "ease-in-out",
+      keyframes: frames,
+      faceKeyframes: face,
+      crestKeyframes: crest,
+      generatedLayers: ["轻盈重心", "面部跟随", "发饰惯性"],
+      motionQuality: Math.round(clamp(78 + novelty * 20, 78, 100)),
+    };
+    return { motion, signature, novelty };
+  };
+  return Array.from({ length: 12 }, createCandidate).sort((left, right) => right.novelty - left.novelty)[0];
+}
+
 function getDayPeriod(date = new Date()): DayPeriod {
   const hour = date.getHours();
   if (hour >= 5 && hour < 10) return "morning";
@@ -311,6 +463,7 @@ export default function Pet() {
   const gazeModeRef = useRef<GazeMode>("cursor");
   const [motionEnabled, setMotionEnabled] = useState(() => localStorage.getItem("yus-ai-pet-motion-enabled") !== "false");
   const [motionStrength, setMotionStrength] = useState(() => Number(localStorage.getItem("yus-ai-pet-motion-strength")) || 75);
+  const [petModel, setPetModel] = useState<PetModel>(() => localStorage.getItem("yus-ai-pet-model") === "alice" ? "alice" : "slime");
   const [proactiveMessage, setProactiveMessage] = useState("");
   const [aiProactiveEnabled, setAiProactiveEnabled] = useState<boolean | null>(null);
   const [proactiveSources, setProactiveSources] = useState<{title: string; url: string}[]>([]);
@@ -381,8 +534,11 @@ export default function Pet() {
   const frameTimerRef = useRef<number | undefined>(undefined);
   const motionTimerRef = useRef<number | undefined>(undefined);
   const slimeRigRef = useRef<HTMLSpanElement | null>(null);
+  const petButtonRef = useRef<HTMLButtonElement | null>(null);
   const slimeFaceRef = useRef<HTMLSpanElement | null>(null);
+  const aliceFaceRef = useRef<SVGGElement | null>(null);
   const slimeCrestRef = useRef<HTMLSpanElement | null>(null);
+  const aliceHeadRef = useRef<HTMLSpanElement | null>(null);
   const proceduralAnimationsRef = useRef<Animation[]>([]);
   const motionPriorityRef = useRef(0);
   const motionSequenceRef = useRef(0);
@@ -395,6 +551,23 @@ export default function Pet() {
   const dialogResizeTimerRef = useRef<number | undefined>(undefined);
   const dialogResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const dialogHeightResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
+
+  useEffect(() => {
+    if (desktop) return;
+    const followPointer = (event: PointerEvent) => {
+      if (gazeModeRef.current !== "cursor") return;
+      const bounds = petButtonRef.current?.getBoundingClientRect();
+      if (!bounds) return;
+      const dx = event.clientX - (bounds.left + bounds.width / 2);
+      const dy = event.clientY - (bounds.top + bounds.height / 2);
+      // A soft radius keeps the gaze continuous while the cursor crosses the face.
+      const distance = Math.hypot(dx, dy, 60);
+      const next = { x: dx / distance, y: dy / distance };
+      setGaze((previous) => Math.abs(previous.x - next.x) < .015 && Math.abs(previous.y - next.y) < .015 ? previous : next);
+    };
+    window.addEventListener("pointermove", followPointer, { passive: true });
+    return () => window.removeEventListener("pointermove", followPointer);
+  }, [desktop]);
 
   useEffect(() => { openRef.current = expanded; }, [expanded]);
   useEffect(() => { placementRef.current = placement; }, [placement]);
@@ -415,8 +588,9 @@ export default function Pet() {
       mode: expanded ? 2 : menuOpen ? 1 : proactiveMessage ? 3 : 0,
       alignLeft: placement.endsWith("left"),
       proactiveHeight: Math.ceil((proactiveBubbleRef.current?.getBoundingClientRect().height ?? 0) / (petSize / 100)),
+      model: petModel,
     });
-  }, [desktop, expanded, menuOpen, placement, proactiveMessage, petSize, proactiveSources]);
+  }, [desktop, expanded, menuOpen, placement, proactiveMessage, petSize, proactiveSources, petModel]);
   useEffect(() => () => {
     window.clearTimeout(menuClickTimerRef.current);
     window.clearTimeout(dialogResizeTimerRef.current);
@@ -455,7 +629,9 @@ export default function Pet() {
       const delay = first ? randomBetween(4500, 9000) : randomBetween(8500, 21000);
       timer = window.setTimeout(() => {
         if (cancelled) return;
-        const generated = synthesizeIdlePrimitive(character, dayPeriod, recentPrimitiveSignaturesRef.current);
+        const generated = petModel === "alice"
+          ? synthesizeAliceIdlePrimitive(character, dayPeriod, recentPrimitiveSignaturesRef.current)
+          : synthesizeIdlePrimitive(character, dayPeriod, recentPrimitiveSignaturesRef.current);
         if (schedulePetMotion(generated.motion, "idle", `procedural primitive: ${generated.motion.emotionLabel}`)) {
           recentPrimitiveSignaturesRef.current = [generated.signature, ...recentPrimitiveSignaturesRef.current].slice(0, 16);
         }
@@ -468,7 +644,7 @@ export default function Pet() {
       window.clearTimeout(timer);
     };
   // oxlint-disable-next-line react-hooks/exhaustive-deps -- scheduler reads live refs; timing intentionally stays irregular
-  }, [expanded, dragging, busy, dayPeriod, character]);
+  }, [expanded, dragging, busy, dayPeriod, character, petModel]);
 
   useEffect(() => {
     ["blink", "wink", "surprised"].forEach((frame) => {
@@ -651,6 +827,10 @@ export default function Pet() {
     localStorage.setItem("yus-ai-pet-size", String(petSize));
   }, [petSize]);
   useEffect(() => {
+    localStorage.setItem("yus-ai-pet-model", petModel);
+    recentPrimitiveSignaturesRef.current = [];
+  }, [petModel]);
+  useEffect(() => {
     localStorage.setItem("yus-ai-pet-opacity", String(petOpacity));
   }, [petOpacity]);
   useEffect(() => {
@@ -816,6 +996,7 @@ export default function Pet() {
 
   function schedulePetMotion(motion: PetMotion, source: MotionSource, raw = "", queueIfBlocked = false) {
     if (!motionEnabled && ["model", "proactive", "idle"].includes(source)) return false;
+    motion = adaptMotionForModel(motion, petModel);
     const priority = MOTION_PRIORITY[source];
     if (motionPriorityRef.current > priority) {
       if (queueIfBlocked) {
@@ -849,8 +1030,9 @@ export default function Pet() {
         })),
         { duration: motion.duration, iterations: repeat, easing, fill: "both" },
       ));
-      if (motion.faceKeyframes && slimeFaceRef.current) {
-        proceduralAnimationsRef.current.push(slimeFaceRef.current.animate(
+      const animatedFace = petModel === "alice" ? aliceFaceRef.current : slimeFaceRef.current;
+      if (motion.faceKeyframes && animatedFace) {
+        proceduralAnimationsRef.current.push(animatedFace.animate(
           motion.faceKeyframes.map((frame) => ({
             offset: frame.at,
             transform: `translate(${((frame.x + motion.lookX * 2) * strength).toFixed(2)}px, ${((frame.y + motion.lookY * 1.5) * strength).toFixed(2)}px) rotate(${((frame.rotate + motion.lookX) * strength).toFixed(2)}deg) scale(${(1 + (frame.scaleX - 1) * strength).toFixed(3)}, ${(1 + (frame.scaleY - 1) * strength).toFixed(3)})`,
@@ -864,6 +1046,12 @@ export default function Pet() {
             offset: frame.at,
             transform: `translate(${(frame.x * strength).toFixed(2)}px, ${(frame.y * strength).toFixed(2)}px) rotate(${(19 + frame.rotate * strength).toFixed(2)}deg) skewY(-7deg) scale(${(1 + (frame.scaleX - 1) * strength).toFixed(3)}, ${(1 + (frame.scaleY - 1) * strength).toFixed(3)})`,
           })),
+          { duration: motion.duration, iterations: repeat, easing, fill: "both" },
+        ));
+      }
+      if (petModel === "alice") {
+        if (aliceHeadRef.current) proceduralAnimationsRef.current.push(aliceHeadRef.current.animate(
+          motion.keyframes.map((frame) => ({ offset: frame.at, transform: `rotate(${(-frame.rotate * .2 * strength).toFixed(1)}deg) translate(${(-frame.x * .1 * strength).toFixed(1)}px, ${(-frame.y * .08 * strength).toFixed(1)}px)` })),
           { duration: motion.duration, iterations: repeat, easing, fill: "both" },
         ));
       }
@@ -968,13 +1156,6 @@ export default function Pet() {
   }
 
   async function continueDrag(event: React.PointerEvent<HTMLButtonElement>) {
-    if (!desktop && gazeModeRef.current === "cursor") {
-      const bounds = event.currentTarget.getBoundingClientRect();
-      setGaze({
-        x: Math.max(-1, Math.min(1, (event.clientX - bounds.left) / bounds.width * 2 - 1)),
-        y: Math.max(-1, Math.min(1, (event.clientY - bounds.top) / bounds.height * 2 - 1)),
-      });
-    }
     const start = dragStartRef.current;
     if (!desktop || !start || draggingRef.current) return;
     if (Math.hypot(event.screenX - start.x, event.screenY - start.y) < 6) return;
@@ -1003,17 +1184,15 @@ export default function Pet() {
     dragStartRef.current = null;
   }
 
-  function stopLooking() {
-    if (!desktop && gazeModeRef.current === "cursor") setGaze({ x: 0, y: 0 });
-  }
-
   function playReplyMotion(text: string, modelMotion?: PetMotion | null, raw = "") {
     if (!motionEnabled || draggingRef.current) return;
     schedulePetMotion(modelMotion ?? replyDrivenMotion(text), "model", raw || "local semantic fallback", true);
   }
 
   function playGeneratedPreview() {
-    const generated = synthesizeIdlePrimitive(character, dayPeriod, recentPrimitiveSignaturesRef.current);
+    const generated = petModel === "alice"
+      ? synthesizeAliceIdlePrimitive(character, dayPeriod, recentPrimitiveSignaturesRef.current)
+      : synthesizeIdlePrimitive(character, dayPeriod, recentPrimitiveSignaturesRef.current);
     if (schedulePetMotion(generated.motion, "user", `generated preview: ${generated.motion.emotionLabel}`)) {
       recentPrimitiveSignaturesRef.current = [generated.signature, ...recentPrimitiveSignaturesRef.current].slice(0, 16);
     }
@@ -1251,7 +1430,7 @@ export default function Pet() {
       const response = await fetch(`${API}/conversations/${id}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content, pet_motion_enabled: motionEnabled, recent_pet_motions: recentMotionLabelsRef.current }),
+        body: JSON.stringify({ content, pet_motion_enabled: motionEnabled, pet_model: petModel, recent_pet_motions: recentMotionLabelsRef.current }),
       });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
@@ -1308,7 +1487,7 @@ export default function Pet() {
   const motionRemaining = activeMotion.expiresAt ? Math.max(0, activeMotion.expiresAt - motionDebugNow) : 0;
 
   return (
-    <main className={`pet-stage ${expanded ? "open" : ""} ${placement} period-${dayPeriod}`}>
+    <main className={`pet-stage model-${petModel} ${expanded ? "open" : ""} ${placement} period-${dayPeriod}`}>
       <div
         className={`pet-canvas ${expanded ? "open" : ""} ${layoutChanging ? "layout-changing" : ""}`}
         style={{ transform: `scale(${petSize / 100})`, "--dialog-font-scale": dialogFontSize / 100, "--dialog-width": `${dialogWidth}px`, "--dialog-height": `${dialogHeight}px` } as React.CSSProperties}
@@ -1380,6 +1559,11 @@ export default function Pet() {
             <button className="close-bubble" onClick={() => void toggleSettings()} aria-label="关闭设置">×</button>
           </div>
           <div className="pet-controls">
+            <div className="pet-model-picker" role="group" aria-label="切换桌宠模型">
+              <span>桌宠模型</span>
+              <button type="button" className={petModel === "slime" ? "selected" : ""} aria-pressed={petModel === "slime"} onClick={() => setPetModel("slime")}>蓝雨史莱姆</button>
+              <button type="button" className={petModel === "alice" ? "selected" : ""} aria-pressed={petModel === "alice"} onClick={() => setPetModel("alice")}>爱丽丝 Q 版</button>
+            </div>
             <div className="pet-action-controls">
               <button type="button" disabled={directedMotion.action.endsWith("flip")} onClick={() => schedulePetMotion({ ...EMPTY_MOTION, action: "frontflip", expression: "happy", intensity: .85, duration: 1050 }, "user", "manual frontflip")}>前空翻</button>
               <button type="button" disabled={directedMotion.action.endsWith("flip")} onClick={() => schedulePetMotion({ ...EMPTY_MOTION, action: "backflip", expression: "happy", intensity: .85, duration: 1050 }, "user", "manual backflip")}>后空翻</button>
@@ -1404,7 +1588,7 @@ export default function Pet() {
                 <div><dt>创意</dt><dd>{directedMotion.emotionLabel || "—"}</dd></div>
                 <div><dt>表情</dt><dd>{directedMotion.expression}</dd></div>
                 <div><dt>关键帧</dt><dd>{directedMotion.keyframes?.length ?? 0}</dd></div>
-                <div><dt>分层</dt><dd>身体 {directedMotion.keyframes?.length ?? 0} / 脸 {directedMotion.faceKeyframes?.length ?? 0} / 水滴 {directedMotion.crestKeyframes?.length ?? 0}</dd></div>
+                <div><dt>分层</dt><dd>身体 {directedMotion.keyframes?.length ?? 0} / 脸 {directedMotion.faceKeyframes?.length ?? 0} / {petModel === "alice" ? "发饰" : "水滴"} {directedMotion.crestKeyframes?.length ?? 0}</dd></div>
                 <div><dt>特效</dt><dd>{directedMotion.effect ?? "none"}</dd></div>
                 <div><dt>完成度</dt><dd>{directedMotion.motionQuality === undefined ? "—" : `${directedMotion.motionQuality}%`}</dd></div>
                 <div><dt>程序补全</dt><dd>{directedMotion.generatedLayers?.join("、") || "无"}</dd></div>
@@ -1427,7 +1611,8 @@ export default function Pet() {
         </aside>
       )}
       <button
-        className={`pet-character ${busy ? "thinking" : ""} mood-${mood} direct-${directedMotion.action} expression-${directedMotion.expression} eyes-${directedMotion.eyes ?? "normal"} mouth-${directedMotion.mouth ?? "neutral"} frame-${petFrame} travel-${travelDirection} ${dragging ? "dragging" : ""}`}
+        ref={petButtonRef}
+        className={`pet-character model-${petModel} ${busy ? "thinking" : ""} mood-${mood} direct-${directedMotion.action} expression-${directedMotion.expression} eyes-${directedMotion.eyes ?? "normal"} mouth-${directedMotion.mouth ?? "neutral"} frame-${petFrame} gaze-${directedMotion.gazeMode} travel-${travelDirection} ${dragging ? "dragging" : ""}`}
         style={{
           opacity: petOpacity / 100,
           "--gaze-x": gaze.x,
@@ -1441,37 +1626,44 @@ export default function Pet() {
         onPointerMove={continueDrag}
         onPointerUp={finishDrag}
         onPointerCancel={finishDrag}
-        onPointerLeave={stopLooking}
         onClick={toggleMenu}
         onDoubleClick={() => { if (!expanded) openLastFeature(); }}
-        aria-label="蓝色雨滴史莱姆，拖动移动，点击打开功能菜单"
+        aria-label={`${PET_MODEL_LABEL[petModel]}，拖动移动，点击打开功能菜单`}
       >
         <span className="slime-ground-shadow" aria-hidden="true" />
         <span ref={slimeRigRef} className="slime-rig" aria-hidden="true">
           <span className="slime-orbit">
-            <img className="slime-body-layer" src="/assets/blue-slime-pet-body-v2.png" alt="" draggable={false} />
-            <span ref={slimeCrestRef} className="slime-crest-layer" />
-            <span className="slime-highlight-layer"><i /><b /></span>
-            <span ref={slimeFaceRef} className="slime-face-layer">
-              <span className="slime-eye slime-eye-left"><span className="slime-pupil"><i /></span><b /></span>
-              <span className="slime-eye slime-eye-right"><span className="slime-pupil"><i /></span><b /></span>
-              <span className="slime-blush slime-blush-left" />
-              <span className="slime-blush slime-blush-right" />
-              <span className="slime-mouth"><i /></span>
-            </span>
+            {petModel === "alice" ? <>
+              <span className="alice-joint alice-torso-joint" data-joint="torso">
+                <span ref={aliceHeadRef} className="alice-head-joint" data-joint="neck">
+                  <AliceHeadRig faceRef={aliceFaceRef} />
+                </span>
+              </span>
+            </> : <>
+              <img className="slime-body-layer" src="/assets/blue-slime-pet-body-v2.png" alt="" draggable={false} />
+              <span ref={slimeCrestRef} className="slime-crest-layer" />
+              <span className="slime-highlight-layer"><i /><b /></span>
+              <span ref={slimeFaceRef} className="slime-face-layer">
+                <span className="slime-eye slime-eye-left"><span className="slime-pupil"><i /></span><b /></span>
+                <span className="slime-eye slime-eye-right"><span className="slime-pupil"><i /></span><b /></span>
+                <span className="slime-blush slime-blush-left" />
+                <span className="slime-blush slime-blush-right" />
+                <span className="slime-mouth"><i /></span>
+              </span>
+            </>}
           </span>
         </span>
         <span className="pet-ripple" />
         {directedMotion.effect && directedMotion.effect !== "none" && (
           <span className={`motion-effect effect-${directedMotion.effect}`} aria-hidden="true">
-            <i>{EFFECT_GLYPH[directedMotion.effect]}</i><i>{EFFECT_GLYPH[directedMotion.effect]}</i><i>{EFFECT_GLYPH[directedMotion.effect]}</i>
+            {[0, 1, 2].map((index) => <i key={index}>{petModel === "alice" ? <AliceEffectGlyph effect={directedMotion.effect!} /> : EFFECT_GLYPH[directedMotion.effect!]}</i>)}
           </span>
         )}
         <span className="pet-emote" aria-hidden="true">{busy ? "…" : mood === "happy" ? "♥" : mood === "confused" ? "?" : directedMotion.expression === "sleepy" ? "Zzz" : dayPeriod === "night" ? "☾" : ""}</span>
       </button>
       {menuOpen && !expanded && (
         <nav className="pet-plugin-menu" aria-label="桌宠功能">
-          <button className="plugin-orb chat-orb" onClick={() => void toggleBubble()}><span>💬</span>对话</button>
+          <button className="plugin-orb chat-orb" onClick={() => void toggleBubble()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5h10a3 3 0 0 1 3 3v7a3 3 0 0 1-3 3h-7l-5 3v-4a3 3 0 0 1-1-2.5v-6a3 3 0 0 1 3-3Z" /></svg>对话</button>
           <button className="plugin-orb translate-orb" onClick={() => void toggleTranslation()}><span>译</span>翻译</button>
           <button className="plugin-orb settings-orb" onClick={() => void toggleSettings()}><span>⚙</span>设置</button>
           <button className="plugin-orb add-orb" disabled title="等待插件接入"><span>＋</span>插件</button>

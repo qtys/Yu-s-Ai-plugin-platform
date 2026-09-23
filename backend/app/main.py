@@ -56,6 +56,13 @@ PET_ACTION_PROMPT = """【桌宠动作导演工具】
 自定义示例：<pet_action>{\"expression\":\"confused\",\"emotion_label\":\"身体定住，脸探头求解\",\"action\":\"custom\",\"eyes\":\"wide\",\"mouth\":\"o\",\"blush\":0.2,\"effect\":\"question\",\"gaze\":\"cursor\",\"movement\":\"stay\",\"intensity\":0.75,\"duration_ms\":1800,\"easing\":\"spring\",\"repeat\":1,\"body_keyframes\":[{\"at\":0,\"x\":0,\"y\":0,\"rotate\":0,\"scale_x\":1,\"scale_y\":1},{\"at\":0.3,\"x\":-4,\"y\":2,\"rotate\":-7,\"scale_x\":1.05,\"scale_y\":0.95},{\"at\":0.68,\"x\":1,\"y\":-3,\"rotate\":2,\"scale_x\":0.97,\"scale_y\":1.04},{\"at\":1,\"x\":0,\"y\":0,\"rotate\":0,\"scale_x\":1,\"scale_y\":1}],\"face_keyframes\":[{\"at\":0,\"x\":0,\"y\":0,\"rotate\":0,\"scale_x\":1,\"scale_y\":1},{\"at\":0.45,\"x\":6,\"y\":-2,\"rotate\":5,\"scale_x\":1.05,\"scale_y\":1.05},{\"at\":1,\"x\":0,\"y\":0,\"rotate\":0,\"scale_x\":1,\"scale_y\":1}],\"crest_keyframes\":[{\"at\":0,\"x\":0,\"y\":0,\"rotate\":0,\"scale_x\":1,\"scale_y\":1},{\"at\":0.4,\"x\":-2,\"y\":1,\"rotate\":-22,\"scale_x\":0.9,\"scale_y\":1.12},{\"at\":1,\"x\":0,\"y\":0,\"rotate\":0,\"scale_x\":1,\"scale_y\":1}]}</pet_action>
 只调用一次动作工具或输出一个动作标签，不得输出 CSS、JavaScript 或正文中的动作说明。"""
 
+ALICE_ACTION_PROMPT = """【桌宠动作导演工具】
+当前桌宠外观是《刀剑神域》爱丽丝的 Q 版骑士。桌宠外观只决定动作，不改变角色卡中的身份、性格或说话方式。正常回答后可调用 perform_pet_action 一次；接口不支持工具时，另起一行输出一个 <pet_action> JSON 标签。动作信息不会展示给用户。
+为这个小骑士设计符合本次回复情绪的短表演：轻盈移动重心、抬头、侧身、微微屈膝、眨眼、视线停留，头发和发饰比身体慢半拍跟随。优先使用 action="custom"，用 body_keyframes、face_keyframes、crest_keyframes 分别控制身体、五官和发饰。不要把她当作软体史莱姆，不要大幅拉伸脸和服装，也不要频繁翻滚或挥舞不存在的武器。
+关键帧每层 2~7 帧，首帧 at=0、末帧 at=1，at 严格递增；每帧含 x、y、rotate、scale_x、scale_y。body 范围 x(-18~18)、y(-40~16)、rotate(-540~540)、scale(0.72~1.3)；face 范围 x/y(-10~10)、rotate(-20~20)、scale(0.75~1.25)；crest 范围 x(-5~5)、y(-7~7)、rotate(-45~45)、scale(0.7~1.35)。程序会把幅度限制到适合人物的范围。
+expression 只能是 idle、happy、shy、surprised、sleepy、confused；eyes 可选 normal、wide、soft、closed、wink_left、wink_right；mouth 可选 neutral、smile、grin、open、o、pout；blush 为 0~1。effect 可选 none、heart、sparkle、question、sweat、star、music。action 可选 none、bounce、celebrate、lean_left、lean_right、peek、shy、squish、wiggle、frontflip、backflip、custom。gaze 可选 cursor、none、center、left、right、up、down；movement 可选 stay、left、right、toward_cursor、away_cursor、wander。duration_ms 为 600~3500；intensity 为 0.3~1；repeat 为 1~3；easing 可选 linear、ease、ease_in、ease_out、ease_in_out、spring。emotion_label 不超过 24 字。
+只输出一次动作工具调用或一个动作标签，不输出 CSS、JavaScript，也不要在正文解释动作。"""
+
 PET_MOTION_FRAME_SCHEMA = {
     "type": "object",
     "properties": {
@@ -379,6 +386,7 @@ class ConversationRename(BaseModel):
 class ChatRequest(BaseModel):
     content: str = Field(min_length=1)
     pet_motion_enabled: bool = False
+    pet_model: Literal["slime", "alice"] = "slime"
     recent_pet_motions: list[str] = Field(default_factory=list, max_length=5)
 
 
@@ -669,12 +677,12 @@ async def _latest_release() -> dict:
 async def lifespan(_: FastAPI):
     configure_logging()
     init_db()
-    logger.info("backend_started version=0.15.8")
+    logger.info("backend_started version=0.15.10")
     yield
     logger.info("backend_stopped")
 
 
-app = FastAPI(title="Yu's AI API", version="0.15.8", lifespan=lifespan)
+app = FastAPI(title="Yu's AI API", version="0.15.10", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://tauri.localhost", "tauri://localhost"],
@@ -1458,7 +1466,7 @@ async def chat(conversation_id: int, payload: ChatRequest):
     if environment_context:
         model_messages.append({"role": "system", "content": "【本次对话的实时环境信息】\n" + "\n".join(environment_context)})
     if payload.pet_motion_enabled:
-        action_prompt = PET_ACTION_PROMPT
+        action_prompt = ALICE_ACTION_PROMPT if payload.pet_model == "alice" else PET_ACTION_PROMPT
         recent_motions = [item.strip()[:40] for item in payload.recent_pet_motions if item.strip()][:5]
         if recent_motions:
             action_prompt += "\n最近已经演过这些动作：" + "、".join(recent_motions) + "。本次请换一个不同的构思、节奏或分层组合，不要重复。"
@@ -1499,7 +1507,11 @@ async def chat(conversation_id: int, payload: ChatRequest):
                         "temperature": setting["temperature"], "max_tokens": setting["max_tokens"],
                     }
                     if tool_call_enabled:
-                        body["tools"] = [PET_ACTION_TOOL]
+                        tool = PET_ACTION_TOOL if payload.pet_model == "slime" else {
+                            **PET_ACTION_TOOL,
+                            "function": {**PET_ACTION_TOOL["function"], "description": "为 Q 版爱丽丝桌宠创作轻盈的分层短表演，分别设计身体、五官和头发发饰的运动。"},
+                        }
+                        body["tools"] = [tool]
                         body["tool_choice"] = "auto"
                     async with client.stream("POST", f"{setting['base_url'].rstrip('/')}/chat/completions", headers=headers, json=body) as response:
                         if response.status_code >= 400:

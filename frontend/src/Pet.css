@@ -107,6 +107,63 @@ button,input { font:inherit; }
 .pet-character.expression-shy .slime-blush { opacity:.92; transform:scale(1.18); }
 .pet-character.expression-confused .slime-mouth { transform:rotate(7deg) scaleX(.85); }
 .pet-character.dragging .slime-rig { transform:scaleX(1.09) scaleY(.92) rotate(calc(var(--gaze-x,0) * 3deg)); transition:transform .08s ease; animation:none; }
+.pet-character.model-alice { pointer-events:none; filter:drop-shadow(0 7px 8px rgba(67,77,110,.25)); animation:alice-breathe 3.6s ease-in-out infinite; }
+.pet-character.model-alice .slime-ground-shadow { left:36px; bottom:17px; width:68px; height:10px; opacity:.28; background:radial-gradient(ellipse,rgba(73,88,135,.4),transparent 73%); }
+.alice-joint { position:absolute; inset:0; pointer-events:none; }
+/* The head-only pet uses the same 140x150 orbit as the slime; facial features stay separate. */
+.alice-head-joint { position:absolute; z-index:1; inset:0; transform-origin:50% 48%; pointer-events:none; animation:alice-head-idle 4.1s ease-in-out infinite alternate; }
+.alice-head-image { position:absolute; left:7px; top:16px; width:130px; height:106px; pointer-events:auto; }
+@keyframes alice-head-idle { from { transform:translateX(calc(var(--gaze-x,0) * 1.5px)) rotate(calc(-1deg + var(--gaze-x,0) * 1.2deg)); } to { transform:translateX(calc(var(--gaze-x,0) * 1.5px)) rotate(calc(1deg + var(--gaze-x,0) * 1.2deg)); } }
+.pet-character.model-alice.dragging .alice-head-joint { animation:none; transform:rotate(calc(var(--gaze-x,0) * -2deg)); }
+.pet-character.model-alice .slime-highlight-layer { display:none; }
+.alice-facial-features { transform-origin:50% 70%; }
+.alice-iris-gaze { transform:translate(calc(var(--gaze-x,0) * 27px),calc(var(--gaze-y,0) * 17px)); transition:transform .18s ease-out; }
+.pet-character.model-alice.gaze-none .alice-iris-gaze { transform:translate(0,0); }
+.alice-blush-piece { opacity:var(--blush-strength,.72); transition:opacity .3s ease; }
+.pet-character.model-alice.expression-shy .alice-blush-piece { opacity:1; animation:alice-blush-pulse 1.2s ease-in-out infinite alternate; }
+@keyframes alice-blush-pulse { from { opacity:.72; } to { opacity:1; } }
+.alice-eyelid { display:none; fill:none; stroke:#80553e; stroke-width:13; stroke-linecap:round; animation:alice-eyelid-close .15s ease-out both; }
+@keyframes alice-eyelid-close { from { opacity:0; transform:translateY(-12px); } to { opacity:1; transform:translateY(0); } }
+.pet-character.model-alice:is(.frame-blink,.eyes-closed,.eyes-soft,.expression-sleepy) .alice-eye-piece { display:none; }
+.pet-character.model-alice:is(.frame-blink,.eyes-closed,.eyes-soft,.expression-sleepy) .alice-eyelid { display:block; }
+.pet-character.model-alice:is(.frame-wink,.eyes-wink-left) .alice-eye-piece-left,
+.pet-character.model-alice.eyes-wink-right .alice-eye-piece-right { display:none; }
+.pet-character.model-alice:is(.frame-wink,.eyes-wink-left) .alice-eyelid-left,
+.pet-character.model-alice.eyes-wink-right .alice-eyelid-right { display:block; }
+.alice-mouth-drawing { fill:none; stroke:#9d4c4b; stroke-width:8; stroke-linecap:round; stroke-linejoin:round; }
+.alice-mouth-drawing > * { display:none; }
+.alice-mouth-drawing .alice-mouth-open,.alice-mouth-drawing .alice-mouth-o { transform-box:fill-box; transform-origin:center; animation:alice-mouth-talk .46s ease-in-out infinite alternate; }
+@keyframes alice-mouth-talk { from { transform:scaleY(.72); } to { transform:scaleY(1.08); } }
+.pet-character.model-alice:is(.mouth-smile,.mouth-grin,.mouth-open,.mouth-o,.mouth-pout,.frame-surprised) .alice-mouth-piece { display:none; }
+.pet-character.model-alice.mouth-smile .alice-mouth-smile { display:block; }
+.pet-character.model-alice:is(.mouth-grin,.mouth-open) .alice-mouth-open { display:block; fill:#a75569; }
+.pet-character.model-alice:is(.mouth-o,.frame-surprised) .alice-mouth-o { display:block; fill:#a75569; }
+.pet-character.model-alice.mouth-pout .alice-mouth-pout { display:block; }
+.pet-character.model-alice .motion-effect i { color:#f9d985; text-shadow:none; filter:drop-shadow(0 1px 2px rgba(115,79,24,.5)); }
+.pet-character.model-alice .motion-effect svg { display:block; width:19px; height:19px; fill:currentColor; overflow:visible; }
+.pet-character.model-alice .motion-effect.effect-heart i { color:#eb8fa9; }
+.pet-character.model-alice .motion-effect.effect-question i,.pet-character.model-alice .motion-effect.effect-music i { color:#8e80ce; }
+.pet-character.model-alice .motion-effect.effect-sweat i { color:#83c9ec; }
+.pet-character.model-alice .pet-ripple { border-color:rgba(236,196,109,.75); }
+.pet-character.model-alice .pet-emote { color:#d8ad58; text-shadow:0 1px 3px #fff8df; }
+.pet-character.model-alice.direct-celebrate .slime-body-layer,.pet-character.model-alice.direct-lean-left .slime-body-layer,.pet-character.model-alice.direct-lean-right .slime-body-layer,.pet-character.model-alice.direct-peek .slime-body-layer,.pet-character.model-alice.direct-frontflip .slime-body-layer,.pet-character.model-alice.direct-backflip .slime-body-layer,.pet-character.model-alice.travel-left .slime-body-layer,.pet-character.model-alice.travel-right .slime-body-layer { animation:none; }
+.pet-character.model-alice.direct-celebrate .slime-face-layer,.pet-character.model-alice.direct-shy .slime-face-layer,.pet-character.model-alice.direct-frontflip .slime-face-layer,.pet-character.model-alice.direct-backflip .slime-face-layer,.pet-character.model-alice.travel-left .slime-face-layer,.pet-character.model-alice.travel-right .slime-face-layer { animation:none; }
+.pet-character.model-alice.direct-lean-left .slime-orbit { animation:alice-lean-left 1.8s ease-in-out; }
+.pet-character.model-alice.direct-lean-right .slime-orbit { animation:alice-lean-right 1.8s ease-in-out; }
+.pet-character.model-alice.direct-peek .slime-orbit { animation:alice-peek 1.7s ease-in-out; }
+.pet-character.model-alice.direct-celebrate .slime-orbit { animation:alice-cheer .52s ease-in-out 3; }
+.pet-character.model-alice.travel-left .slime-orbit { animation:alice-step-left .72s ease-in-out; }
+.pet-character.model-alice.travel-right .slime-orbit { animation:alice-step-right .72s ease-in-out; }
+@keyframes alice-lean-left { 0%,100% { transform:rotate(0); } 40%,65% { transform:rotate(-5deg) translateX(-2px); } }
+@keyframes alice-lean-right { 0%,100% { transform:rotate(0); } 40%,65% { transform:rotate(5deg) translateX(2px); } }
+@keyframes alice-peek { 0%,100% { transform:translateX(0) rotate(0); } 45%,65% { transform:translateX(3px) rotate(3deg); } }
+@keyframes alice-cheer { 0%,100% { transform:translateY(0); } 50% { transform:translateY(-3px) rotate(2deg); } }
+@keyframes alice-step-left { 0%,100% { transform:translateX(0); } 50% { transform:translateX(-3px) rotate(-2deg); } }
+@keyframes alice-step-right { 0%,100% { transform:translateX(0); } 50% { transform:translateX(3px) rotate(2deg); } }
+.pet-character.model-alice.dragging .slime-rig { transform:scaleX(1.03) scaleY(.97) rotate(calc(var(--gaze-x,0) * 2deg)); }
+.pet-character.model-alice.direct-squish .slime-rig { animation:alice-curtsy .8s ease-in-out; }
+@keyframes alice-breathe { 0%,100% { transform:translateY(0); } 50% { transform:translateY(-3px); } }
+@keyframes alice-curtsy { 0%,100% { transform:translateY(0) rotate(0); } 50% { transform:translateY(3px) rotate(5deg); } }
 .pet-ripple { position:absolute; left:50%; top:58%; width:70px; height:45px; border:3px solid rgba(105,211,255,.8); border-radius:50%; opacity:0; pointer-events:none; transform:translate(-50%,-50%) scale(.45); }
 .mood-tap .pet-ripple { animation:pet-ripple .55s ease-out; }
 .pet-emote { position:absolute; z-index:2; top:20px; right:5px; color:#147fc4; font-size:20px; font-weight:800; text-shadow:0 2px 6px white; pointer-events:none; animation:emote-float .8s ease-in-out infinite alternate; }
@@ -147,6 +204,7 @@ button,input { font:inherit; }
 .above-left .add-orb,.below-left .add-orb { left:159px; }
 .above-left .close-orb,.below-left .close-orb { left:85px; }
 .plugin-orb span { font-size:16px; line-height:17px; }
+.plugin-orb svg { width:17px; height:17px; justify-self:center; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
 .plugin-orb:disabled { opacity:.58; cursor:default; filter:saturate(.4); }
 .translation-panel { display:flex; flex-direction:column; gap:8px; }
 .download-model { width:100%; padding:8px 10px; border:1px solid #83caef; border-radius:10px; color:#096da8; background:#e4f6ff; cursor:pointer; }
@@ -177,6 +235,10 @@ button,input { font:inherit; }
 .pet-action-controls { display:flex; gap:8px; }
 .pet-action-controls button { flex:1; border:1px solid #8bceef; border-radius:9px; padding:6px; color:#0874b8; background:#dff3ff; cursor:pointer; font-size:12px; }
 .pet-action-controls button:disabled { opacity:.5; cursor:default; }
+.pet-model-picker { display:grid; grid-template-columns:66px 1fr 1fr; align-items:center; gap:6px; }
+.pet-controls .pet-model-picker span { color:#35657f; font-size:11px; text-align:left; }
+.pet-model-picker button { min-width:0; padding:7px 3px; border:1px solid #9acfe9; border-radius:9px; color:#2b6b8e; background:#f8fdff; font-size:11px; cursor:pointer; }
+.pet-model-picker button.selected { border-color:#237dc5; color:#095b9c; background:#dff2ff; box-shadow:inset 0 0 0 1px #237dc5; font-weight:700; }
 .pet-controls label { display:grid; grid-template-columns:66px 1fr 38px; align-items:center; gap:7px; font-size:11px; color:#35657f; }
 .pet-controls input { width:100%; accent-color:#168bd0; }
 .pet-controls span { text-align:right; }
@@ -207,6 +269,55 @@ button,input { font:inherit; }
 .speech-bubble form input:focus { border-color:#198fd4; box-shadow:0 0 0 3px rgba(25,143,212,.12); }
 .speech-bubble form button { border:0; border-radius:11px; background:linear-gradient(145deg,#58c9ff,#167ac7); color:white; font-size:19px; cursor:pointer; }
 .speech-bubble form button:disabled { opacity:.45; }
+.plugin-orb:not(:disabled):hover { filter:brightness(1.08); }
+.plugin-orb:not(:disabled):active { filter:brightness(.94); }
+.plugin-orb:focus-visible { outline:2px solid #214f8c; outline-offset:2px; }
+.pet-stage.model-alice { --alice-ink:#55412b; --alice-muted:#80694b; --alice-border:#d5af76; --alice-button:linear-gradient(145deg,#fff6dc,#e6c38c); --alice-shadow:rgba(110,76,35,.21); }
+.pet-stage.model-alice .plugin-orb { color:var(--alice-ink); border-color:#fffaf0; background:var(--alice-button); box-shadow:0 7px 18px var(--alice-shadow),inset 0 1px rgba(255,255,255,.8); }
+.pet-stage.model-alice .plugin-orb:focus-visible { outline-color:#9c7139; }
+.pet-stage.model-alice .speech-bubble,
+.pet-stage.model-alice .proactive-bubble { color:var(--alice-ink); background:rgba(255,250,239,.97); border-color:var(--alice-border); box-shadow:0 12px 35px var(--alice-shadow); }
+.pet-stage.model-alice .speech-bubble::after { border-right-color:var(--alice-border); }
+.pet-stage.model-alice .dialog-resize-handle::after,
+.pet-stage.model-alice .dialog-height-handle::after { background:rgba(169,122,61,.5); box-shadow:none; }
+.pet-stage.model-alice .speech-head,
+.pet-stage.model-alice .proactive-bubble small,
+.pet-stage.model-alice .proactive-bubble a { color:#805522; }
+.pet-stage.model-alice .speech-head button,
+.pet-stage.model-alice .speech-bubble form button,
+.pet-stage.model-alice .translation-form button,
+.pet-stage.model-alice .pet-action-controls button,
+.pet-stage.model-alice .pet-model-picker button,
+.pet-stage.model-alice .download-model,
+.pet-stage.model-alice .proactive-bubble button { color:var(--alice-ink); border-color:var(--alice-border); background:var(--alice-button); }
+.pet-stage.model-alice .speech-head .continuous.active,
+.pet-stage.model-alice .pet-model-picker button.selected { color:#593f1e; border-color:#b9843f; background:#f1d19a; box-shadow:inset 0 0 0 1px #b9843f; }
+.pet-stage.model-alice .pet-controls,
+.pet-stage.model-alice .translation-result,
+.pet-stage.model-alice .motion-debug code,
+.pet-stage.model-alice .pet-reply .markdown-content pre { color:var(--alice-ink); background:#fff0d6; }
+.pet-stage.model-alice .pet-controls label,
+.pet-stage.model-alice .pet-controls .pet-model-picker span,
+.pet-stage.model-alice .motion-debug,
+.pet-stage.model-alice .motion-debug dd { color:var(--alice-ink); }
+.pet-stage.model-alice .motion-debug { border-color:#e0c79f; background:#fff8eb; }
+.pet-stage.model-alice .motion-debug summary,
+.pet-stage.model-alice .motion-debug dt { color:var(--alice-muted); }
+.pet-stage.model-alice .pet-controls input { accent-color:#b78340; }
+.pet-stage.model-alice .pet-controls input[type="range"] { appearance:none; height:6px; border-radius:999px; background:#e8d4b3; cursor:pointer; }
+.pet-stage.model-alice .pet-controls input[type="range"]::-webkit-slider-thumb { appearance:none; width:16px; height:16px; border:2px solid #fff9ea; border-radius:50%; background:#b78340; box-shadow:0 1px 4px rgba(100,67,28,.25); }
+.pet-stage.model-alice .pet-controls input[type="range"]::-moz-range-thumb { width:13px; height:13px; border:2px solid #fff9ea; border-radius:50%; background:#b78340; box-shadow:0 1px 4px rgba(100,67,28,.25); }
+.pet-stage.model-alice :is(.pet-controls,.pet-reply,.translation-result,.proactive-bubble,.motion-debug code) { scrollbar-color:#c6a575 #f7edda; scrollbar-width:thin; }
+.pet-stage.model-alice .speech-bubble form input,
+.pet-stage.model-alice .translation-form textarea { color:var(--alice-ink); border-color:#dcc39d; background:#fffdf6; }
+.pet-stage.model-alice .speech-bubble form input:focus,
+.pet-stage.model-alice .translation-form textarea:focus { border-color:#b78340; box-shadow:0 0 0 3px rgba(183,131,64,.16); }
+.pet-stage.model-alice .download-progress { color:var(--alice-muted); }
+.pet-stage.model-alice .download-progress-track { background:#ead8b9; }
+.pet-stage.model-alice .download-progress-track span,
+.pet-stage.model-alice .download-progress.installing .download-progress-track span { background:linear-gradient(90deg,#f5d6a2,#b78340); }
+.pet-stage.model-alice .download-progress.error { color:#a74645; }
+.pet-stage.model-alice .download-progress.error .download-progress-track span { background:#cc6e67; }
 @keyframes pet-float { 0%,100%{transform:translateY(0) rotate(-1deg)} 50%{transform:translateY(-8px) rotate(1deg)} }
 @keyframes pet-think { from{transform:translateY(-3px) scale(1)} to{transform:translateY(-10px) scale(1.035)} }
 @keyframes orb-pop { from{opacity:0; transform:scale(.55)} to{opacity:1; transform:scale(1)} }

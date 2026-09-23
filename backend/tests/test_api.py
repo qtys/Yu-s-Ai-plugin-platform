@@ -423,10 +423,12 @@ def test_chat_accepts_streamed_pet_action_tool_call(monkeypatch):
             client.put("/api/settings", json=settings)
             character = client.post("/api/characters", json={"name": "工具角色"}).json()
             conversation = client.post("/api/conversations", json={"character_id": character["id"]}).json()
-            response = client.post(f"/api/conversations/{conversation['id']}/chat", json={"content": "演一个动作", "pet_motion_enabled": True})
+            response = client.post(f"/api/conversations/{conversation['id']}/chat", json={"content": "演一个动作", "pet_motion_enabled": True, "pet_model": "alice"})
             events = [json.loads(line) for line in response.text.splitlines()]
             assert "tools" in uploaded[0]
             assert "tool_choice" in uploaded[0]
+            assert "Q 版爱丽丝" in uploaded[0]["tools"][0]["function"]["description"]
+            assert any("桌宠外观只决定动作" in message["content"] for message in uploaded[0]["messages"] if message["role"] == "system")
             assert "".join(event.get("token", "") for event in events) == "好呀！"
             assert events[-1]["pet_motion"]["emotionLabel"] == "侧跳后回头"
             assert events[-1]["pet_motion"]["effect"] == "star"
@@ -537,7 +539,7 @@ def test_update_check_and_verified_download(monkeypatch):
         with TestClient(app) as client:
             check = client.get("/api/system/update").json()
             assert check["available"] is True
-            assert check["current_version"] == "0.15.8"
+            assert check["current_version"] == "0.15.10"
             response = client.post("/api/system/update/download")
             events = [json.loads(line) for line in response.text.splitlines()]
             assert events[-1]["stage"] == "complete"

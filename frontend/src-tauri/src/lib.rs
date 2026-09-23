@@ -23,6 +23,7 @@ static CONTINUOUS_TRANSLATION: AtomicBool = AtomicBool::new(false);
 static PET_INTERACTION_MODE: AtomicU8 = AtomicU8::new(0);
 static PET_CURSOR_IGNORED: AtomicBool = AtomicBool::new(false);
 static PET_ALIGN_LEFT: AtomicBool = AtomicBool::new(false);
+static PET_MODEL_ALICE: AtomicBool = AtomicBool::new(false);
 static PET_PROACTIVE_HEIGHT: AtomicU32 = AtomicU32::new(0);
 static PET_SCALE_MILLI: AtomicU32 = AtomicU32::new(1000);
 static PET_DIALOG_WIDTH: AtomicU32 = AtomicU32::new(430);
@@ -366,9 +367,10 @@ fn set_continuous_translation(enabled: bool) -> bool {
 }
 
 #[tauri::command]
-fn set_pet_interaction_mode(window: WebviewWindow, mode: u8, align_left: bool, proactive_height: u32) -> Result<(), String> {
+fn set_pet_interaction_mode(window: WebviewWindow, mode: u8, align_left: bool, proactive_height: u32, model: String) -> Result<(), String> {
   PET_INTERACTION_MODE.store(mode.min(3), Ordering::Relaxed);
   PET_ALIGN_LEFT.store(align_left, Ordering::Relaxed);
+  PET_MODEL_ALICE.store(model == "alice", Ordering::Relaxed);
   PET_PROACTIVE_HEIGHT.store(proactive_height.min(250), Ordering::Relaxed);
   PET_CURSOR_IGNORED.store(false, Ordering::Relaxed);
   window.set_ignore_cursor_events(false).map_err(|error| error.to_string())
@@ -455,12 +457,9 @@ fn start_selection_monitor(app: AppHandle) {
             };
             let delta_x = base_x - (pet_left + 70.0);
             let delta_y = base_y - (pet_top + 75.0);
-            let distance = (delta_x * delta_x + delta_y * delta_y).sqrt();
-            let (gaze_x, gaze_y) = if distance < 8.0 {
-              (0.0, 0.0)
-            } else {
-              ((delta_x / distance).clamp(-1.0, 1.0), (delta_y / distance).clamp(-1.0, 1.0))
-            };
+            // The soft radius avoids a direction jump as the cursor crosses the pet.
+            let distance = (delta_x * delta_x + delta_y * delta_y + 60.0_f64.powi(2)).sqrt();
+            let (gaze_x, gaze_y) = (delta_x / distance, delta_y / distance);
             let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).map(|value| value.as_millis() as u64).unwrap_or(0);
             let previous = PET_GAZE_LAST_EMIT_MS.load(Ordering::Relaxed);
             if now_ms.saturating_sub(previous) >= 40
@@ -473,7 +472,11 @@ fn start_selection_monitor(app: AppHandle) {
           } else if let Some((base_x, base_y)) = geometry {
               let placement_left = PET_ALIGN_LEFT.load(Ordering::Relaxed);
               let pet_left = if placement_left { 36.0 } else { 74.0 };
-              let over_pet = base_x >= pet_left && base_x <= pet_left + 140.0 && base_y >= 100.0 && base_y <= 250.0;
+              let over_pet = if PET_MODEL_ALICE.load(Ordering::Relaxed) {
+                base_x >= pet_left + 11.0 && base_x <= pet_left + 129.0 && base_y >= 82.0 && base_y <= 259.0
+              } else {
+                base_x >= pet_left && base_x <= pet_left + 140.0 && base_y >= 100.0 && base_y <= 250.0
+              };
               if mode == 0 {
                 over_pet
               } else if mode == 3 {
