@@ -183,6 +183,38 @@ def test_translation_download_resumes_partial_file():
         assert events[-1]["resumed"] is True
 
 
+def test_chat_rejects_conversation_from_another_character(monkeypatch):
+    uploaded_requests = []
+
+    async def stream(request):
+        uploaded_requests.append(json.loads(request.content))
+        return httpx.Response(200, content='data: {"choices":[{"delta":{"content":"你好"}}]}\ndata: [DONE]\n'.encode("utf-8"))
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr("app.main.httpx.AsyncClient", lambda **kwargs: original_client(transport=httpx.MockTransport(stream), **kwargs))
+    with tempfile.TemporaryDirectory() as directory:
+        database.DATA_DIR = database.Path(directory)
+        database.DB_PATH = database.DATA_DIR / "character-switch.db"
+        with TestClient(app) as client:
+            settings = client.get("/api/settings").json()
+            settings["api_key"] = "mock"
+            client.put("/api/settings", json=settings)
+            first = client.post("/api/characters", json={"name": "旧角色", "personality": "只谈旧角色"}).json()
+            second = client.post("/api/characters", json={"name": "新角色", "personality": "只谈新角色"}).json()
+            old_conversation = client.post("/api/conversations", json={"character_id": first["id"]}).json()
+            wrong = client.post(f"/api/conversations/{old_conversation['id']}/chat", json={"content": "测试", "character_id": second["id"]})
+            assert wrong.status_code == 409
+            assert client.get(f"/api/conversations/{old_conversation['id']}/messages").json() == []
+            assert uploaded_requests == []
+
+            new_conversation = client.post("/api/conversations", json={"character_id": second["id"]}).json()
+            response = client.post(f"/api/conversations/{new_conversation['id']}/chat", json={"content": "测试", "character_id": second["id"]})
+            assert response.status_code == 200
+            prompt = "\n".join(message["content"] for message in uploaded_requests[0]["messages"] if message["role"] == "system")
+            assert "只谈新角色" in prompt
+            assert "只谈旧角色" not in prompt
+
+
 def test_chat_streams_visible_tokens_and_saves_reply(monkeypatch):
     chunks = [
         b'data:{"choices":[{"delta":{"content":"\xe4\xbd\xa0\xe5\xa5\xbd"}}]}\n',
@@ -541,7 +573,7 @@ def test_update_check_and_verified_download(monkeypatch):
         with TestClient(app) as client:
             check = client.get("/api/system/update").json()
             assert check["available"] is True
-            assert check["current_version"] == "0.15.12"
+            assert check["current_version"] == "0.15.14"
             response = client.post("/api/system/update/download")
             events = [json.loads(line) for line in response.text.splitlines()]
             assert events[-1]["stage"] == "complete"

@@ -1,10 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import MessageContent from "./MessageContent";
 import type { MessageDisplayMode } from "./MessageContent";
+import { isPluginEnabled } from "./plugins";
+import type { PluginInfo } from "./plugins";
 
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:8000/api";
 const WAITING_MESSAGE = "本地服务还没准备好，请稍后再点我。";
@@ -497,6 +499,7 @@ export default function Pet() {
   const proactiveContextRef = useRef({ character, expanded: false, menuOpen: false, busy: false, dragging: false });
   proactiveContextRef.current = { character, expanded: open || translationOpen || settingsOpen, menuOpen, busy, dragging };
   const [messageDisplayMode, setMessageDisplayMode] = useState<MessageDisplayMode>("markdown");
+  const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [petSize, setPetSize] = useState(
     () => Number(localStorage.getItem("yus-ai-pet-size")) || 100,
   );
@@ -671,7 +674,7 @@ export default function Pet() {
   }, [expanded, dragging, busy]);
 
   useEffect(() => {
-    if (!proactiveEnabled || aiProactiveEnabled !== false || expanded || (timeAwareEnabled && dayPeriod === "night")) return;
+    if (!isPluginEnabled(plugins, "proactive") || !proactiveEnabled || aiProactiveEnabled !== false || expanded || (timeAwareEnabled && dayPeriod === "night")) return;
     const showGreeting = () => {
       const greeting = roleAwareGreeting(roleAwareEnabled ? character : null, timeAwareEnabled ? dayPeriod : "daytime");
       setProactiveSources([]);
@@ -689,7 +692,7 @@ export default function Pet() {
     const recurring = window.setInterval(showGreeting, 30 * 60 * 1000);
     return () => { window.clearTimeout(first); window.clearInterval(recurring); };
   // oxlint-disable-next-line react-hooks/exhaustive-deps -- greeting scheduling intentionally changes only with its user-facing inputs
-  }, [proactiveEnabled, aiProactiveEnabled, timeAwareEnabled, roleAwareEnabled, dayPeriod, character, expanded]);
+  }, [proactiveEnabled, aiProactiveEnabled, timeAwareEnabled, roleAwareEnabled, dayPeriod, character, expanded, plugins]);
 
   useEffect(() => {
     let disposed = false;
@@ -697,11 +700,11 @@ export default function Pet() {
       if (proactiveInFlightRef.current || pendingProactiveRef.current) return false;
       proactiveInFlightRef.current = true;
       try {
-        const config = await request<{enabled: boolean}>("/plugins/proactive");
+        const config = await request<{enabled: boolean; plugin_enabled: boolean}>("/plugins/proactive");
         if (disposed) return false;
-        setAiProactiveEnabled(config.enabled);
+        setAiProactiveEnabled(config.enabled && config.plugin_enabled);
         const { character, expanded, menuOpen, busy, dragging } = proactiveContextRef.current;
-        if (!config.enabled || !character || expanded || menuOpen || busy || dragging || (!desktop && document.hidden) || (desktop && !(await getCurrentWindow().isVisible()))) return false;
+        if (!config.enabled || !config.plugin_enabled || !character || expanded || menuOpen || busy || dragging || (!desktop && document.hidden) || (desktop && !(await getCurrentWindow().isVisible()))) return false;
         const result = await request<{skipped?: boolean; content: string; conversation_id: number; sources: {title: string; url: string}[]}>("/plugins/proactive/generate", { method: "POST", body: JSON.stringify({ character_id: character.id, conversation_id: conversationRef.current }) });
         if (result.skipped) return true;
         if (!disposed && proactiveContextRef.current.character?.id === character.id) {
@@ -749,13 +752,19 @@ export default function Pet() {
     let retryTimer: number | undefined;
     async function loadContext() {
       try {
-        const [characters, petState, displaySettings, proactiveConfig] = await Promise.all([
+        const [characters, petState, displaySettings, proactiveConfig, installedPlugins] = await Promise.all([
           request<Character[]>("/characters"),
           request<PetState>("/pet/state"),
           request<DisplaySettings>("/settings"),
           request<{enabled: boolean}>("/plugins/proactive"),
+          request<PluginInfo[]>("/plugins"),
         ]);
-        setAiProactiveEnabled(proactiveConfig.enabled);
+        setPlugins(installedPlugins);
+        setAiProactiveEnabled(proactiveConfig.enabled && isPluginEnabled(installedPlugins, "proactive"));
+        if (!isPluginEnabled(installedPlugins, "proactive")) {
+          setProactiveMessage("");
+          setPendingProactive(null);
+        }
         setMessageDisplayMode(displaySettings.message_display_mode);
         if (desktop && !positionRestoredRef.current) {
           if (petState.position_x !== null && petState.position_y !== null) {
@@ -793,6 +802,11 @@ export default function Pet() {
       window.removeEventListener("focus", loadContext);
     };
   }, []);
+
+  useEffect(() => {
+    if (translationOpen && !isPluginEnabled(plugins, "translation")) void toggleTranslation();
+  // oxlint-disable-next-line react-hooks/exhaustive-deps -- only a plugin state change should close an already-open translation panel
+  }, [plugins, translationOpen]);
 
   useEffect(() => {
     if (!desktop) return;
@@ -1092,6 +1106,7 @@ export default function Pet() {
 
   async function toggleTranslation() {
     const nextOpen = !translationOpen;
+    if (nextOpen && !isPluginEnabled(plugins, "translation")) return;
     if (nextOpen) rememberFeature("translation");
     if (!nextOpen && continuousTranslationRef.current) {
       continuousTranslationRef.current = false;
@@ -1218,7 +1233,7 @@ export default function Pet() {
     if (expanded || didDragRef.current) return;
     window.clearTimeout(menuClickTimerRef.current);
     setMenuOpen(false);
-    if (lastFeatureRef.current === "translation") void toggleTranslation();
+    if (lastFeatureRef.current === "translation" && isPluginEnabled(plugins, "translation")) void toggleTranslation();
     else if (lastFeatureRef.current === "settings") void toggleSettings();
     else void toggleBubble();
   }
@@ -1246,6 +1261,15 @@ export default function Pet() {
     setTranslationOpen(false);
     setSettingsOpen(false);
     await invoke("show_main_window");
+  }
+
+  async function openPluginManager() {
+    if (!desktop) {
+      window.location.href = "/";
+      return;
+    }
+    await returnToMain();
+    await emit("open-plugin-manager");
   }
 
   async function hidePet() {
@@ -1430,7 +1454,7 @@ export default function Pet() {
       const response = await fetch(`${API}/conversations/${id}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content, pet_motion_enabled: motionEnabled, pet_model: petModel, recent_pet_motions: recentMotionLabelsRef.current }),
+        body: JSON.stringify({ content, character_id: character.id, pet_motion_enabled: motionEnabled, pet_model: petModel, recent_pet_motions: recentMotionLabelsRef.current }),
       });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
@@ -1504,7 +1528,7 @@ export default function Pet() {
             </div>
           </div>
           <div className={`pet-reply ${busy ? "thinking" : ""}`}>
-            <MessageContent content={reply} mode={messageDisplayMode} />
+            <MessageContent content={reply} mode={isPluginEnabled(plugins, "message_display") ? messageDisplayMode : "raw"} />
           </div>
           <form onSubmit={send}>
             <input value={input} onChange={(event) => setInput(event.target.value)} placeholder="和我说点什么……" autoFocus />
@@ -1664,9 +1688,9 @@ export default function Pet() {
       {menuOpen && !expanded && (
         <nav className="pet-plugin-menu" aria-label="桌宠功能">
           <button className="plugin-orb chat-orb" onClick={() => void toggleBubble()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5h10a3 3 0 0 1 3 3v7a3 3 0 0 1-3 3h-7l-5 3v-4a3 3 0 0 1-1-2.5v-6a3 3 0 0 1 3-3Z" /></svg>对话</button>
-          <button className="plugin-orb translate-orb" onClick={() => void toggleTranslation()}><span>译</span>翻译</button>
+          {isPluginEnabled(plugins, "translation") && <button className="plugin-orb translate-orb" onClick={() => void toggleTranslation()}><span>译</span>翻译</button>}
           <button className="plugin-orb settings-orb" onClick={() => void toggleSettings()}><span>⚙</span>设置</button>
-          <button className="plugin-orb add-orb" disabled title="等待插件接入"><span>＋</span>插件</button>
+          <button className="plugin-orb add-orb" onClick={() => void openPluginManager()} title="打开插件管理"><span>＋</span>插件</button>
           <button className="plugin-orb close-orb" onClick={() => void hidePet()}><span>×</span>关闭</button>
         </nav>
       )}

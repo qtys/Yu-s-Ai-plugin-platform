@@ -219,6 +219,34 @@
   border-radius:18px;
   background:var(--panel);
 }
+.plugin-manager {
+  display:grid;
+  gap:14px;
+  margin-bottom:18px;
+  padding:22px;
+  border:1px solid var(--line);
+  border-radius:18px;
+  background:var(--panel);
+  scroll-margin-top:24px;
+}
+.plugin-manager-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:10px; }
+.plugin-manager-card {
+  display:flex;
+  min-width:0;
+  flex-direction:column;
+  align-items:flex-start;
+  gap:9px;
+  padding:14px;
+  border:1px solid var(--line);
+  border-radius:13px;
+  background:var(--surface);
+  color:var(--text);
+}
+.plugin-manager-card > div { display:flex; width:100%; flex-wrap:wrap; justify-content:space-between; gap:4px 8px; }
+.plugin-manager-card p { margin:0; font-size:12px; line-height:1.5; }
+.plugin-manager-card small,.plugin-manager > small { color:var(--muted); font-size:11px; line-height:1.5; }
+.plugin-manager-card > button { margin-top:auto; }
+.plugin-manager button:disabled { opacity:.6; cursor:not-allowed; }
 .autostart-switch {
   display:flex;
   align-items:center;

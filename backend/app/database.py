@@ -71,6 +71,11 @@ def init_db() -> None:
                 position_y REAL
             );
             INSERT OR IGNORE INTO pet_state (id) VALUES (1);
+
+            CREATE TABLE IF NOT EXISTS plugin_states (
+                plugin_id TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL CHECK (enabled IN (0, 1))
+            );
             """
         )
         existing = {row[1] for row in db.execute("PRAGMA table_info(characters)")}

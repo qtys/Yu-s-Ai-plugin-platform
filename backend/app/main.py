@@ -29,6 +29,7 @@ from .database import connect, init_db
 from .logging_config import LOG_FILE, configure_logging
 from .translation import install_package, package_status, translate_text
 from .proactive import EmptyProactiveReply, generate_proactive
+from .plugins import is_enabled as plugin_is_enabled, list_installed as list_installed_plugins, set_enabled as set_plugin_enabled
 from .documents import DOCUMENT_DIR, chunk_pages, decode_document, extract_pages, extract_visuals, relevant_chunks, remove_original, save_original
 
 MODEL_GENERATION_LOCK = asyncio.Lock()
@@ -337,6 +338,10 @@ class ProactiveConfig(BaseModel):
     rss_url: str = Field("https://www.chinanews.com.cn/rss/scroll-news.xml", max_length=1000, pattern=r"^https://")
 
 
+class PluginStateUpdate(BaseModel):
+    enabled: bool
+
+
 class ProactiveRequest(BaseModel):
     character_id: int
     conversation_id: int | None = None
@@ -388,6 +393,7 @@ class ConversationRename(BaseModel):
 
 class ChatRequest(BaseModel):
     content: str = Field(min_length=1)
+    character_id: int | None = None
     pet_motion_enabled: bool = False
     pet_model: Literal["slime", "alice"] = "slime"
     recent_pet_motions: list[str] = Field(default_factory=list, max_length=5)
@@ -738,12 +744,12 @@ async def lifespan(_: FastAPI):
     UPDATE_RELEASE_CACHE = None
     configure_logging()
     init_db()
-    logger.info("backend_started version=0.15.12")
+    logger.info("backend_started version=0.15.14")
     yield
     logger.info("backend_stopped")
 
 
-app = FastAPI(title="Yu's AI API", version="0.15.12", lifespan=lifespan)
+app = FastAPI(title="Yu's AI API", version="0.15.14", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://tauri.localhost", "tauri://localhost"],
@@ -1012,9 +1018,39 @@ def get_pet_state():
     return rows("SELECT position_x, position_y FROM pet_state WHERE id = 1")[0]
 
 
+@app.get("/api/plugins")
+def get_installed_plugins():
+    with connect() as db:
+        return list_installed_plugins(db)
+
+
+@app.put("/api/plugins/{plugin_id}/state")
+async def update_plugin_state(plugin_id: str, payload: PluginStateUpdate):
+    try:
+        with connect() as db:
+            set_plugin_enabled(db, plugin_id, payload.enabled)
+    except KeyError as exc:
+        raise HTTPException(404, "插件不存在") from exc
+    if plugin_id == "proactive":
+        if payload.enabled:
+            reschedule_proactive_from_now()
+        else:
+            await cancel_active_proactive_generation()
+    logger.info("plugin_state_changed plugin_id=%s enabled=%s", plugin_id, payload.enabled)
+    return {"id": plugin_id, "enabled": payload.enabled}
+
+
+def require_plugin_enabled(plugin_id: str) -> None:
+    with connect() as db:
+        if not plugin_is_enabled(db, plugin_id):
+            raise HTTPException(409, "插件已关闭，请先在设置中启用")
+
+
 @app.get("/api/plugins/proactive")
 def get_proactive_config():
-    config = rows("SELECT * FROM proactive_plugin WHERE id=1")[0]
+    with connect() as db:
+        config = dict(db.execute("SELECT * FROM proactive_plugin WHERE id=1").fetchone())
+        config["plugin_enabled"] = plugin_is_enabled(db, "proactive")
     config["enabled"] = bool(config["enabled"])
     config["news_enabled"] = bool(config["news_enabled"])
     config["randomize_interval"] = bool(config["randomize_interval"])
@@ -1048,6 +1084,9 @@ async def proactive_generate(payload: ProactiveRequest):
     global PROACTIVE_GENERATION_TASK
     if MODEL_GENERATION_LOCK.locked():
         return {"skipped": True, "reason": "chat_busy"}
+    with connect() as db:
+        if not plugin_is_enabled(db, "proactive"):
+            return {"skipped": True, "reason": "plugin_disabled"}
     now = datetime.now().astimezone()
     with connect() as db:
         db.execute("BEGIN IMMEDIATE")
@@ -1088,6 +1127,8 @@ async def proactive_generate(payload: ProactiveRequest):
             db.execute("UPDATE proactive_plugin SET failure_count=?,last_error=?,next_due=?,total_tokens=total_tokens+? WHERE id=1", (failure_count, detail, time.time() + delay, getattr(exc, "usage", 0)))
         raise HTTPException(502, f"{detail}；约 {delay} 秒后自动重试，连续失败会降低重试频率") from exc
     with connect() as db:
+        if not plugin_is_enabled(db, "proactive"):
+            return {"skipped": True, "reason": "plugin_disabled"}
         if not db.execute("SELECT id FROM characters WHERE id=?", (payload.character_id,)).fetchone():
             return {"skipped": True, "reason": "character_deleted"}
         if conversation_id is None:
@@ -1114,11 +1155,13 @@ def update_pet_state(payload: PetStateUpdate):
 
 @app.get("/api/translation/packages")
 def translation_packages():
+    require_plugin_enabled("translation")
     return package_status()
 
 
 @app.post("/api/translation/packages/{source}/{target}")
 async def download_translation_package(source: str, target: str):
+    require_plugin_enabled("translation")
     try:
         mirror = rows("SELECT translation_mirror_url FROM settings WHERE id=1")[0]["translation_mirror_url"]
         await install_package(source, target, mirror_url=mirror)
@@ -1132,6 +1175,7 @@ async def download_translation_package(source: str, target: str):
 
 @app.post("/api/translation")
 def translate(payload: TranslationRequest):
+    require_plugin_enabled("translation")
     if payload.source == payload.target:
         return {"translation": payload.text}
     try:
@@ -1182,6 +1226,7 @@ def delete_character(character_id: int):
 
 @app.post("/api/translation/packages/{source}/{target}/stream")
 async def stream_translation_package(source: str, target: str):
+    require_plugin_enabled("translation")
     async def events():
         queue: asyncio.Queue[dict] = asyncio.Queue()
         mirror = rows("SELECT translation_mirror_url FROM settings WHERE id=1")[0]["translation_mirror_url"]
@@ -1516,6 +1561,8 @@ async def chat(conversation_id: int, payload: ChatRequest):
         ).fetchone()
         if not conversation:
             raise HTTPException(404, "会话不存在")
+        if payload.character_id is not None and payload.character_id != conversation["character_id"]:
+            raise HTTPException(409, "当前会话不属于所选角色，请重新选择对话")
         setting = db.execute("SELECT * FROM settings WHERE id=1").fetchone()
         if not setting["api_key"]:
             raise HTTPException(400, "请先在设置中填写 API Key")

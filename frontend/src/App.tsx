@@ -5,6 +5,8 @@ import { listen } from "@tauri-apps/api/event";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import MessageContent from "./MessageContent";
 import type { MessageDisplayMode } from "./MessageContent";
+import { isPluginEnabled, permissionLabels } from "./plugins";
+import type { PluginInfo } from "./plugins";
 import "./App.css";
 import "./Desktop.css";
 import "./Themes.css";
@@ -92,6 +94,8 @@ export default function App() {
     () => (localStorage.getItem("yus-ai-theme") as Theme) || "violet",
   );
   const [backendReady, setBackendReady] = useState(false);
+  const [plugins, setPlugins] = useState<PluginInfo[]>([]);
+  const [pluginBusy, setPluginBusy] = useState<string | null>(null);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [autostartBusy, setAutostartBusy] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
@@ -125,6 +129,7 @@ export default function App() {
   const [documentBusy, setDocumentBusy] = useState(false);
   const documentInputRef = useRef<HTMLInputElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const chatGenerationRef = useRef(0);
   const busyRef = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const inputDraftRef = useRef("");
@@ -134,6 +139,7 @@ export default function App() {
   const keepMessagesAtBottomRef = useRef(true);
   const forceLatestMessageRef = useRef(true);
   const skipMessageLoadRef = useRef<number | null>(null);
+  const selectionReadyRef = useRef(false);
   const desktop = "__TAURI_INTERNALS__" in window;
 
   useEffect(() => {
@@ -192,13 +198,25 @@ export default function App() {
           ]);
           setCharacters(characterData);
           setSettings(settingsData);
+          setPlugins(await request<PluginInfo[]>("/plugins"));
           setProactivePlugin(await request<typeof proactivePlugin>("/plugins/proactive"));
           if (characterData[0]) {
-            setActiveCharacter(characterData[0].id);
+            const preferredId = Number(localStorage.getItem("yus-ai-character"));
+            const selected = characterData.find((item) => item.id === preferredId) ?? characterData[0];
+            setActiveCharacter(selected.id);
             const conversationData = await request<Conversation[]>(
-              `/conversations?character_id=${characterData[0].id}`,
+              `/conversations?character_id=${selected.id}`,
             );
-            if (!cancelled) setConversations(conversationData);
+            if (!cancelled) {
+              setConversations(conversationData);
+              const preferredConversation = Number(localStorage.getItem("yus-ai-conversation"));
+              const restoredConversation = conversationData.find((item) => item.id === preferredConversation)?.id ?? null;
+              if (!restoredConversation) localStorage.removeItem("yus-ai-conversation");
+              selectionReadyRef.current = true;
+              setActiveConversation(restoredConversation);
+            }
+          } else {
+            selectionReadyRef.current = true;
           }
           if (desktop && !cancelled) {
             try {
@@ -221,10 +239,12 @@ export default function App() {
     };
   }, []);
   useEffect(() => {
-    if (activeCharacter)
-      request<Conversation[]>(`/conversations?character_id=${activeCharacter}`)
-        .then(setConversations)
-        .catch((e) => setError(e.message));
+    if (!activeCharacter) return;
+    let cancelled = false;
+    request<Conversation[]>(`/conversations?character_id=${activeCharacter}`)
+      .then((items) => { if (!cancelled) setConversations(items); })
+      .catch((e) => { if (!cancelled) setError(e.message); });
+    return () => { cancelled = true; };
   }, [activeCharacter]);
   useEffect(() => {
     if (activeConversation) {
@@ -262,6 +282,7 @@ export default function App() {
       localStorage.setItem("yus-ai-character", String(activeCharacter));
   }, [activeCharacter]);
   useEffect(() => {
+    if (!selectionReadyRef.current) return;
     if (activeConversation)
       localStorage.setItem("yus-ai-conversation", String(activeConversation));
     else localStorage.removeItem("yus-ai-conversation");
@@ -269,6 +290,7 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
+    let unlistenPlugins: (() => void) | undefined;
     async function syncPetConversation() {
       if (busyRef.current) return;
       const characterId = Number(localStorage.getItem("yus-ai-character"));
@@ -281,7 +303,7 @@ export default function App() {
         if (cancelled) return;
         setActiveCharacter(characterId);
         setConversations(conversationData);
-        if (conversationId) {
+        if (conversationId && conversationData.some((item) => item.id === conversationId)) {
           const messageData = await request<Message[]>(
             `/conversations/${conversationId}/messages`,
           );
@@ -291,6 +313,10 @@ export default function App() {
             setActiveConversation(conversationId);
             setMessages(messageData);
           }
+        } else {
+          setActiveConversation(null);
+          setMessages([]);
+          setDocuments([]);
         }
       } catch (e) {
         if (!cancelled) setError((e as Error).message);
@@ -299,15 +325,34 @@ export default function App() {
     if (desktop) {
       void listen("main-sync", () => { void syncPetConversation(); })
         .then((stop) => { if (cancelled) stop(); else unlisten = stop; });
+      void listen("open-plugin-manager", () => {
+        setPanel("settings");
+        window.setTimeout(() => document.getElementById("plugin-manager")?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
+      }).then((stop) => { if (cancelled) stop(); else unlistenPlugins = stop; });
     } else {
       window.addEventListener("focus", syncPetConversation);
     }
     return () => {
       cancelled = true;
       unlisten?.();
+      unlistenPlugins?.();
       if (!desktop) window.removeEventListener("focus", syncPetConversation);
     };
   }, [desktop]);
+
+  function activateCharacter(characterId: number | null) {
+    chatGenerationRef.current += 1;
+    abortRef.current?.abort();
+    setActiveCharacter(characterId);
+    setActiveConversation(null);
+    setMessages([]);
+    setDocuments([]);
+    setConversations([]);
+    skipMessageLoadRef.current = null;
+    if (characterId) localStorage.setItem("yus-ai-character", String(characterId));
+    else localStorage.removeItem("yus-ai-character");
+    localStorage.removeItem("yus-ai-conversation");
+  }
 
   useEffect(() => {
     if (!desktop) return;
@@ -368,7 +413,7 @@ export default function App() {
         body: JSON.stringify(draft),
       });
       setCharacters((c) => editingCharacter ? c.map((item) => item.id === value.id ? value : item) : [value, ...c]);
-      setActiveCharacter(value.id);
+      if (activeCharacter !== value.id) activateCharacter(value.id);
       setDraft(emptyCharacter);
       setEditingCharacter(null);
       setPanel("chat");
@@ -385,7 +430,8 @@ export default function App() {
     if (!window.confirm(`确定删除角色“${item.name}”吗？该角色的全部对话也会删除。`)) return;
     await request(`/characters/${item.id}`, { method: "DELETE" });
     const remaining = characters.filter((x) => x.id !== item.id);
-    setCharacters(remaining); setActiveCharacter(remaining[0]?.id ?? null); setActiveConversation(null); setMessages([]); setConversations([]);
+    setCharacters(remaining);
+    activateCharacter(remaining[0]?.id ?? null);
   }
   async function exportCharacter(item: Character) {
     try {
@@ -402,7 +448,7 @@ export default function App() {
   }
   async function importCharacter(file?: File) {
     if (!file) return;
-    try { const data = JSON.parse(await file.text()); const value = await request<Character>("/characters", { method: "POST", body: JSON.stringify({ ...emptyCharacter, ...(data.character ?? data) }) }); setCharacters((items) => [value, ...items]); setActiveCharacter(value.id); }
+    try { const data = JSON.parse(await file.text()); const value = await request<Character>("/characters", { method: "POST", body: JSON.stringify({ ...emptyCharacter, ...(data.character ?? data) }) }); setCharacters((items) => [value, ...items]); activateCharacter(value.id); }
     catch (e) { setError(`角色导入失败：${(e as Error).message}`); }
   }
   async function createConversation() {
@@ -445,10 +491,7 @@ export default function App() {
       } catch (e) { setError((e as Error).message); }
       return;
     }
-    setActiveCharacter(characterId);
-    setActiveConversation(null);
-    setMessages([]);
-    setConversations([]);
+    activateCharacter(characterId);
   }
   async function renameConversation(item: Conversation) {
     const title = window.prompt("输入新的对话名称", item.title)?.trim();
@@ -506,6 +549,22 @@ export default function App() {
       setMini(false);
     } catch (e) {
       setError(String(e));
+    }
+  }
+  async function togglePlugin(plugin: PluginInfo) {
+    if (pluginBusy) return;
+    setPluginBusy(plugin.id);
+    try {
+      await request(`/plugins/${plugin.id}/state`, {
+        method: "PUT",
+        body: JSON.stringify({ enabled: !plugin.enabled }),
+      });
+      setPlugins((items) => items.map((item) => item.id === plugin.id ? { ...item, enabled: !plugin.enabled } : item));
+      setError("");
+    } catch (cause) {
+      setError(`切换插件失败：${(cause as Error).message}`);
+    } finally {
+      setPluginBusy(null);
     }
   }
   async function toggleAutostart() {
@@ -622,7 +681,10 @@ export default function App() {
     event.preventDefault();
     const content = (inputRef.current?.value ?? inputDraftRef.current).trim();
     if (!content || busy) return;
-    let id = activeConversation;
+    const chatGeneration = chatGenerationRef.current;
+    let id = conversations.some((item) => item.id === activeConversation && item.character_id === activeCharacter)
+      ? activeConversation
+      : null;
     try {
       if (!id) {
         if (!activeCharacter) throw new Error("请先创建一个角色");
@@ -630,11 +692,14 @@ export default function App() {
           method: "POST",
           body: JSON.stringify({ character_id: activeCharacter }),
         });
+        if (chatGeneration !== chatGenerationRef.current) return;
         id = value.id;
         skipMessageLoadRef.current = id;
         setActiveConversation(id);
         setConversations((c) => [value, ...c]);
-        setMessages(await request<Message[]>(`/conversations/${id}/messages`));
+        const initialMessages = await request<Message[]>(`/conversations/${id}/messages`);
+        if (chatGeneration !== chatGenerationRef.current) return;
+        setMessages(initialMessages);
       }
       if (inputRef.current) {
         inputRef.current.value = "";
@@ -655,7 +720,7 @@ export default function App() {
       const response = await fetch(`${API}/conversations/${id}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, character_id: activeCharacter }),
         signal: controller.signal,
       });
       if (!response.ok) {
@@ -668,6 +733,7 @@ export default function App() {
       let buffer = "";
       while (true) {
         const { value, done } = await reader.read();
+        if (chatGeneration !== chatGenerationRef.current) return;
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
@@ -692,13 +758,21 @@ export default function App() {
         if (data.error) throw new Error(data.error);
         if (data.token) setMessages((items) => items.map((message) => message.clientKey === pendingKey ? { ...message, content: message.content + data.token } : message));
       }
-      setMessages(await request<Message[]>(`/conversations/${id}/messages`));
-      setConversations(
-        await request(`/conversations?character_id=${activeCharacter}`),
-      );
+      const [latestMessages, latestConversations] = await Promise.all([
+        request<Message[]>(`/conversations/${id}/messages`),
+        request<Conversation[]>(`/conversations?character_id=${activeCharacter}`),
+      ]);
+      if (chatGeneration !== chatGenerationRef.current) return;
+      setMessages(latestMessages);
+      setConversations(latestConversations);
     } catch (e) {
-      if ((e as Error).name !== "AbortError") setError((e as Error).message);
-      if (id) setMessages(await request<Message[]>(`/conversations/${id}/messages`).catch(() => []));
+      if (chatGeneration === chatGenerationRef.current && (e as Error).name !== "AbortError") {
+        setError((e as Error).message);
+        if (id) {
+          const latestMessages = await request<Message[]>(`/conversations/${id}/messages`).catch(() => []);
+          if (chatGeneration === chatGenerationRef.current) setMessages(latestMessages);
+        }
+      }
     } finally {
       setBusy(false);
       busyRef.current = false;
@@ -710,7 +784,9 @@ export default function App() {
     setDocumentBusy(true);
     setError("");
     try {
-      let conversationId = activeConversation;
+      let conversationId = conversations.some((item) => item.id === activeConversation && item.character_id === activeCharacter)
+        ? activeConversation
+        : null;
       if (!conversationId) {
         const created = await request<Conversation>("/conversations", { method: "POST", body: JSON.stringify({ character_id: activeCharacter, title: `阅读 ${file.name}` }) });
         conversationId = created.id;
@@ -971,6 +1047,26 @@ export default function App() {
                 <small className="maintenance-warning">备份文件包含 API Key 和聊天内容，请存放在可信位置，不要上传到公开网盘或仓库。</small>
               </div>
             )}
+            <div className="plugin-manager" id="plugin-manager">
+              <div className="form-section-title">
+                <strong>插件管理</strong>
+                <small>内置插件的开关立即生效；权限列出插件可能使用的能力</small>
+              </div>
+              <div className="plugin-manager-grid">
+                {plugins.length === 0 && <small>正在读取内置插件…</small>}
+                {plugins.map((plugin) => (
+                  <article className="plugin-manager-card" key={plugin.id}>
+                    <div><strong>{plugin.name}</strong><small>内置 · v{plugin.version}</small></div>
+                    <p>{plugin.description}</p>
+                    <small>权限：{plugin.permissions.length ? plugin.permissions.map((permission) => permissionLabels[permission] ?? permission).join("、") : "无额外权限"}</small>
+                    <button type="button" role="switch" aria-checked={plugin.enabled} disabled={pluginBusy !== null} className={plugin.enabled ? "autostart-switch enabled" : "autostart-switch"} onClick={() => void togglePlugin(plugin)}>
+                      <span><i /></span>{pluginBusy === plugin.id ? "正在切换…" : plugin.enabled ? "已启用" : "已停用"}
+                    </button>
+                  </article>
+                ))}
+              </div>
+              <small>目前仅支持随应用打包的可信内置插件；不会加载外部脚本或第三方安装包。</small>
+            </div>
             <form onSubmit={saveSettings}>
               <div className="form-section-title">
                 <strong>模型连接</strong>
@@ -1055,13 +1151,15 @@ export default function App() {
                 </Field>
               )}
               <small>时间来自本机时钟，涉及现在、今天、星期和相对时间时作为回答基准；位置由你手动填写，不会自动读取 GPS。</small>
-              <div className="form-section-title">
-                <strong>离线翻译下载</strong>
-                <small>留空使用 Argos 官方源；国内镜像需提供相同的 .argosmodel 文件</small>
-              </div>
-              <Field label="语言包镜像地址（可选）">
-                <input type="url" placeholder="例如：https://mirror.example.com/argospm/v1" value={settings.translation_mirror_url} onChange={(e) => setSettings({...settings, translation_mirror_url:e.target.value})} />
-              </Field>
+              {isPluginEnabled(plugins, "translation") && <>
+                <div className="form-section-title">
+                  <strong>离线翻译下载</strong>
+                  <small>留空使用 Argos 官方源；国内镜像需提供相同的 .argosmodel 文件</small>
+                </div>
+                <Field label="语言包镜像地址（可选）">
+                  <input type="url" placeholder="例如：https://mirror.example.com/argospm/v1" value={settings.translation_mirror_url} onChange={(e) => setSettings({...settings, translation_mirror_url:e.target.value})} />
+                </Field>
+              </>}
               <Field label="文档图片模型（留空自动选择）">
                 <input
                   value={settings.vision_model}
@@ -1076,7 +1174,7 @@ export default function App() {
                   <option value="deep">深度分析（整页＋高清切片，细节优先）</option>
                 </select>
               </Field>
-              <div className="form-section-title">
+              {isPluginEnabled(plugins, "message_display") && <><div className="form-section-title">
                 <strong>消息显示插件</strong>
                 <small>选择 AI 回复的显示方式；三种处理器互斥，只会启用一个</small>
               </div>
@@ -1098,7 +1196,8 @@ export default function App() {
                   </button>
                 ))}
               </div>
-              <div className="form-section-title"><strong>角色主动互动插件</strong><small>启用后使用当前模型 API，按角色卡和本地时间生成问题、笑话或真实新闻话题。会消耗 token；23:00–07:00 不打扰。</small></div>
+              </>}
+              {isPluginEnabled(plugins, "proactive") && <><div className="form-section-title"><strong>角色主动互动插件</strong><small>启用后使用当前模型 API，按角色卡和本地时间生成问题、笑话或真实新闻话题。会消耗 token；23:00–07:00 不打扰。</small></div>
               <Field label="启用主动模型调用"><input type="checkbox" checked={proactivePlugin.enabled} onChange={(e) => setProactivePlugin({ ...proactivePlugin, enabled: e.target.checked })} /></Field>
               <Field label="随机时间主动发言"><input type="checkbox" checked={proactivePlugin.randomize_interval} onChange={(e) => setProactivePlugin({ ...proactivePlugin, randomize_interval: e.target.checked })} /></Field>
               {proactivePlugin.randomize_interval ? (
@@ -1124,6 +1223,7 @@ export default function App() {
               <Field label="启用时事话题"><input type="checkbox" checked={proactivePlugin.news_enabled} onChange={(e) => setProactivePlugin({ ...proactivePlugin, news_enabled: e.target.checked })} /></Field>
               <Field label="新闻 RSS（HTTPS）"><input type="url" value={proactivePlugin.rss_url} onChange={(e) => setProactivePlugin({ ...proactivePlugin, rss_url: e.target.value })} /></Field>
               <small>API 已报告累计 token：{proactivePlugin.total_tokens}（未提供 usage 的服务无法统计）。新闻源失败时仅生成问题或笑话。配置随“保存设置”一起保存。</small>
+              </>}
               <button className="primary">保存设置</button>
             </form>
           </section>
@@ -1244,7 +1344,7 @@ export default function App() {
                         </div>
                       </div>
                     ) : m.content ? (
-                      <MessageContent content={m.content} mode={m.clientKey ? "raw" : m.role === "assistant" ? settings.message_display_mode : "raw"} />
+                      <MessageContent content={m.content} mode={m.clientKey ? "raw" : m.role === "assistant" && isPluginEnabled(plugins, "message_display") ? settings.message_display_mode : "raw"} />
                     ) : <p><span className="typing">思考中</span></p>}
                   </div>
                 </article>

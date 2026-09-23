@@ -2,11 +2,11 @@
 
 Yu's AI 是一款本地优先的 Windows 私人 AI 聊天软件。它将角色扮演、多模型 API、长期记忆、文档阅读、离线翻译和桌面宠物整合在同一个应用中，并为后续插件能力预留扩展空间。
 
-当前版本：**0.15.12**
+当前发布版：**0.15.14**
 
 > ### ⬇ 下载 Windows 安装版
 >
-> [**下载最新版 Yus AI 安装程序（Windows x64）**](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/latest/download/Yus-AI-0.15.12-x64-setup.exe)
+> [**下载最新版 Yus AI 安装程序（Windows x64）**](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/latest/download/Yus-AI-0.15.14-x64-setup.exe)
 
 无需配置开发环境，下载安装后即可运行。其他版本、安装包校验值和发布说明可在 [GitHub Releases](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases) 查看。
 
@@ -53,7 +53,7 @@ Yu's AI 面向希望拥有长期陪伴式 AI、角色聊天和桌面助手体验
 项目当前提供 Windows NSIS 安装包。自行构建后的安装包位于：
 
 ```text
-frontend\src-tauri\target\release\bundle\nsis\Yus AI_0.15.12_x64-setup.exe
+frontend\src-tauri\target\release\bundle\nsis\Yus AI_0.15.14_x64-setup.exe
 ```
 
 安装后直接启动 **Yus AI**，不需要手动启动后端。首次使用建议：
@@ -305,6 +305,7 @@ cd ..\backend
 - [项目进度](docs/PROGRESS.md)
 - [完整修改记录](CHANGELOG.md)
 - [架构说明](docs/ARCHITECTURE.md)
+- [内置插件框架（开发中）](docs/PLUGINS.md)
 - [调试接口](docs/DEBUG_API.md)
 
 ---
@@ -312,6 +313,15 @@ cd ..\backend
 ## 四、更新日志
 
 完整记录见 [CHANGELOG.md](CHANGELOG.md)。
+
+### 0.15.14（2026-09-24）
+
+- 修复新建或导入角色后错误沿用旧角色会话的问题，并在发送消息时校验角色与会话归属。
+
+### 0.15.13（2026-09-24，与 0.15.14 一同发布）
+
+- 新增可信内置插件注册、持久化启停和插件管理界面；翻译、消息显示及主动互动接入统一状态控制。
+- 桌宠“插件”功能圈可打开管理页；停用插件后，相应功能入口和实际调用同步停用。
 
 ### 0.15.12（2026-09-23）
 
