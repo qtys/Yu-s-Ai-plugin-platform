@@ -467,10 +467,12 @@ export default function Pet() {
   const [motionStrength, setMotionStrength] = useState(() => Number(localStorage.getItem("yus-ai-pet-motion-strength")) || 75);
   const [petModel, setPetModel] = useState<PetModel>(() => localStorage.getItem("yus-ai-pet-model") === "alice" ? "alice" : "slime");
   const [proactiveMessage, setProactiveMessage] = useState("");
+  const [proactiveMessageId, setProactiveMessageId] = useState<number | null>(null);
+  const [proactiveConversationId, setProactiveConversationId] = useState<number | null>(null);
   const [aiProactiveEnabled, setAiProactiveEnabled] = useState<boolean | null>(null);
   const [proactiveSources, setProactiveSources] = useState<{title: string; url: string}[]>([]);
   const proactiveInFlightRef = useRef(false);
-  const [pendingProactive, setPendingProactive] = useState<{characterId: number; content: string; sources: {title: string; url: string}[]; motion: PetMotion | null} | null>(null);
+  const [pendingProactive, setPendingProactive] = useState<{characterId: number; conversationId: number; content: string; messageId: number; sources: {title: string; url: string}[]; motion: PetMotion | null} | null>(null);
   const pendingProactiveRef = useRef(pendingProactive);
   pendingProactiveRef.current = pendingProactive;
   const proactiveBubbleRef = useRef<HTMLElement | null>(null);
@@ -516,6 +518,7 @@ export default function Pet() {
     () => Number(localStorage.getItem("yus-ai-dialog-height")) || 520,
   );
   const conversationRef = useRef<number | null>(null);
+  const replyToProactiveRef = useRef<{messageId: number; conversationId: number} | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const draggingRef = useRef(false);
   const didDragRef = useRef(false);
@@ -616,7 +619,7 @@ export default function Pet() {
   }, [settingsOpen]);
   useEffect(() => {
     if (!proactiveMessage) return;
-    const timer = window.setTimeout(() => setProactiveMessage(""), 30000);
+    const timer = window.setTimeout(() => { setProactiveMessage(""); setProactiveMessageId(null); setProactiveConversationId(null); }, 30000);
     return () => window.clearTimeout(timer);
   }, [proactiveMessage]);
   useEffect(() => {
@@ -679,6 +682,8 @@ export default function Pet() {
       const greeting = roleAwareGreeting(roleAwareEnabled ? character : null, timeAwareEnabled ? dayPeriod : "daytime");
       setProactiveSources([]);
       setProactiveMessage(greeting);
+      setProactiveMessageId(null);
+      setProactiveConversationId(null);
       schedulePetMotion(replyDrivenMotion(greeting), "proactive", "local greeting", true);
       window.setTimeout(() => setProactiveMessage(""), 9000);
     };
@@ -705,12 +710,12 @@ export default function Pet() {
         setAiProactiveEnabled(config.enabled && config.plugin_enabled);
         const { character, expanded, menuOpen, busy, dragging } = proactiveContextRef.current;
         if (!config.enabled || !config.plugin_enabled || !character || expanded || menuOpen || busy || dragging || (!desktop && document.hidden) || (desktop && !(await getCurrentWindow().isVisible()))) return false;
-        const result = await request<{skipped?: boolean; content: string; conversation_id: number; sources: {title: string; url: string}[]; pet_motion?: unknown}>("/plugins/proactive/generate", { method: "POST", body: JSON.stringify({ character_id: character.id, conversation_id: conversationRef.current, pet_motion_enabled: motionEnabled, pet_model: petModel }) });
+        const result = await request<{skipped?: boolean; content: string; conversation_id: number; message_id: number; sources: {title: string; url: string}[]; pet_motion?: unknown}>("/plugins/proactive/generate", { method: "POST", body: JSON.stringify({ character_id: character.id, conversation_id: conversationRef.current, pet_motion_enabled: motionEnabled, pet_model: petModel }) });
         if (result.skipped) return true;
         if (!disposed && proactiveContextRef.current.character?.id === character.id) {
           conversationRef.current = result.conversation_id;
           localStorage.setItem("yus-ai-conversation", String(result.conversation_id));
-          setPendingProactive({ characterId: character.id, content: result.content, sources: result.sources, motion: parseModelMotion(result.pet_motion) });
+          setPendingProactive({ characterId: character.id, conversationId: result.conversation_id, content: result.content, messageId: result.message_id, sources: result.sources, motion: parseModelMotion(result.pet_motion) });
         }
         return true;
       } catch (error) {
@@ -741,6 +746,8 @@ export default function Pet() {
     if (pendingProactive.characterId === character?.id) {
       setProactiveSources(pendingProactive.sources);
       setProactiveMessage(pendingProactive.content);
+      setProactiveMessageId(pendingProactive.messageId);
+      setProactiveConversationId(pendingProactive.conversationId);
       schedulePetMotion(pendingProactive.motion ?? replyDrivenMotion(pendingProactive.content), "proactive", pendingProactive.motion?.emotionLabel ?? "local semantic fallback", true);
     }
     setPendingProactive(null);
@@ -763,6 +770,8 @@ export default function Pet() {
         setAiProactiveEnabled(proactiveConfig.enabled && isPluginEnabled(installedPlugins, "proactive"));
         if (!isPluginEnabled(installedPlugins, "proactive")) {
           setProactiveMessage("");
+          setProactiveMessageId(null);
+          setProactiveConversationId(null);
           setPendingProactive(null);
         }
         setMessageDisplayMode(displaySettings.message_display_mode);
@@ -1451,12 +1460,16 @@ export default function Pet() {
         conversationRef.current = id;
         localStorage.setItem("yus-ai-conversation", String(id));
       }
+      const followUp = replyToProactiveRef.current;
+      const replyToProactiveId = followUp?.conversationId === id ? followUp.messageId : undefined;
+      if (followUp && !replyToProactiveId) replyToProactiveRef.current = null;
       const response = await fetch(`${API}/conversations/${id}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content, character_id: character.id, pet_motion_enabled: motionEnabled, pet_model: petModel, recent_pet_motions: recentMotionLabelsRef.current }),
+        body: JSON.stringify({ content, character_id: character.id, reply_to_proactive_id: replyToProactiveId, pet_motion_enabled: motionEnabled, pet_model: petModel, recent_pet_motions: recentMotionLabelsRef.current }),
       });
       if (!response.ok) {
+        if (response.status === 409 && replyToProactiveId) replyToProactiveRef.current = null;
         const data = await response.json().catch(() => ({}));
         throw new Error(data.detail ?? "发送失败");
       }
@@ -1504,6 +1517,7 @@ export default function Pet() {
         if (data.token) { complete += data.token; setReply(complete); }
       }
       playReplyMotion(complete, modelMotion, modelMotionRaw);
+      if (replyToProactiveId) replyToProactiveRef.current = null;
     } catch (error) {
       setReply((error as Error).message);
       schedulePetMotion({ ...EMPTY_MOTION, action: "wiggle", expression: "confused", gazeMode: "none", intensity: .55, duration: 1800 }, "feedback", "chat failed");
@@ -1632,11 +1646,23 @@ export default function Pet() {
       )}
       {proactiveMessage && !expanded && !menuOpen && (
         <aside ref={proactiveBubbleRef} className="proactive-bubble" aria-live="polite">
-          <button onClick={() => setProactiveMessage("")} aria-label="关闭主动提醒">×</button>
+          <button onClick={() => { setProactiveMessage(""); setProactiveMessageId(null); setProactiveConversationId(null); }} aria-label="关闭主动提醒">×</button>
           <small>{PERIOD_LABELS[dayPeriod]} · {character?.name ?? "蓝雨"}</small>
           {proactiveMessage}
           {proactiveSources.length > 0 && <small>新闻参考来源已附在对话记录中</small>}
-          <a href="#" onClick={(event) => { event.preventDefault(); setReply(proactiveMessage); setProactiveMessage(""); void toggleBubble(); }}>聊聊这个话题</a>
+          <a href="#" onClick={(event) => {
+            event.preventDefault();
+            replyToProactiveRef.current = proactiveMessageId && proactiveConversationId ? { messageId: proactiveMessageId, conversationId: proactiveConversationId } : null;
+            if (proactiveConversationId) {
+              conversationRef.current = proactiveConversationId;
+              localStorage.setItem("yus-ai-conversation", String(proactiveConversationId));
+            }
+            setReply(proactiveMessage);
+            setProactiveMessage("");
+            setProactiveMessageId(null);
+            setProactiveConversationId(null);
+            void toggleBubble();
+          }}>聊聊这个话题</a>
         </aside>
       )}
       <button

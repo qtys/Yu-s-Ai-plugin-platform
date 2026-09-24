@@ -54,12 +54,14 @@ def test_proactive_opt_in_cooldown_and_saved_history(monkeypatch):
                 db.execute("UPDATE proactive_plugin SET next_due=0 WHERE id=1")
             result = client.post("/api/plugins/proactive/generate", json=request).json()
             assert result["total_tokens"] == 123
+            assert result["message_id"] > 0
             assert result["pet_motion"]["emotionLabel"] == "轻柔地邀请"
             assert result["pet_motion"]["eyes"] == "soft"
             assert result["pet_motion"]["mouth"] == "smile"
             assert result["pet_motion"]["action"] == "none"
             messages = client.get(f"/api/conversations/{result['conversation_id']}/messages").json()
             assert messages[-1]["role"] == "assistant"
+            assert messages[-1]["id"] == result["message_id"]
             assert messages[-1]["content"] == result["content"]
             assert client.post("/api/plugins/proactive/generate", json=request).json()["reason"] == "cooldown"
             assert len(calls) == 1

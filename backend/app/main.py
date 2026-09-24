@@ -402,6 +402,7 @@ class ConversationRename(BaseModel):
 class ChatRequest(BaseModel):
     content: str = Field(min_length=1)
     character_id: int | None = None
+    reply_to_proactive_id: int | None = Field(default=None, gt=0)
     pet_motion_enabled: bool = False
     pet_model: Literal["slime", "alice"] = "slime"
     recent_pet_motions: list[str] = Field(default_factory=list, max_length=5)
@@ -752,12 +753,12 @@ async def lifespan(_: FastAPI):
     UPDATE_RELEASE_CACHE = None
     configure_logging()
     init_db()
-    logger.info("backend_started version=0.15.16")
+    logger.info("backend_started version=0.15.17")
     yield
     logger.info("backend_stopped")
 
 
-app = FastAPI(title="Yu's AI API", version="0.15.16", lifespan=lifespan)
+app = FastAPI(title="Yu's AI API", version="0.15.17", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://tauri.localhost", "tauri://localhost"],
@@ -1148,7 +1149,7 @@ async def proactive_generate(payload: ProactiveRequest):
         elif not db.execute("SELECT id FROM conversations WHERE id=?", (conversation_id,)).fetchone():
             return {"skipped": True, "reason": "conversation_deleted"}
         source_text = "\n\n" + "\n".join(f"来源：{source['title']} {source['url']}" for source in sources) if sources else ""
-        db.execute("INSERT INTO messages(conversation_id,role,content,origin) VALUES (?,'assistant',?,'proactive')", (conversation_id, text + source_text))
+        message_id = db.execute("INSERT INTO messages(conversation_id,role,content,origin) VALUES (?,'assistant',?,'proactive')", (conversation_id, text + source_text)).lastrowid
         db.execute("UPDATE conversations SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (conversation_id,))
         db.execute("UPDATE proactive_plugin SET last_content=?,total_tokens=total_tokens+?,failure_count=0,last_error='',last_care_slot=CASE WHEN ?='' THEN last_care_slot ELSE ? END WHERE id=1", (text, usage, care_slot, care_slot))
     pet_motion = None
@@ -1158,7 +1159,7 @@ async def proactive_generate(payload: ProactiveRequest):
             "action": "none", "movement": "stay", "move_distance": 0, "intensity": 0.7,
         })
     logger.info("proactive_generated character_id=%s kind=%s total_tokens=%s emotion=%s", payload.character_id, kind, usage, pet_motion.get("emotionLabel", "") if pet_motion else "fallback")
-    return {"content": text, "kind": kind, "sources": sources, "total_tokens": usage, "conversation_id": conversation_id, "pet_motion": pet_motion}
+    return {"content": text, "kind": kind, "sources": sources, "total_tokens": usage, "conversation_id": conversation_id, "message_id": message_id, "pet_motion": pet_motion}
 
 
 @app.put("/api/pet/state")
@@ -1584,6 +1585,14 @@ async def chat(conversation_id: int, payload: ChatRequest):
         setting = db.execute("SELECT * FROM settings WHERE id=1").fetchone()
         if not setting["api_key"]:
             raise HTTPException(400, "请先在设置中填写 API Key")
+        replied_proactive = None
+        if payload.reply_to_proactive_id is not None:
+            replied_proactive = db.execute(
+                "SELECT content FROM messages WHERE id=? AND conversation_id=? AND role='assistant' AND origin='proactive'",
+                (payload.reply_to_proactive_id, conversation_id),
+            ).fetchone()
+            if not replied_proactive:
+                raise HTTPException(409, "要继续的主动发言不属于当前会话，请重新打开该话题")
         all_history = [dict(row) for row in db.execute(
             "SELECT role, content FROM messages WHERE conversation_id=? AND origin!='proactive' ORDER BY id", (conversation_id,)
         ).fetchall()]
@@ -1634,6 +1643,8 @@ async def chat(conversation_id: int, payload: ChatRequest):
             action_prompt += "\n最近已经演过这些动作：" + "、".join(recent_motions) + "。本次请换一个不同的构思、节奏或分层组合，不要重复。"
         model_messages.append({"role": "system", "content": action_prompt})
     model_messages.extend(history)
+    if replied_proactive:
+        model_messages.append({"role": "assistant", "content": replied_proactive["content"]})
     model_messages.append({"role": "user", "content": payload.content})
 
     await MODEL_GENERATION_LOCK.acquire()

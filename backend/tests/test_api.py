@@ -268,6 +268,68 @@ def test_chat_streams_visible_tokens_and_saves_reply(monkeypatch):
             assert client.get("/api/plugins/proactive").json()["next_due"] >= before_chat_due
 
 
+def test_chat_only_sends_proactive_message_when_user_continues_that_topic(monkeypatch):
+    uploaded_requests = []
+
+    async def stream(request):
+        uploaded_requests.append(json.loads(request.content))
+        return httpx.Response(200, content='data: {"choices":[{"delta":{"content":"接着聊。"},"finish_reason":"stop"}]}\n'
+                           'data: [DONE]\n')
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr("app.main.httpx.AsyncClient", lambda **kwargs: original_client(transport=httpx.MockTransport(stream), **kwargs))
+    with tempfile.TemporaryDirectory() as directory:
+        database.DATA_DIR = database.Path(directory)
+        database.DB_PATH = database.DATA_DIR / "proactive-follow-up.db"
+        with TestClient(app) as client:
+            settings = client.get("/api/settings").json()
+            settings["api_key"] = "mock"
+            client.put("/api/settings", json=settings)
+            character = client.post("/api/characters", json={"name": "测试角色"}).json()
+            conversation = client.post("/api/conversations", json={"character_id": character["id"]}).json()
+            other = client.post("/api/conversations", json={"character_id": character["id"]}).json()
+            with database.connect() as db:
+                unrelated_id = db.execute(
+                    "INSERT INTO messages(conversation_id,role,content,origin) VALUES (?,'assistant',?,'proactive')",
+                    (conversation["id"], "不相关的主动发言"),
+                ).lastrowid
+                topic_id = db.execute(
+                    "INSERT INTO messages(conversation_id,role,content,origin) VALUES (?,'assistant',?,'proactive')",
+                    (conversation["id"], "刚才我看到一颗流星。"),
+                ).lastrowid
+
+            route = f"/api/conversations/{conversation['id']}/chat"
+            continued = client.post(route, json={
+                "content": "那颗流星是什么颜色？",
+                "character_id": character["id"],
+                "reply_to_proactive_id": topic_id,
+            })
+            assert continued.status_code == 200
+            assert uploaded_requests[0]["messages"][-2:] == [
+                {"role": "assistant", "content": "刚才我看到一颗流星。"},
+                {"role": "user", "content": "那颗流星是什么颜色？"},
+            ]
+            assert all("不相关的主动发言" not in str(message) for message in uploaded_requests[0]["messages"])
+
+            ordinary = client.post(route, json={"content": "换个话题", "character_id": character["id"]})
+            assert ordinary.status_code == 200
+            assert all("刚才我看到一颗流星" not in str(message) for message in uploaded_requests[1]["messages"])
+            assert client.post(f"/api/conversations/{other['id']}/chat", json={
+                "content": "继续", "character_id": character["id"], "reply_to_proactive_id": topic_id,
+            }).status_code == 409
+            with database.connect() as db:
+                chat_message_id = db.execute(
+                    "SELECT id FROM messages WHERE conversation_id=? AND origin='chat' ORDER BY id LIMIT 1",
+                    (conversation["id"],),
+                ).fetchone()["id"]
+            assert client.post(route, json={
+                "content": "继续", "character_id": character["id"], "reply_to_proactive_id": chat_message_id,
+            }).status_code == 409
+            assert client.post(route, json={
+                "content": "继续", "character_id": character["id"], "reply_to_proactive_id": unrelated_id,
+            }).status_code == 200
+
+
 def test_chat_hides_and_validates_model_pet_action(monkeypatch):
     chunks = [
         'data: {"choices":[{"delta":{"content":"别担心，我在这里。\\n<pet_"},"finish_reason":null}]}\n',
@@ -584,7 +646,7 @@ def test_update_check_and_verified_download(monkeypatch):
         with TestClient(app) as client:
             check = client.get("/api/system/update").json()
             assert check["available"] is True
-            assert check["current_version"] == "0.15.16"
+            assert check["current_version"] == "0.15.17"
             response = client.post("/api/system/update/download")
             events = [json.loads(line) for line in response.text.splitlines()]
             assert events[-1]["stage"] == "complete"
