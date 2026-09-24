@@ -1,6 +1,6 @@
 [package]
 name = "yus-ai"
-version = "0.15.17"
+version = "0.15.18"
 description = "A local-first personal AI desktop companion"
 authors = ["qtys"]
 license = "MIT"
@@ -31,3 +31,5 @@ tauri-plugin-dialog = "2"
 [target.'cfg(windows)'.dependencies]
 clipboard-win = "5.4"
 rdev = "0.5"
+screenshots = "0.8.10"
+base64 = "0.22"

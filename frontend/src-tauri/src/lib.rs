@@ -1,5 +1,5 @@
 use std::{fs::OpenOptions, io::Write, process::Command as StdCommand, sync::{Arc, Mutex}};
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::{
@@ -11,6 +11,9 @@ use tauri::{
 use tauri_plugin_shell::{process::{CommandChild, CommandEvent}, ShellExt};
 use tauri_plugin_autostart::ManagerExt;
 use serde::Serialize;
+
+#[cfg(target_os = "windows")]
+use base64::Engine;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -31,6 +34,8 @@ static PET_DIALOG_HEIGHT: AtomicU32 = AtomicU32::new(520);
 static PET_PLACEMENT_BELOW: AtomicBool = AtomicBool::new(false);
 static PET_VISIBLE: AtomicBool = AtomicBool::new(false);
 static PET_GAZE_LAST_EMIT_MS: AtomicU64 = AtomicU64::new(0);
+static CURSOR_X: AtomicI32 = AtomicI32::new(0);
+static CURSOR_Y: AtomicI32 = AtomicI32::new(0);
 static PET_AUTO_MOVE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static BACKEND_SHUTDOWN_STARTED: AtomicBool = AtomicBool::new(false);
 
@@ -71,6 +76,28 @@ fn write_window_diagnostic(event: &str, details: &str) {
 fn record_window_diagnostic(event: String, duration_ms: Option<f64>, details: Option<String>) {
   let message = format!("duration_ms={:.1} {}", duration_ms.unwrap_or(0.0), details.unwrap_or_default());
   write_window_diagnostic(&event, &message);
+}
+
+// Capture only the monitor under the pointer. The image stays in memory and is never logged or saved.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+async fn capture_screen() -> Result<String, String> {
+  tauri::async_runtime::spawn_blocking(capture_screen_blocking).await.map_err(|error| format!("屏幕抓取任务失败：{error}"))?
+}
+
+#[cfg(target_os = "windows")]
+fn capture_screen_blocking() -> Result<String, String> {
+  use screenshots::{image::{DynamicImage, ImageOutputFormat}, Screen};
+  let (x, y) = (CURSOR_X.load(Ordering::Relaxed), CURSOR_Y.load(Ordering::Relaxed));
+  let screen = match Screen::from_point(x, y) {
+    Ok(screen) => screen,
+    Err(_) => Screen::all().map_err(|error| format!("无法枚举显示器：{error}"))?.into_iter().next().ok_or("未找到显示器")?,
+  };
+  let image = screen.capture().map_err(|error| format!("屏幕抓取失败：{error}"))?;
+  let resized = DynamicImage::ImageRgba8(image).resize(1600, 1000, screenshots::image::imageops::FilterType::Lanczos3).to_rgb8();
+  let mut bytes = std::io::Cursor::new(Vec::new());
+  DynamicImage::ImageRgb8(resized).write_to(&mut bytes, ImageOutputFormat::Jpeg(78)).map_err(|error| format!("屏幕图像编码失败：{error}"))?;
+  Ok(format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes.into_inner())))
 }
 
 fn stop_backend(app: &AppHandle) {
@@ -430,6 +457,8 @@ fn start_selection_monitor(app: AppHandle) {
     });
     let callback = move |event: Event| {
       if let EventType::MouseMove { x, y } = &event.event_type {
+        CURSOR_X.store(*x as i32, Ordering::Relaxed);
+        CURSOR_Y.store(*y as i32, Ordering::Relaxed);
         // Never call into the window event loop from the global mouse hook while the
         // pet is hidden. During native title-bar tracking, a synchronous is_visible()
         // call here can block the low-level mouse hook and make the whole drag stutter.
@@ -747,7 +776,7 @@ pub fn run() {
       always_on_top: Mutex::new(false),
       mini_mode: Mutex::new(false),
     })
-    .invoke_handler(tauri::generate_handler![set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, resize_pet_dialog, start_pet_drag, cancel_pet_auto_move, move_pet_by, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, set_pet_interaction_mode, get_autostart_status, set_autostart, export_character_card, copy_backup_file, install_update, confirm_update_startup, restart_application, record_window_diagnostic])
+    .invoke_handler(tauri::generate_handler![set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, resize_pet_dialog, start_pet_drag, cancel_pet_auto_move, move_pet_by, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, set_pet_interaction_mode, get_autostart_status, set_autostart, export_character_card, copy_backup_file, install_update, confirm_update_startup, restart_application, record_window_diagnostic, capture_screen])
     .setup(|app| {
       let legacy_data_dir = app.path().app_data_dir()?;
       let data_dir = prepare_install_data_dir(app.handle())?;

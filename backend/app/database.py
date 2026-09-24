@@ -101,6 +101,8 @@ def init_db() -> None:
             db.execute("ALTER TABLE settings ADD COLUMN include_location_context INTEGER NOT NULL DEFAULT 0")
         if "location_context" not in setting_columns:
             db.execute("ALTER TABLE settings ADD COLUMN location_context TEXT NOT NULL DEFAULT ''")
+        if "screen_access_enabled" not in setting_columns:
+            db.execute("ALTER TABLE settings ADD COLUMN screen_access_enabled INTEGER NOT NULL DEFAULT 0")
         conversation_columns = {row[1] for row in db.execute("PRAGMA table_info(conversations)")}
         if "summary" not in conversation_columns:
             db.execute("ALTER TABLE conversations ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
@@ -190,5 +192,7 @@ def init_db() -> None:
             db.execute("ALTER TABLE proactive_plugin ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0")
         if "last_error" not in proactive_columns:
             db.execute("ALTER TABLE proactive_plugin ADD COLUMN last_error TEXT NOT NULL DEFAULT ''")
+        if "screen_context_enabled" not in proactive_columns:
+            db.execute("ALTER TABLE proactive_plugin ADD COLUMN screen_context_enabled INTEGER NOT NULL DEFAULT 0")
         if "failure_count" not in proactive_columns:
             db.execute("UPDATE proactive_plugin SET max_tokens=1024 WHERE max_tokens=160")

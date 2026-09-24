@@ -518,6 +518,8 @@ export default function Pet() {
     () => Number(localStorage.getItem("yus-ai-dialog-height")) || 520,
   );
   const conversationRef = useRef<number | null>(null);
+  const screenContextRef = useRef<{ description: string; capturedAt: number } | null>(null);
+  const [screenBusy, setScreenBusy] = useState(false);
   const replyToProactiveRef = useRef<{messageId: number; conversationId: number} | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const draggingRef = useRef(false);
@@ -705,12 +707,18 @@ export default function Pet() {
       if (proactiveInFlightRef.current || pendingProactiveRef.current) return false;
       proactiveInFlightRef.current = true;
       try {
-        const config = await request<{enabled: boolean; plugin_enabled: boolean}>("/plugins/proactive");
+        const config = await request<{enabled: boolean; plugin_enabled: boolean; next_due: number; screen_context_enabled: boolean; screen_access_enabled: boolean}>("/plugins/proactive");
         if (disposed) return false;
         setAiProactiveEnabled(config.enabled && config.plugin_enabled);
         const { character, expanded, menuOpen, busy, dragging } = proactiveContextRef.current;
         if (!config.enabled || !config.plugin_enabled || !character || expanded || menuOpen || busy || dragging || (!desktop && document.hidden) || (desktop && !(await getCurrentWindow().isVisible()))) return false;
-        const result = await request<{skipped?: boolean; content: string; conversation_id: number; message_id: number; sources: {title: string; url: string}[]; pet_motion?: unknown}>("/plugins/proactive/generate", { method: "POST", body: JSON.stringify({ character_id: character.id, conversation_id: conversationRef.current, pet_motion_enabled: motionEnabled, pet_model: petModel }) });
+        if (config.next_due > Date.now() / 1000) return true;
+        let screenImage: string | undefined;
+        if (desktop && config.screen_access_enabled && config.screen_context_enabled) {
+          try { screenImage = await invoke<string>("capture_screen"); }
+          catch (error) { console.warn("主动发言未能读取屏幕，将继续普通发言", error); }
+        }
+        const result = await request<{skipped?: boolean; content: string; conversation_id: number; message_id: number; sources: {title: string; url: string}[]; pet_motion?: unknown}>("/plugins/proactive/generate", { method: "POST", body: JSON.stringify({ character_id: character.id, conversation_id: conversationRef.current, pet_motion_enabled: motionEnabled, pet_model: petModel, screen_image: screenImage }) });
         if (result.skipped) return true;
         if (!disposed && proactiveContextRef.current.character?.id === character.id) {
           conversationRef.current = result.conversation_id;
@@ -1437,6 +1445,28 @@ export default function Pet() {
     finally { setTranslationBusy(false); }
   }
 
+  async function lookAtScreen() {
+    if (screenBusy || busy) return;
+    setScreenBusy(true);
+    setReply("正在看屏幕……");
+    try {
+      if (!desktop) throw new Error("看屏幕功能只在桌面软件中可用");
+      const setting = await request<{ screen_access_enabled: boolean }>("/settings");
+      if (!setting.screen_access_enabled) throw new Error("请先在展开界面的模型设置中开启“允许桌宠按需读取当前屏幕”");
+      const imageDataUrl = await invoke<string>("capture_screen");
+      const result = await request<{ description: string }>("/screen/describe", {
+        method: "POST",
+        body: JSON.stringify({ image_data_url: imageDataUrl }),
+      });
+      screenContextRef.current = { description: result.description, capturedAt: Date.now() };
+      setReply(result.description);
+      showMood("happy", 1200);
+    } catch (error) {
+      setReply((error as Error).message);
+      showMood("confused", 1400);
+    } finally { setScreenBusy(false); }
+  }
+
   async function send(event: FormEvent) {
     event.preventDefault();
     const content = input.trim();
@@ -1466,7 +1496,7 @@ export default function Pet() {
       const response = await fetch(`${API}/conversations/${id}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content, character_id: character.id, reply_to_proactive_id: replyToProactiveId, pet_motion_enabled: motionEnabled, pet_model: petModel, recent_pet_motions: recentMotionLabelsRef.current }),
+        body: JSON.stringify({ content, character_id: character.id, reply_to_proactive_id: replyToProactiveId, pet_motion_enabled: motionEnabled, pet_model: petModel, recent_pet_motions: recentMotionLabelsRef.current, screen_context: screenContextRef.current && Date.now() - screenContextRef.current.capturedAt < 5 * 60_000 ? screenContextRef.current.description : null }),
       });
       if (!response.ok) {
         if (response.status === 409 && replyToProactiveId) replyToProactiveRef.current = null;
@@ -1517,6 +1547,7 @@ export default function Pet() {
         if (data.token) { complete += data.token; setReply(complete); }
       }
       playReplyMotion(complete, modelMotion, modelMotionRaw);
+      screenContextRef.current = null;
       if (replyToProactiveId) replyToProactiveRef.current = null;
     } catch (error) {
       setReply((error as Error).message);
@@ -1542,6 +1573,7 @@ export default function Pet() {
           <div className="speech-head">
             <strong>{character?.name ?? "蓝雨"}</strong>
             <div className="speech-actions">
+              <button type="button" onClick={() => void lookAtScreen()} disabled={screenBusy || busy} title="读取鼠标所在显示器的一帧；不保存截图">{screenBusy ? "识别中…" : "看屏幕"}</button>
               <button onClick={returnToMain}>展开</button>
               <button className="close-bubble" onClick={() => void toggleBubble()} aria-label="关闭对话框">×</button>
             </div>

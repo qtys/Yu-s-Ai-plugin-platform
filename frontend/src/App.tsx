@@ -39,6 +39,7 @@ type Settings = {
   include_local_time: boolean;
   include_location_context: boolean;
   location_context: string;
+  screen_access_enabled: boolean;
 };
 type Theme = "violet" | "midnight" | "sand" | "paper";
 type UpdateInfo = { current_version: string; version: string; name: string; notes: string; published_at: string; release_url: string; available: boolean; asset: { name: string; size: number; digest: string } };
@@ -120,9 +121,10 @@ export default function App() {
     include_local_time: true,
     include_location_context: false,
     location_context: "",
+    screen_access_enabled: false,
   });
   const [draft, setDraft] = useState(emptyCharacter);
-  const [proactivePlugin, setProactivePlugin] = useState({ enabled: false, interval_minutes: 30, randomize_interval: true, random_min_minutes: 15, random_max_minutes: 60, history_weight: 15, care_enabled: true, care_weight: 45, max_tokens: 1024, news_enabled: false, rss_url: "https://www.chinanews.com.cn/rss/scroll-news.xml", total_tokens: 0, last_error: "" });
+  const [proactivePlugin, setProactivePlugin] = useState({ enabled: false, interval_minutes: 30, randomize_interval: true, random_min_minutes: 15, random_max_minutes: 60, history_weight: 15, care_enabled: true, care_weight: 45, max_tokens: 1024, news_enabled: false, rss_url: "https://www.chinanews.com.cn/rss/scroll-news.xml", screen_context_enabled: false, total_tokens: 0, last_error: "" });
   const [editingCharacter, setEditingCharacter] = useState<number | null>(null);
   const [editingMessage, setEditingMessage] = useState<number | null>(null);
   const [messageDraft, setMessageDraft] = useState("");
@@ -1160,14 +1162,16 @@ export default function App() {
                   <input type="url" placeholder="例如：https://mirror.example.com/argospm/v1" value={settings.translation_mirror_url} onChange={(e) => setSettings({...settings, translation_mirror_url:e.target.value})} />
                 </Field>
               </>}
-              <Field label="文档图片模型（留空自动选择）">
+              <Field label="视觉模型（文档图片与桌宠看屏幕）">
                 <input
                   value={settings.vision_model}
                   onChange={(e) => setSettings({ ...settings, vision_model: e.target.value })}
                   placeholder="DeepSeek 自动使用 deepseek-flash"
                 />
               </Field>
-              <small>只用于 PDF 页面和文档图片分析，不改变普通聊天模型。DeepSeek 官方接口留空时自动使用 deepseek-flash。</small>
+              <small>留空时沿用聊天模型；DeepSeek 官方接口自动使用 deepseek-flash。模型需支持 image_url 图片输入，不改变普通聊天模型。</small>
+              <Field label="允许桌宠按需读取当前屏幕"><input type="checkbox" checked={settings.screen_access_enabled} onChange={(e) => setSettings({ ...settings, screen_access_enabled: e.target.checked })} /></Field>
+              <small>默认关闭。点击桌宠“看屏幕”时抓取鼠标所在显示器的一帧并发给配置的视觉模型；截图不写入本地文件、数据库或日志。请避免在屏幕上显示密码等敏感信息。</small>
               <Field label="文档分析模式">
                 <select value={settings.document_analysis_mode} onChange={(e) => setSettings({ ...settings, document_analysis_mode: e.target.value as "fast" | "deep" })}>
                   <option value="fast">快速分析（整页预览，速度优先）</option>
@@ -1199,6 +1203,8 @@ export default function App() {
               </>}
               {isPluginEnabled(plugins, "proactive") && <><div className="form-section-title"><strong>角色主动互动插件</strong><small>启用后使用当前模型 API，按角色卡和本地时间生成问题、笑话或真实新闻话题。会消耗 token；全天按设定频率触发。</small></div>
               <Field label="启用主动模型调用"><input type="checkbox" checked={proactivePlugin.enabled} onChange={(e) => setProactivePlugin({ ...proactivePlugin, enabled: e.target.checked })} /></Field>
+              <Field label="主动发言结合当前屏幕"><input type="checkbox" checked={proactivePlugin.screen_context_enabled} disabled={!settings.screen_access_enabled} onChange={(e) => setProactivePlugin({ ...proactivePlugin, screen_context_enabled: e.target.checked })} /></Field>
+              <small>默认关闭。开启后仅在主动发言到期时抓取一帧，视觉模型先概括画面，再由角色决定是否自然提及；每次可能额外消耗视觉模型 token。</small>
               <Field label="随机时间主动发言"><input type="checkbox" checked={proactivePlugin.randomize_interval} onChange={(e) => setProactivePlugin({ ...proactivePlugin, randomize_interval: e.target.checked })} /></Field>
               {proactivePlugin.randomize_interval ? (
                 <div className="proactive-random-range">
