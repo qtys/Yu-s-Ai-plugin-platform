@@ -26,7 +26,7 @@ type PetMood = "idle" | "tap" | "happy" | "confused";
 type PetFrame = "normal" | "blink" | "wink" | "surprised";
 type DirectedAction = "none" | "bounce" | "celebrate" | "lean-left" | "lean-right" | "peek" | "shy" | "squish" | "wiggle" | "tap" | "frontflip" | "backflip" | "custom";
 type GazeMode = "cursor" | "directed" | "none";
-type PetExpression = "idle" | "happy" | "shy" | "surprised" | "sleepy" | "confused";
+type PetExpression = "idle" | "happy" | "shy" | "surprised" | "sleepy" | "confused" | "curious" | "tender" | "playful" | "worried" | "proud" | "embarrassed";
 type PetMovement = "stay" | "left" | "right" | "toward-cursor" | "away-cursor" | "wander";
 type PetEyePose = "normal" | "wide" | "soft" | "closed" | "wink-left" | "wink-right";
 type PetMouthPose = "neutral" | "smile" | "grin" | "open" | "o" | "pout";
@@ -111,21 +111,21 @@ function replyDrivenMotion(text: string): PetMotion {
   const value = text.trim();
   if (!value) return { ...EMPTY_MOTION };
   if (/[？?]|怎么|为什么|是否|吗[？?]?/.test(value))
-    return { ...EMPTY_MOTION, action: Math.random() > .5 ? "lean-left" : "lean-right", expression: "surprised", gazeMode: "directed", lookX: .7, lookY: -.25, offsetX: 2, offsetY: -1, intensity: .7, duration: 1900 };
+    return { ...EMPTY_MOTION, action: Math.random() > .5 ? "lean-left" : "lean-right", expression: "confused", eyes: "wide", mouth: "o", blush: .1, effect: "question", gazeMode: "directed", lookX: .7, lookY: -.25, offsetX: 2, offsetY: -1, intensity: .7, duration: 1900 };
   if (/哈哈|开心|太好|恭喜|成功|好耶|！|!/.test(value))
-    return { ...EMPTY_MOTION, action: "celebrate", expression: "happy", gazeMode: "directed", lookX: 0, lookY: -.35, offsetX: 0, offsetY: -4, intensity: .9, duration: 1700 };
+    return { ...EMPTY_MOTION, action: "celebrate", expression: "happy", eyes: "soft", mouth: "grin", blush: .35, gazeMode: "directed", lookX: 0, lookY: -.35, offsetX: 0, offsetY: -4, intensity: .9, duration: 1700 };
   if (/抱歉|难过|遗憾|担心|休息|晚安|困/.test(value))
-    return { ...EMPTY_MOTION, action: "shy", expression: "shy", gazeMode: "none", lookX: 0, lookY: 0, offsetX: -2, offsetY: 2, intensity: .55, duration: 2300 };
+    return { ...EMPTY_MOTION, action: "shy", expression: "shy", eyes: "soft", mouth: "pout", blush: .2, gazeMode: "none", lookX: 0, lookY: 0, offsetX: -2, offsetY: 2, intensity: .55, duration: 2300 };
   if (/看看|发现|注意|这里|那边|左边|右边/.test(value))
-    return { ...EMPTY_MOTION, action: "peek", expression: "surprised", gazeMode: "directed", lookX: value.includes("左") ? -.9 : .9, lookY: 0, offsetX: value.includes("左") ? -4 : 4, offsetY: 0, intensity: .7, duration: 1800 };
-  return { ...EMPTY_MOTION, action: "bounce", expression: "idle", gazeMode: "cursor", offsetX: (Math.random() - .5) * 3, offsetY: -2, intensity: .6, duration: 1300 };
+    return { ...EMPTY_MOTION, action: "peek", expression: "surprised", eyes: "wide", mouth: "o", blush: 0, gazeMode: "directed", lookX: value.includes("左") ? -.9 : .9, lookY: 0, offsetX: value.includes("左") ? -4 : 4, offsetY: 0, intensity: .7, duration: 1800 };
+  return { ...EMPTY_MOTION, action: "bounce", expression: "idle", eyes: "normal", mouth: "smile", blush: .1, gazeMode: "cursor", offsetX: (Math.random() - .5) * 3, offsetY: -2, intensity: .6, duration: 1300 };
 }
 
 function parseModelMotion(value: unknown): PetMotion | null {
   if (!value || typeof value !== "object") return null;
   const item = value as Partial<PetMotion>;
   const actions: DirectedAction[] = ["none", "bounce", "celebrate", "lean-left", "lean-right", "peek", "shy", "squish", "wiggle", "tap", "frontflip", "backflip", "custom"];
-  const expressions: PetExpression[] = ["idle", "happy", "shy", "surprised", "sleepy", "confused"];
+  const expressions: PetExpression[] = ["idle", "happy", "shy", "surprised", "sleepy", "confused", "curious", "tender", "playful", "worried", "proud", "embarrassed"];
   const gazes: GazeMode[] = ["cursor", "directed", "none"];
   const movements: PetMovement[] = ["stay", "left", "right", "toward-cursor", "away-cursor", "wander"];
   const eyes: PetEyePose[] = ["normal", "wide", "soft", "closed", "wink-left", "wink-right"];
@@ -470,7 +470,7 @@ export default function Pet() {
   const [aiProactiveEnabled, setAiProactiveEnabled] = useState<boolean | null>(null);
   const [proactiveSources, setProactiveSources] = useState<{title: string; url: string}[]>([]);
   const proactiveInFlightRef = useRef(false);
-  const [pendingProactive, setPendingProactive] = useState<{characterId: number; content: string; sources: {title: string; url: string}[]} | null>(null);
+  const [pendingProactive, setPendingProactive] = useState<{characterId: number; content: string; sources: {title: string; url: string}[]; motion: PetMotion | null} | null>(null);
   const pendingProactiveRef = useRef(pendingProactive);
   pendingProactiveRef.current = pendingProactive;
   const proactiveBubbleRef = useRef<HTMLElement | null>(null);
@@ -705,12 +705,12 @@ export default function Pet() {
         setAiProactiveEnabled(config.enabled && config.plugin_enabled);
         const { character, expanded, menuOpen, busy, dragging } = proactiveContextRef.current;
         if (!config.enabled || !config.plugin_enabled || !character || expanded || menuOpen || busy || dragging || (!desktop && document.hidden) || (desktop && !(await getCurrentWindow().isVisible()))) return false;
-        const result = await request<{skipped?: boolean; content: string; conversation_id: number; sources: {title: string; url: string}[]}>("/plugins/proactive/generate", { method: "POST", body: JSON.stringify({ character_id: character.id, conversation_id: conversationRef.current }) });
+        const result = await request<{skipped?: boolean; content: string; conversation_id: number; sources: {title: string; url: string}[]; pet_motion?: unknown}>("/plugins/proactive/generate", { method: "POST", body: JSON.stringify({ character_id: character.id, conversation_id: conversationRef.current, pet_motion_enabled: motionEnabled, pet_model: petModel }) });
         if (result.skipped) return true;
         if (!disposed && proactiveContextRef.current.character?.id === character.id) {
           conversationRef.current = result.conversation_id;
           localStorage.setItem("yus-ai-conversation", String(result.conversation_id));
-          setPendingProactive({ characterId: character.id, content: result.content, sources: result.sources });
+          setPendingProactive({ characterId: character.id, content: result.content, sources: result.sources, motion: parseModelMotion(result.pet_motion) });
         }
         return true;
       } catch (error) {
@@ -734,14 +734,14 @@ export default function Pet() {
     };
     timer = window.setTimeout(() => void schedule(), 1000);
     return () => { disposed = true; window.clearTimeout(timer); };
-  }, [desktop]);
+  }, [desktop, motionEnabled, petModel]);
 
   useEffect(() => {
     if (!pendingProactive || expanded || menuOpen || busy || dragging) return;
     if (pendingProactive.characterId === character?.id) {
       setProactiveSources(pendingProactive.sources);
       setProactiveMessage(pendingProactive.content);
-      schedulePetMotion(replyDrivenMotion(pendingProactive.content), "proactive", "AI proactive", true);
+      schedulePetMotion(pendingProactive.motion ?? replyDrivenMotion(pendingProactive.content), "proactive", pendingProactive.motion?.emotionLabel ?? "local semantic fallback", true);
     }
     setPendingProactive(null);
   // oxlint-disable-next-line react-hooks/exhaustive-deps -- the scheduler reads the current priority from refs
@@ -1027,13 +1027,13 @@ export default function Pet() {
     setDirectedMotion(motion);
     gazeModeRef.current = motion.gazeMode;
     if (motion.gazeMode !== "cursor") setGaze({ x: motion.lookX, y: motion.lookY });
-    if (motion.expression === "surprised") showPetFrame("surprised", Math.min(900, motion.duration));
-    else if (motion.expression === "happy") showPetFrame("wink", Math.min(900, motion.duration));
-    else if (motion.expression === "sleepy") showPetFrame("blink", Math.min(1200, motion.duration));
+    if (!motion.eyes && !motion.mouth && motion.expression === "surprised") showPetFrame("surprised", Math.min(900, motion.duration));
+    else if (!motion.eyes && motion.expression === "happy") showPetFrame("wink", Math.min(900, motion.duration));
+    else if (!motion.eyes && motion.expression === "sleepy") showPetFrame("blink", Math.min(1200, motion.duration));
     if (motion.expression === "happy") showMood("happy", motion.duration);
     else if (motion.expression === "confused") showMood("confused", motion.duration);
     const repeat = motion.action === "custom" ? Math.max(1, Math.min(3, motion.repeat ?? 1)) : 1;
-    const totalDuration = motion.duration * repeat;
+    const totalDuration = Math.max(source === "proactive" ? 8000 : source === "model" ? 5000 : 0, motion.duration * repeat);
     if (motion.action === "custom" && motion.keyframes && slimeRigRef.current) {
       const strength = motionStrength / 100 * motion.intensity;
       const easing = motion.easing === "spring" ? "cubic-bezier(.2,1.35,.35,1)" : motion.easing ?? "ease-in-out";
@@ -1467,6 +1467,7 @@ export default function Pet() {
       let complete = "";
       let modelMotion: PetMotion | null = null;
       let modelMotionRaw = "";
+      let streamingExpressionStarted = false;
       setReply("");
       while (true) {
         const { value, done } = await reader.read();
@@ -1485,6 +1486,10 @@ export default function Pet() {
           if (data.token) {
             complete += data.token;
             setReply(complete);
+            if (!streamingExpressionStarted && complete.length >= 12) {
+              streamingExpressionStarted = true;
+              schedulePetMotion(replyDrivenMotion(complete), "chat", "streaming emotion preview");
+            }
           }
         }
       }

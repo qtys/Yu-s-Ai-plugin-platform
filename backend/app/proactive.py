@@ -1,10 +1,48 @@
 import random
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import xml.etree.ElementTree as ET
 
 import httpx
+
+
+PROACTIVE_EMOTION_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "speak_with_pet_emotion",
+        "description": "以角色身份主动说话，并为桌宠的眼睛、嘴巴、腮红和视线选择与这句话一致的表情。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "description": "展示给用户的一小段角色发言，不含动作说明"},
+                "expression": {"type": "string", "enum": ["idle", "happy", "shy", "surprised", "sleepy", "confused", "curious", "tender", "playful", "worried", "proud", "embarrassed"]},
+                "emotion_label": {"type": "string"},
+                "eyes": {"type": "string", "enum": ["normal", "wide", "soft", "closed", "wink_left", "wink_right"]},
+                "mouth": {"type": "string", "enum": ["neutral", "smile", "grin", "open", "o", "pout"]},
+                "blush": {"type": "number"},
+                "effect": {"type": "string", "enum": ["none", "heart", "sparkle", "question", "sweat", "star", "music"]},
+                "gaze": {"type": "string", "enum": ["cursor", "none", "center", "left", "right", "up", "down"]},
+                "duration_ms": {"type": "integer"},
+            },
+            "required": ["content", "expression", "emotion_label", "eyes", "mouth", "blush", "gaze"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+def extract_proactive_emotion(content: str) -> tuple[str, dict | None]:
+    match = re.search(r"<pet_emotion>\s*(\{.*?\})\s*</pet_emotion>", content, flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return content.strip(), None
+    visible = (content[:match.start()] + content[match.end():]).strip()
+    try:
+        payload = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return visible, None
+    return visible, payload if isinstance(payload, dict) else None
 
 
 class EmptyProactiveReply(ValueError):
@@ -69,7 +107,7 @@ def care_window(now: datetime) -> tuple[str, str]:
     return "", "当前不处于特定关心时间窗口，选择普通日常话题。"
 
 
-def build_proactive_messages(character_prompt: str, history: list, now: str, kind: str, headlines: list, last_content: str, care_guidance: str = "") -> list[dict]:
+def build_proactive_messages(character_prompt: str, history: list, now: str, kind: str, headlines: list, last_content: str, care_guidance: str = "", pet_motion_enabled: bool = False) -> list[dict]:
     instruction = (
         "【当前场景】你是角色卡中的角色本人，想自然地找用户说一句话，不是智能助手、新闻主持人或插件。"
         "身份、兴趣、价值观、性格、说话方式、用户关系、行为边界以角色卡为准。"
@@ -83,6 +121,13 @@ def build_proactive_messages(character_prompt: str, history: list, now: str, kin
         f"\n当前本地时间：{now}；本次话题方向：{kind}。{TOPIC_GUIDANCE.get(kind, TOPIC_GUIDANCE['daily'])}{care_guidance}自然考虑时间，不必报时。"
         f"\n上次主动发言（避免重复，不作为人设）：{last_content}"
     )
+    if pet_motion_enabled:
+        instruction += (
+            "\n【桌宠情绪】让表情符合角色卡和这句话真实的情绪，不要每次都笑。"
+            "如果提供 speak_with_pet_emotion 工具，用它一次同时提交发言和表情；不要另写正文。"
+            "如果接口没有工具，在发言后附加一个 <pet_emotion> JSON 标签，包含 expression、emotion_label、eyes、mouth、blush、gaze、effect、duration_ms。"
+            "标签不会展示给用户。眼睛和嘴巴必须各自选择，腮红可以为 0；表情可克制，也可有惊讶、好奇、犹豫、害羞等细微差别。"
+        )
     messages = [{"role": "system", "content": character_prompt}, {"role": "system", "content": instruction}]
     if kind == "conversation" and history:
         messages.append({"role": "system", "content": "以下最多两条是最近聊天线索，只允许轻微承接；不要复述、总结或逐项回应。"})
@@ -113,16 +158,36 @@ async def generate_proactive(setting, config, character_prompt: str, history: li
             kind = "news"
         else:
             kind = random.choices(["daily", "interest", "playful"], weights=[50, 35, 15], k=1)[0]
-        messages = build_proactive_messages(character_prompt, history, now, kind, headlines, config["last_content"], care_guidance if use_care else "")
-        response = await client.post(f"{setting['base_url'].rstrip('/')}/chat/completions", headers={"Authorization": f"Bearer {setting['api_key']}"}, json={
+        motion_enabled = bool(config.get("_pet_motion_enabled", False))
+        messages = build_proactive_messages(character_prompt, history, now, kind, headlines, config["last_content"], care_guidance if use_care else "", motion_enabled)
+        body = {
             "model": setting["model"], "messages": messages, "stream": False,
             "temperature": setting["temperature"], "max_tokens": config["max_tokens"],
-        })
+        }
+        provider_url = setting["base_url"].lower()
+        if motion_enabled and any(domain in provider_url for domain in ("api.openai.com", "api.deepseek.com")):
+            body["tools"] = [PROACTIVE_EMOTION_TOOL]
+            body["tool_choice"] = "auto"
+        response = await client.post(f"{setting['base_url'].rstrip('/')}/chat/completions", headers={"Authorization": f"Bearer {setting['api_key']}"}, json=body)
         response.raise_for_status()
         data = response.json()
         usage = int(data.get("usage", {}).get("total_tokens", 0) or 0)
-        content = data["choices"][0]["message"]["content"]
-        if not isinstance(content, str) or not content.strip():
+        message = data["choices"][0]["message"]
+        content = message.get("content")
+        text, emotion = extract_proactive_emotion(content) if isinstance(content, str) else ("", None)
+        if motion_enabled:
+            for call in message.get("tool_calls") or []:
+                if call.get("function", {}).get("name") != "speak_with_pet_emotion":
+                    continue
+                try:
+                    candidate = json.loads(call["function"]["arguments"])
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    continue
+                if isinstance(candidate, dict):
+                    emotion = candidate
+                    if not text:
+                        text = str(candidate.get("content", "")).strip()
+                    break
+        if not text:
             raise EmptyProactiveReply(usage, str(data["choices"][0].get("finish_reason", "unknown")))
-        text = content.strip()
-        return text, kind, headlines, usage, slot if use_care else ""
+        return text, kind, headlines, usage, slot if use_care else "", emotion

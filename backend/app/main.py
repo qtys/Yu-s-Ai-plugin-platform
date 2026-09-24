@@ -55,7 +55,7 @@ PET_ACTION_PROMPT = """【桌宠动作导演工具】
 - face_keyframes（可选，2~7 帧）：at、x(-10~10)、y(-10~10)、rotate(-20~20)、scale_x/scale_y(0.75~1.25)。负责表情的迟疑、追视、后知后觉和反应延迟。
 - crest_keyframes（可选，2~7 帧）：at、x(-5~5)、y(-7~7)、rotate(-45~45)、scale_x/scale_y(0.7~1.35)。负责头顶水滴的惯性、甩动和弹性跟随。
 可选 effect：none、heart、sparkle、question、sweat、star、music；特效必须服务于情绪，不能每次都出现。请设计有起承转合的动作，如“先缩成一团蓄力→斜跳→脸慢半拍跟上→水滴回弹”“听不懂时身体停住→脸探出去→问号浮起”，不要只做整只上下摇晃，也不要每次都翻滚。
-表情参数：expression 只能是 idle、happy、shy、surprised、sleepy、confused；eyes 可选 normal、wide、soft、closed、wink_left、wink_right；mouth 可选 neutral、smile、grin、open、o、pout；blush 为 0~1；emotion_label 用不超过 24 字概括表演意图。
+先判断这句话的真实情绪，再分别设计眼睛、嘴巴、腮红、视线；这些必须在动作工具中明确填写，不能只写一个笼统的 happy。不要总是眨眼、笑脸或加特效；认真、好奇、担心、俏皮、犹豫等都应有不同的五官组合。expression 选 idle、happy、shy、surprised、sleepy、confused、curious、tender、playful、worried、proud、embarrassed；eyes 选 normal、wide、soft、closed、wink_left、wink_right；mouth 选 neutral、smile、grin、open、o、pout；blush 为 0~1；emotion_label 用不超过 24 字概括表演意图。
 节奏参数：easing 可选 linear、ease、ease_in、ease_out、ease_in_out、spring；repeat 为 1~3；duration_ms 为 600~3500；intensity 为 0.3~1。视线 gaze 只能是 cursor、none、center、left、right、up、down。桌面移动 movement 只能是 stay、left、right、toward_cursor、away_cursor、wander，move_distance 为 0~120，通常保持 stay。
 自定义示例：<pet_action>{\"expression\":\"confused\",\"emotion_label\":\"身体定住，脸探头求解\",\"action\":\"custom\",\"eyes\":\"wide\",\"mouth\":\"o\",\"blush\":0.2,\"effect\":\"question\",\"gaze\":\"cursor\",\"movement\":\"stay\",\"intensity\":0.75,\"duration_ms\":1800,\"easing\":\"spring\",\"repeat\":1,\"body_keyframes\":[{\"at\":0,\"x\":0,\"y\":0,\"rotate\":0,\"scale_x\":1,\"scale_y\":1},{\"at\":0.3,\"x\":-4,\"y\":2,\"rotate\":-7,\"scale_x\":1.05,\"scale_y\":0.95},{\"at\":0.68,\"x\":1,\"y\":-3,\"rotate\":2,\"scale_x\":0.97,\"scale_y\":1.04},{\"at\":1,\"x\":0,\"y\":0,\"rotate\":0,\"scale_x\":1,\"scale_y\":1}],\"face_keyframes\":[{\"at\":0,\"x\":0,\"y\":0,\"rotate\":0,\"scale_x\":1,\"scale_y\":1},{\"at\":0.45,\"x\":6,\"y\":-2,\"rotate\":5,\"scale_x\":1.05,\"scale_y\":1.05},{\"at\":1,\"x\":0,\"y\":0,\"rotate\":0,\"scale_x\":1,\"scale_y\":1}],\"crest_keyframes\":[{\"at\":0,\"x\":0,\"y\":0,\"rotate\":0,\"scale_x\":1,\"scale_y\":1},{\"at\":0.4,\"x\":-2,\"y\":1,\"rotate\":-22,\"scale_x\":0.9,\"scale_y\":1.12},{\"at\":1,\"x\":0,\"y\":0,\"rotate\":0,\"scale_x\":1,\"scale_y\":1}]}</pet_action>
 只调用一次动作工具或输出一个动作标签，不得输出 CSS、JavaScript 或正文中的动作说明。"""
@@ -64,7 +64,7 @@ ALICE_ACTION_PROMPT = """【桌宠动作导演工具】
 当前桌宠外观是《刀剑神域》爱丽丝的 Q 版骑士。桌宠外观只决定动作，不改变角色卡中的身份、性格或说话方式。正常回答后可调用 perform_pet_action 一次；接口不支持工具时，另起一行输出一个 <pet_action> JSON 标签。动作信息不会展示给用户。
 为这个小骑士设计符合本次回复情绪的短表演：轻盈移动重心、抬头、侧身、微微屈膝、眨眼、视线停留，头发和发饰比身体慢半拍跟随。优先使用 action="custom"，用 body_keyframes、face_keyframes、crest_keyframes 分别控制身体、五官和发饰。不要把她当作软体史莱姆，不要大幅拉伸脸和服装，也不要频繁翻滚或挥舞不存在的武器。
 关键帧每层 2~7 帧，首帧 at=0、末帧 at=1，at 严格递增；每帧含 x、y、rotate、scale_x、scale_y。body 范围 x(-18~18)、y(-40~16)、rotate(-540~540)、scale(0.72~1.3)；face 范围 x/y(-10~10)、rotate(-20~20)、scale(0.75~1.25)；crest 范围 x(-5~5)、y(-7~7)、rotate(-45~45)、scale(0.7~1.35)。程序会把幅度限制到适合人物的范围。
-expression 只能是 idle、happy、shy、surprised、sleepy、confused；eyes 可选 normal、wide、soft、closed、wink_left、wink_right；mouth 可选 neutral、smile、grin、open、o、pout；blush 为 0~1。effect 可选 none、heart、sparkle、question、sweat、star、music。action 可选 none、bounce、celebrate、lean_left、lean_right、peek、shy、squish、wiggle、frontflip、backflip、custom。gaze 可选 cursor、none、center、left、right、up、down；movement 可选 stay、left、right、toward_cursor、away_cursor、wander。duration_ms 为 600~3500；intensity 为 0.3~1；repeat 为 1~3；easing 可选 linear、ease、ease_in、ease_out、ease_in_out、spring。emotion_label 不超过 24 字。
+先根据角色和本句话选择眼睛、嘴巴、腮红和视线，四项都必须明确填写。不要每次都是眨眼或微笑，克制的表情同样重要。expression 选 idle、happy、shy、surprised、sleepy、confused、curious、tender、playful、worried、proud、embarrassed；eyes 选 normal、wide、soft、closed、wink_left、wink_right；mouth 选 neutral、smile、grin、open、o、pout；blush 为 0~1。effect 可选 none、heart、sparkle、question、sweat、star、music。action 可选 none、bounce、celebrate、lean_left、lean_right、peek、shy、squish、wiggle、frontflip、backflip、custom。gaze 可选 cursor、none、center、left、right、up、down；movement 可选 stay、left、right、toward_cursor、away_cursor、wander。duration_ms 为 600~3500；intensity 为 0.3~1；repeat 为 1~3；easing 可选 linear、ease、ease_in、ease_out、ease_in_out、spring。emotion_label 不超过 24 字。
 只输出一次动作工具调用或一个动作标签，不输出 CSS、JavaScript，也不要在正文解释动作。"""
 
 PET_MOTION_FRAME_SCHEMA = {
@@ -84,7 +84,7 @@ PET_ACTION_TOOL = {
         "parameters": {
             "type": "object",
             "properties": {
-                "expression": {"type": "string", "enum": ["idle", "happy", "shy", "surprised", "sleepy", "confused"]},
+                "expression": {"type": "string", "enum": ["idle", "happy", "shy", "surprised", "sleepy", "confused", "curious", "tender", "playful", "worried", "proud", "embarrassed"]},
                 "emotion_label": {"type": "string"},
                 "action": {"type": "string", "enum": ["none", "bounce", "celebrate", "lean_left", "lean_right", "peek", "shy", "squish", "wiggle", "frontflip", "backflip", "custom"]},
                 "eyes": {"type": "string", "enum": ["normal", "wide", "soft", "closed", "wink_left", "wink_right"]},
@@ -100,7 +100,7 @@ PET_ACTION_TOOL = {
                 "face_keyframes": {"type": "array", "minItems": 2, "maxItems": 7, "items": PET_MOTION_FRAME_SCHEMA},
                 "crest_keyframes": {"type": "array", "minItems": 2, "maxItems": 7, "items": PET_MOTION_FRAME_SCHEMA},
             },
-            "required": ["expression", "emotion_label", "action", "gaze", "movement", "intensity", "duration_ms"],
+            "required": ["expression", "emotion_label", "action", "eyes", "mouth", "blush", "gaze", "movement", "intensity", "duration_ms"],
             "additionalProperties": False,
         },
     },
@@ -146,7 +146,7 @@ def build_local_time_context(now: datetime | None = None) -> str:
 
 
 def normalize_pet_action(payload: dict) -> dict | None:
-    expressions = {"idle", "happy", "shy", "surprised", "sleepy", "confused"}
+    expressions = {"idle", "happy", "shy", "surprised", "sleepy", "confused", "curious", "tender", "playful", "worried", "proud", "embarrassed"}
     actions = {"none", "bounce", "celebrate", "lean_left", "lean_right", "peek", "shy", "squish", "wiggle", "frontflip", "backflip", "custom"}
     movements = {"stay", "left", "right", "toward_cursor", "away_cursor", "wander"}
     eye_poses = {"normal", "wide", "soft", "closed", "wink_left", "wink_right"}
@@ -204,10 +204,16 @@ def normalize_pet_action(payload: dict) -> dict | None:
         return None
     if emotion_label:
         result["emotionLabel"] = emotion_label
-    if eyes:
-        result["eyes"] = eyes.replace("_", "-")
-    if mouth:
-        result["mouth"] = mouth
+    default_faces = {
+        "idle": ("normal", "neutral"), "happy": ("soft", "smile"),
+        "shy": ("soft", "pout"), "surprised": ("wide", "o"),
+        "sleepy": ("closed", "neutral"), "confused": ("wide", "pout"),
+        "curious": ("wide", "neutral"), "tender": ("soft", "smile"),
+        "playful": ("wink_left", "grin"), "worried": ("soft", "pout"),
+        "proud": ("normal", "grin"), "embarrassed": ("closed", "pout"),
+    }
+    result["eyes"] = (eyes or default_faces[expression][0]).replace("_", "-")
+    result["mouth"] = mouth or default_faces[expression][1]
     if "blush" in payload:
         result["blush"] = round(blush, 2)
     if effect != "none":
@@ -345,6 +351,8 @@ class PluginStateUpdate(BaseModel):
 class ProactiveRequest(BaseModel):
     character_id: int
     conversation_id: int | None = None
+    pet_motion_enabled: bool = True
+    pet_model: Literal["slime", "alice"] = "slime"
 
 
 def compile_character_prompt(character) -> str:
@@ -744,12 +752,12 @@ async def lifespan(_: FastAPI):
     UPDATE_RELEASE_CACHE = None
     configure_logging()
     init_db()
-    logger.info("backend_started version=0.15.15")
+    logger.info("backend_started version=0.15.16")
     yield
     logger.info("backend_stopped")
 
 
-app = FastAPI(title="Yu's AI API", version="0.15.15", lifespan=lifespan)
+app = FastAPI(title="Yu's AI API", version="0.15.16", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://tauri.localhost", "tauri://localhost"],
@@ -1108,11 +1116,15 @@ async def proactive_generate(payload: ProactiveRequest):
         # Reserve cooldown before network I/O so repeated requests cannot spend extra tokens.
         db.execute("UPDATE proactive_plugin SET next_due=? WHERE id=1", (time.time() + proactive_delay_seconds(config),))
         prompt = compile_character_prompt(character)
+        config["_pet_motion_enabled"] = payload.pet_motion_enabled
+        config["_pet_model"] = payload.pet_model
     try:
         async with MODEL_GENERATION_LOCK:
             PROACTIVE_GENERATION_TASK = asyncio.current_task()
             try:
-                text, kind, sources, usage, care_slot = await generate_proactive(setting, config, prompt, history, now.isoformat(timespec="seconds"))
+                generated = await generate_proactive(setting, config, prompt, history, now.isoformat(timespec="seconds"))
+                text, kind, sources, usage, care_slot = generated[:5]
+                emotion = generated[5] if len(generated) > 5 else None
             finally:
                 PROACTIVE_GENERATION_TASK = None
     except asyncio.CancelledError:
@@ -1139,8 +1151,14 @@ async def proactive_generate(payload: ProactiveRequest):
         db.execute("INSERT INTO messages(conversation_id,role,content,origin) VALUES (?,'assistant',?,'proactive')", (conversation_id, text + source_text))
         db.execute("UPDATE conversations SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (conversation_id,))
         db.execute("UPDATE proactive_plugin SET last_content=?,total_tokens=total_tokens+?,failure_count=0,last_error='',last_care_slot=CASE WHEN ?='' THEN last_care_slot ELSE ? END WHERE id=1", (text, usage, care_slot, care_slot))
-    logger.info("proactive_generated character_id=%s kind=%s total_tokens=%s", payload.character_id, kind, usage)
-    return {"content": text, "kind": kind, "sources": sources, "total_tokens": usage, "conversation_id": conversation_id}
+    pet_motion = None
+    if payload.pet_motion_enabled and isinstance(emotion, dict):
+        pet_motion = normalize_pet_action({
+            **{key: value for key, value in emotion.items() if key != "content"},
+            "action": "none", "movement": "stay", "move_distance": 0, "intensity": 0.7,
+        })
+    logger.info("proactive_generated character_id=%s kind=%s total_tokens=%s emotion=%s", payload.character_id, kind, usage, pet_motion.get("emotionLabel", "") if pet_motion else "fallback")
+    return {"content": text, "kind": kind, "sources": sources, "total_tokens": usage, "conversation_id": conversation_id, "pet_motion": pet_motion}
 
 
 @app.put("/api/pet/state")

@@ -5321,7 +5321,7 @@ dependencies = [
 
 [[package]]
 name = "yus-ai"
-version = "0.15.15"
+version = "0.15.16"
 dependencies = [
  "clipboard-win",
  "log",

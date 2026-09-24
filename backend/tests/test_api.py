@@ -300,6 +300,7 @@ def test_chat_hides_and_validates_model_pet_action(monkeypatch):
                 "expression": "shy", "action": "lean-left", "gazeMode": "none",
                 "lookX": 0.0, "lookY": 0.0, "intensity": 1.0, "duration": 3500,
                 "offsetX": -6.0, "offsetY": 2.0, "movement": "stay", "moveDistance": 0.0,
+                "eyes": "soft", "mouth": "pout",
             }
             assert any("桌宠动作导演工具" in message["content"] for message in uploaded[0]["messages"] if message["role"] == "system")
             messages = client.get(f"/api/conversations/{conversation['id']}/messages").json()
@@ -406,6 +407,16 @@ def test_custom_pet_motion_rejects_invalid_or_unsafe_shapes():
     assert normalize_pet_action({"expression": "happy", "action": "custom", "gaze": "cursor", "movement": "stay", "eyes": "url(javascript:bad)", "body_keyframes": [{"at": 0}, {"at": 1}]}) is None
     assert normalize_pet_action({"expression": "happy", "action": "custom", "gaze": "cursor", "movement": "stay", "effect": "<script>", "body_keyframes": [{"at": 0}, {"at": 1}]}) is None
     assert normalize_pet_action({"expression": "happy", "action": "custom", "gaze": "cursor", "movement": "stay", "body_keyframes": [{"at": 0}, {"at": 1}], "face_keyframes": [{"at": 0}]}) is None
+
+
+def test_new_emotions_have_distinct_safe_default_faces():
+    from app.main import PET_ACTION_TOOL
+
+    assert "curious" in PET_ACTION_TOOL["function"]["parameters"]["properties"]["expression"]["enum"]
+    assert {"eyes", "mouth", "blush"} <= set(PET_ACTION_TOOL["function"]["parameters"]["required"])
+    assert normalize_pet_action({"expression": "curious", "action": "none"})["eyes"] == "wide"
+    assert normalize_pet_action({"expression": "playful", "action": "none"})["mouth"] == "grin"
+    assert normalize_pet_action({"expression": "embarrassed", "action": "none"})["eyes"] == "closed"
 
 
 def test_custom_pet_motion_completes_missing_layers():
@@ -573,7 +584,7 @@ def test_update_check_and_verified_download(monkeypatch):
         with TestClient(app) as client:
             check = client.get("/api/system/update").json()
             assert check["available"] is True
-            assert check["current_version"] == "0.15.15"
+            assert check["current_version"] == "0.15.16"
             response = client.post("/api/system/update/download")
             events = [json.loads(line) for line in response.text.splitlines()]
             assert events[-1]["stage"] == "complete"

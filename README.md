@@ -4,11 +4,11 @@
 
 Yu's AI 是一款本地优先的 Windows 私人 AI 聊天软件。它将角色扮演、多模型 API、长期记忆、文档阅读、离线翻译和桌面宠物整合在同一个应用中，并为后续插件能力预留扩展空间。
 
-当前发布版：**0.15.15** · Windows x64 · 角色聊天 + 桌面陪伴
+当前发布版：**0.15.16** · Windows x64 · 角色聊天 + 桌面陪伴
 
 > ### ⬇ 下载 Windows 安装版
 >
-> [**下载最新版 Yus AI 安装程序（Windows x64）**](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/latest/download/Yus-AI-0.15.15-x64-setup.exe)
+> [**下载最新版 Yus AI 安装程序（Windows x64）**](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/latest/download/Yus-AI-0.15.16-x64-setup.exe)
 
 无需配置开发环境，下载安装后即可运行。其他版本、安装包校验值和发布说明可在 [GitHub Releases](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases) 查看。
 
@@ -50,7 +50,7 @@ Yu's AI 面向希望拥有长期陪伴式 AI、角色聊天和桌面助手体验
 - **角色扮演**：角色卡可定义身份、背景、性格、说话方式、用户关系、行为边界、开场白和示例对话。
 - **记忆系统**：可配置上下文消息数和相关长期记忆条数，较早对话可生成摘要，记忆按角色隔离。
 - **可切换桌宠**：提供蓝色雨滴史莱姆和 Q 版爱丽丝两种外观，可拖动、注视鼠标、在桌面移动、显示漫画气泡，并与主界面共享对话记录。
-- **模型动作导演**：支持模型根据回复和角色性格编排身体、脸部与头顶水滴动作；OpenAI、DeepSeek 官方接口可使用 Function Calling，其他兼容接口自动采用动作标签。
+- **模型动作与表情导演**：支持模型根据回复和角色性格编排身体、脸部与头顶水滴动作，并控制眼睛、嘴巴、腮红和视线；主动发言也会生成对应表情。OpenAI、DeepSeek 官方接口可使用 Function Calling，其他兼容接口采用隐藏标签。
 - **文档阅读**：可在聊天中上传 TXT、Markdown、PDF、DOCX，支持长文档以及 PDF/DOCX 图片分析。
 - **离线翻译**：基于 Argos Translate 提供中英双向翻译和跨应用连续翻译。
 - **主动互动**：角色可结合人设、时间段和可选新闻源主动发起话题；支持随机触发、时间关心及关心概率调节。
@@ -76,7 +76,7 @@ Yu's AI 面向希望拥有长期陪伴式 AI、角色聊天和桌面助手体验
 项目当前提供 Windows NSIS 安装包。自行构建后的安装包位于：
 
 ```text
-frontend\src-tauri\target\release\bundle\nsis\Yus AI_0.15.15_x64-setup.exe
+frontend\src-tauri\target\release\bundle\nsis\Yus AI_0.15.16_x64-setup.exe
 ```
 
 安装后直接启动 **Yus AI**，不需要手动启动后端。首次使用建议：
@@ -336,6 +336,11 @@ cd ..\backend
 ## 四、更新日志
 
 完整记录见 [CHANGELOG.md](CHANGELOG.md)。
+
+### 0.15.16（2026-09-24）
+
+- 桌宠普通对话和主动发言可由模型选择眼睛、嘴巴、腮红与视线；情绪扩展至 12 种。
+- 流式回复期间先显示临时表情，模型动作指令返回后切换；不支持工具调用的模型仍可使用兼容表情标签。
 
 ### 0.15.15（2026-09-24）
 

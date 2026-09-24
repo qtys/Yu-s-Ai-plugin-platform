@@ -24,7 +24,10 @@ def test_proactive_opt_in_cooldown_and_saved_history(monkeypatch):
         assert "2026-09-16" in now
         assert config["max_tokens"] == 1024
         calls.append(now)
-        return "今天想一起看看星星吗？", "care", [], 123, "2026-09-16:noon"
+        return "今天想一起看看星星吗？", "care", [], 123, "2026-09-16:noon", {
+            "expression": "happy", "emotion_label": "轻柔地邀请",
+            "eyes": "soft", "mouth": "smile", "blush": .25, "gaze": "cursor",
+        }
 
     monkeypatch.setattr("app.main.generate_proactive", fake_generate)
     with tempfile.TemporaryDirectory() as directory:
@@ -51,6 +54,10 @@ def test_proactive_opt_in_cooldown_and_saved_history(monkeypatch):
                 db.execute("UPDATE proactive_plugin SET next_due=0 WHERE id=1")
             result = client.post("/api/plugins/proactive/generate", json=request).json()
             assert result["total_tokens"] == 123
+            assert result["pet_motion"]["emotionLabel"] == "轻柔地邀请"
+            assert result["pet_motion"]["eyes"] == "soft"
+            assert result["pet_motion"]["mouth"] == "smile"
+            assert result["pet_motion"]["action"] == "none"
             messages = client.get(f"/api/conversations/{result['conversation_id']}/messages").json()
             assert messages[-1]["role"] == "assistant"
             assert messages[-1]["content"] == result["content"]
@@ -181,6 +188,63 @@ def test_actual_model_request_keeps_character_identity(monkeypatch):
     result = asyncio.run(generate_proactive(setting, config, prompt, history, "2026-09-16T20:00:00+08:00"))
     assert result[0] == "今晚想观测猎户座吗？"
     assert result[3] == 99 and len(captured) == 1
+
+
+def test_proactive_model_tool_returns_speech_and_facial_expression(monkeypatch):
+    from app.proactive import generate_proactive
+    import json
+
+    requests = []
+    def handler(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": None, "tool_calls": [{
+                "function": {"name": "speak_with_pet_emotion", "arguments": json.dumps({
+                    "content": "你在忙吗？我有个小发现。",
+                    "expression": "curious", "emotion_label": "好奇地等回应",
+                    "eyes": "wide", "mouth": "o", "blush": 0.2,
+                    "effect": "question", "gaze": "cursor", "duration_ms": 2300,
+                }, ensure_ascii=False)},
+            }]}}],
+            "usage": {"total_tokens": 78},
+        })
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr("app.proactive.httpx.AsyncClient", lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs))
+    result = asyncio.run(generate_proactive(
+        {"base_url": "https://api.deepseek.com/v1", "api_key": "mock", "model": "mock", "temperature": .8},
+        {"news_enabled": False, "care_enabled": False, "last_content": "", "max_tokens": 1024, "_pet_motion_enabled": True},
+        "角色卡", [], "2026-09-24T12:00:00+08:00",
+    ))
+    assert result[0] == "你在忙吗？我有个小发现。"
+    assert result[5]["eyes"] == "wide"
+    assert result[5]["mouth"] == "o"
+    assert requests[0]["tools"][0]["function"]["name"] == "speak_with_pet_emotion"
+    assert "桌宠情绪" in requests[0]["messages"][1]["content"]
+
+
+def test_proactive_fallback_tag_is_hidden_from_speech(monkeypatch):
+    from app.proactive import generate_proactive
+    import json
+
+    captured = []
+    def handler(request):
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content":
+            '愿意听我说个小秘密吗？<pet_emotion>{"expression":"shy","emotion_label":"害羞又期待","eyes":"soft","mouth":"smile","blush":0.7,"gaze":"down"}</pet_emotion>'
+        }}], "usage": {"total_tokens": 33}})
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr("app.proactive.httpx.AsyncClient", lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs))
+    result = asyncio.run(generate_proactive(
+        {"base_url": "https://model.example/v1", "api_key": "mock", "model": "mock", "temperature": .8},
+        {"news_enabled": False, "care_enabled": False, "last_content": "", "max_tokens": 1024, "_pet_motion_enabled": True},
+        "角色卡", [], "2026-09-24T12:00:00+08:00",
+    ))
+    assert result[0] == "愿意听我说个小秘密吗？"
+    assert result[5]["expression"] == "shy"
+    assert "tools" not in captured[0]
 
 
 def test_non_conversation_topics_do_not_receive_chat_history():

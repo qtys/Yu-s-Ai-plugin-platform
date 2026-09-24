@@ -106,6 +106,13 @@ button,input { font:inherit; }
 .pet-character.travel-right .slime-ground-shadow { animation:pet-travel-shadow-right .72s ease-out; }
 .pet-character.expression-shy .slime-blush { opacity:.92; transform:scale(1.18); }
 .pet-character.expression-confused .slime-mouth { transform:rotate(7deg) scaleX(.85); }
+.pet-character.expression-curious .slime-eye { box-shadow:inset 0 -3px 5px rgba(39,143,216,.16),0 3px 5px rgba(10,79,148,.2); }
+.pet-character.expression-tender .slime-blush { transform:scale(1.12); }
+.pet-character.expression-playful .slime-blush-right { transform:translateY(-2px) scale(1.16); }
+.pet-character.expression-worried .slime-eye-left { transform:rotate(6deg); }
+.pet-character.expression-worried .slime-eye-right { transform:rotate(-6deg); }
+.pet-character.expression-proud .slime-blush { opacity:.25; }
+.pet-character.expression-embarrassed .slime-blush { opacity:1; transform:scale(1.32); }
 .pet-character.dragging .slime-rig { transform:scaleX(1.09) scaleY(.92) rotate(calc(var(--gaze-x,0) * 3deg)); transition:transform .08s ease; animation:none; }
 .pet-character.model-alice { pointer-events:none; filter:drop-shadow(0 7px 8px rgba(67,77,110,.25)); animation:alice-breathe 3.6s ease-in-out infinite; }
 .pet-character.model-alice .slime-ground-shadow { left:36px; bottom:17px; width:68px; height:10px; opacity:.28; background:radial-gradient(ellipse,rgba(73,88,135,.4),transparent 73%); }
@@ -121,6 +128,11 @@ button,input { font:inherit; }
 .pet-character.model-alice.gaze-none .alice-iris-gaze { transform:translate(0,0); }
 .alice-blush-piece { opacity:var(--blush-strength,.72); transition:opacity .3s ease; }
 .pet-character.model-alice.expression-shy .alice-blush-piece { opacity:1; animation:alice-blush-pulse 1.2s ease-in-out infinite alternate; }
+.pet-character.model-alice.expression-tender .alice-blush-piece { opacity:.86; }
+.pet-character.model-alice.expression-embarrassed .alice-blush-piece { opacity:1; animation:alice-blush-pulse .75s ease-in-out infinite alternate; }
+.pet-character.model-alice.expression-worried .alice-brow-piece-left { transform:rotate(3deg); transform-origin:34% 50%; }
+.pet-character.model-alice.expression-worried .alice-brow-piece-right { transform:rotate(-3deg); transform-origin:66% 50%; }
+.pet-character.model-alice.expression-curious .alice-brow-piece { transform:translateY(-5px); }
 @keyframes alice-blush-pulse { from { opacity:.72; } to { opacity:1; } }
 .alice-eyelid { display:none; fill:none; stroke:#80553e; stroke-width:13; stroke-linecap:round; animation:alice-eyelid-close .15s ease-out both; }
 @keyframes alice-eyelid-close { from { opacity:0; transform:translateY(-12px); } to { opacity:1; transform:translateY(0); } }
