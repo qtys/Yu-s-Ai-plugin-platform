@@ -13,6 +13,14 @@ val tauriProperties = Properties().apply {
     }
 }
 
+val releaseKeystorePath = System.getenv("YUS_ANDROID_KEYSTORE_PATH")
+val releaseKeystorePassword = System.getenv("YUS_ANDROID_KEYSTORE_PASSWORD")
+val releaseKeyAlias = System.getenv("YUS_ANDROID_KEY_ALIAS")
+val releaseKeyPassword = System.getenv("YUS_ANDROID_KEY_PASSWORD")
+val releaseSigningConfigured = listOf(
+    releaseKeystorePath, releaseKeystorePassword, releaseKeyAlias, releaseKeyPassword
+).all { !it.isNullOrBlank() }
+
 android {
     compileSdk = 36
     namespace = "com.qtys.yusai.mobile"
@@ -24,6 +32,16 @@ android {
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
     }
+    signingConfigs {
+        if (releaseSigningConfigured) {
+            create("yusRelease") {
+                storeFile = file(releaseKeystorePath!!)
+                storePassword = releaseKeystorePassword!!
+                keyAlias = releaseKeyAlias!!
+                keyPassword = releaseKeyPassword!!
+            }
+        }
+    }
     buildTypes {
         getByName("debug") {
             manifestPlaceholders["usesCleartextTraffic"] = "true"
@@ -32,6 +50,9 @@ android {
             isMinifyEnabled = false
         }
         getByName("release") {
+            if (releaseSigningConfigured) {
+                signingConfig = signingConfigs.getByName("yusRelease")
+            }
             isMinifyEnabled = true
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }

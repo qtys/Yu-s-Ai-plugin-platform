@@ -4,13 +4,13 @@
 
 Yu's AI 是一款本地优先的 Windows 私人 AI 聊天软件。它将角色扮演、多模型 API、长期记忆、文档阅读、离线翻译和桌面宠物整合在同一个应用中，并为后续插件能力预留扩展空间。
 
-最新公开安装版：**0.15.18** · Windows x64。仓库源码还包含后续未发布的桌面端改动，以及独立 Android 调试版；两者均不等同于下方的公开安装包。
+最新公开安装版：**Windows 0.15.27**（x64）和 **Android 0.1.0 测试版**（ARM64）。两端数据独立保存，不会自动同步。
 
 > ### ⬇ 下载 Windows 安装版
 >
-> [**下载最新版 Yus AI 安装程序（Windows x64）**](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/latest/download/Yus-AI-0.15.18-x64-setup.exe)
+> [**下载 Windows 安装程序（x64）**](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/download/v0.15.27/Yus-AI-0.15.27-x64-setup.exe) · [**下载 Android APK（ARM64 测试版）**](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/download/v0.15.27/Yus-AI-Mobile-0.1.0-arm64.apk)
 
-无需配置开发环境，下载安装后即可运行。其他版本、安装包校验值和发布说明可在 [GitHub Releases](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases) 查看。
+无需配置开发环境，下载安装后即可运行。Android 测试版目前仅支持 ARM64 手机；安装前请阅读[手机端数据与调试版升级说明](docs/ANDROID.md)。其他版本、安装包校验值和发布说明可在 [GitHub Releases](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases) 查看。
 
 1. [软件介绍](#一软件介绍)
 2. [使用手册](#二使用手册)
@@ -74,7 +74,7 @@ Yu's AI 面向希望拥有长期陪伴式 AI、角色聊天和桌面助手体验
 
 ### 2.1 安装与首次启动
 
-项目当前提供 Windows NSIS 安装包。自行构建后的安装包位于：
+项目提供 Windows NSIS 安装包和 Android ARM64 测试 APK。自行构建后的 Windows 安装包位于：
 
 ```text
 frontend\src-tauri\target\release\bundle\nsis\Yus AI_<版本号>_x64-setup.exe
@@ -201,9 +201,9 @@ Yu's AI 使用 OpenAI Chat Completions 兼容格式，可连接 DeepSeek 等兼�
 
 > 备份包含 API Key 和私人聊天内容。请存放在可信位置，不要上传到公开仓库或公共网盘。
 
-### 2.12 Android 调试版
+### 2.12 Android 测试版
 
-仓库中的 `frontend/mobile-native/` 是独立 Android 工程，**目前仅供开发测试，没有公开发布的 APK**。它不需要电脑后端常驻，可在手机本地保存角色、对话、指令、模板与模型配置，并直接连接用户自行配置的 HTTPS 模型接口。模型密钥保存在应用私有目录；桌面与手机数据不会自动同步，卸载应用可能删除手机本地数据。
+仓库中的 `frontend/mobile-native/` 是独立 Android 工程，提供 [0.1.0 ARM64 测试 APK](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/download/v0.15.27/Yus-AI-Mobile-0.1.0-arm64.apk)。它不需要电脑后端常驻，可在手机本地保存角色、对话、指令、模板与模型配置，并直接连接用户自行配置的 HTTPS 模型接口。模型密钥保存在应用私有目录；桌面与手机数据不会自动同步，卸载应用可能删除手机本地数据。此前通过 USB 安装的调试包采用不同签名，**不能直接覆盖安装正式签名的测试包**；请先保留调试包和其中的数据，详见 [Android 说明](docs/ANDROID.md)。
 
 聊天页把主要空间留给消息：在“角色”页切换角色，在“最近”页新建对话，输入框右侧可打开指令与模板。键盘弹出时输入区保持在键盘上方，底部导航暂时隐藏。手机端已适配消息显示、时间信息和小说式回复；桌宠、离线翻译、主动互动、二次审核、文档分析与桌面的完整记忆系统仍待适配。构建与 USB 调试步骤见 [Android 开发说明](docs/ANDROID.md)。
 
@@ -287,7 +287,7 @@ API Key 当前保存在 SQLite，尚未接入 Windows Credential Manager，请�
 
 ### 3.6 当前限制与已知问题
 
-- 目前仅公开提供 Windows 桌面安装包；Android 版仍是源码中的调试工程，不提供公开下载包。
+- Android 版为首个公开测试包，仅支持 ARM64；桌宠、离线翻译、文档分析等桌面功能尚未移植。
 - 本地后端固定监听 `127.0.0.1:8000`。
 - API Key 暂时以本地数据库形式保存。
 - 通用第三方插件系统仍在建设。
@@ -363,14 +363,14 @@ cd ..\backend
 
 完整记录见 [CHANGELOG.md](CHANGELOG.md)。
 
-### Android 0.1.0（开发调试中，未公开发布）
+### Android 0.1.0（2026-09-26，ARM64 公开测试版）
 
 - 新增独立手机端工程，支持本机角色、对话、多模型配置、流式回复、指令与模板。
 - 将角色与模型选择整理为底部抽屉；聊天页扩大消息区域，新对话移至“最近”，角色切换移至“角色”。
 - 修复长对话打开后未滚到最新消息，以及输入法遮盖输入框的问题；键盘出现时临时隐藏底部导航。
-- 调试包和本机数据不纳入仓库；桌面到手机的迁移需用户在本地明确执行。
+- 发布正式签名的 ARM64 测试 APK；调试包和本机数据不纳入仓库，桌面到手机的迁移需用户在本地明确执行。
 
-### 0.15.27（2026-09-26，Windows 安装包已生成，未发布）
+### 0.15.27（2026-09-26，Windows x64 正式发布）
 
 - 精简角色入口，调整新建对话按钮、顶部窗口工具区与屏幕读取开关的样式和布局。
 - 保留纸墨、深海、樱雾、青玉四套辨识度更高的主题；顶部模型选择改为主题化切换卡片。
