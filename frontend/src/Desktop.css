@@ -36,7 +36,7 @@
   white-space: nowrap;
   flex: 0 0 auto;
 }
-.window-tools button span {
+.window-tools > button > span {
   font-size: 8px;
   transform: rotate(45deg);
 }
@@ -89,7 +89,7 @@
   }
 }
 @media (max-width: 520px) {
-  .window-tools button span {
+  .window-tools > button > span {
     display: none;
   }
 }

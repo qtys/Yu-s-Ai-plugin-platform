@@ -259,7 +259,7 @@ def test_chat_streams_visible_tokens_and_saves_reply(monkeypatch):
             assert events[-1] == {"done": True}
             messages = client.get(f"/api/conversations/{conversation['id']}/messages").json()
             assert messages[-1]["content"] == "你好，世界"
-            assert messages[-3]["origin"] == "proactive"
+            assert all(message["origin"] != "proactive" for message in messages)
             assert all(message["content"] != "这条主动发言只能留在本地" for message in uploaded_requests[0]["messages"])
             document_prompt = "\n".join(message["content"] for message in uploaded_requests[0]["messages"] if message["role"] == "system")
             assert "全文结论：用户对话优先" in document_prompt
@@ -310,10 +310,13 @@ def test_chat_only_sends_proactive_message_when_user_continues_that_topic(monkey
                 {"role": "user", "content": "那颗流星是什么颜色？"},
             ]
             assert all("不相关的主动发言" not in str(message) for message in uploaded_requests[0]["messages"])
+            visible = client.get(f"/api/conversations/{conversation['id']}/messages").json()
+            assert any(message["content"] == "刚才我看到一颗流星。" and message["origin"] == "proactive_replied" for message in visible)
+            assert all(message["content"] != "不相关的主动发言" for message in visible)
 
             ordinary = client.post(route, json={"content": "换个话题", "character_id": character["id"]})
             assert ordinary.status_code == 200
-            assert all("刚才我看到一颗流星" not in str(message) for message in uploaded_requests[1]["messages"])
+            assert any("刚才我看到一颗流星" in str(message) for message in uploaded_requests[1]["messages"])
             assert client.post(f"/api/conversations/{other['id']}/chat", json={
                 "content": "继续", "character_id": character["id"], "reply_to_proactive_id": topic_id,
             }).status_code == 409
@@ -392,7 +395,7 @@ def test_chat_environment_context_respects_time_and_location_switches(monkeypatc
             character = client.post("/api/characters", json={"name": "环境测试角色"}).json()
             conversation = client.post("/api/conversations", json={"character_id": character["id"]}).json()
             assert client.post(f"/api/conversations/{conversation['id']}/chat", json={"content": "第一次"}).status_code == 200
-            first_system_text = "\n".join(message["content"] for message in uploaded_requests[-1]["messages"] if message["role"] == "system")
+            first_system_text = "\n".join(message["content"] for message in [request for request in uploaded_requests if request.get("stream")][-1]["messages"] if message["role"] == "system")
             assert "当前设备本地时间" not in first_system_text
             assert "中国上海市" not in first_system_text
 
@@ -404,10 +407,19 @@ def test_chat_environment_context_respects_time_and_location_switches(monkeypatc
             assert saved["include_location_context"] is True
             assert saved["location_context"] == "中国上海市"
             assert client.post(f"/api/conversations/{conversation['id']}/chat", json={"content": "第二次"}).status_code == 200
-            second_system_text = "\n".join(message["content"] for message in uploaded_requests[-1]["messages"] if message["role"] == "system")
+            second_system_text = "\n".join(message["content"] for message in [request for request in uploaded_requests if request.get("stream")][-1]["messages"] if message["role"] == "system")
             assert "当前本机时间" in second_system_text
             assert "中国上海市" in second_system_text
             assert "不要声称无法获取当前时间" in second_system_text
+            assert client.put("/api/plugins/conversation_environment/state", json={"enabled": False}).status_code == 200
+            assert client.post(f"/api/conversations/{conversation['id']}/chat", json={"content": "第三次"}).status_code == 200
+            disabled_system_text = "\n".join(message["content"] for message in [request for request in uploaded_requests if request.get("stream")][-1]["messages"] if message["role"] == "system")
+            assert "【本次对话的实时环境信息】" not in disabled_system_text
+            assert client.get("/api/settings").json()["location_context"] == "中国上海市"
+            assert client.put("/api/plugins/conversation_environment/state", json={"enabled": True}).status_code == 200
+            assert client.post(f"/api/conversations/{conversation['id']}/chat", json={"content": "第四次"}).status_code == 200
+            restored_system_text = "\n".join(message["content"] for message in [request for request in uploaded_requests if request.get("stream")][-1]["messages"] if message["role"] == "system")
+            assert "当前本机时间" in restored_system_text and "中国上海市" in restored_system_text
 
 
 def test_local_time_context_is_explicit_and_machine_independent():
@@ -646,7 +658,7 @@ def test_update_check_and_verified_download(monkeypatch):
         with TestClient(app) as client:
             check = client.get("/api/system/update").json()
             assert check["available"] is True
-            assert check["current_version"] == "0.15.18"
+            assert check["current_version"] == app.version
             response = client.post("/api/system/update/download")
             events = [json.loads(line) for line in response.text.splitlines()]
             assert events[-1]["stage"] == "complete"

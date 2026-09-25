@@ -18,6 +18,8 @@ type Character = {
 type Conversation = { id: number; character_id: number; title: string };
 type PetState = { position_x: number | null; position_y: number | null };
 type DisplaySettings = { message_display_mode: MessageDisplayMode };
+type ChatPhase = "generating" | "reviewing" | "revising";
+const chatPhaseLabels: Record<ChatPhase, string> = { generating: "正在回复…", reviewing: "正在审核指令…", revising: "正在修订回复…" };
 type TranslationPackage = { from_code: "zh" | "en"; to_code: "zh" | "en"; name: string; size_mb: number; installed: boolean };
 type DownloadProgress = { stage: "testing" | "retrying" | "downloading" | "installing" | "complete" | "error"; percent: number; downloaded?: number; total?: number; error?: string; source?: string; attempt?: number; max_attempts?: number; resumed?: boolean };
 type PetFeature = "chat" | "translation" | "settings";
@@ -488,6 +490,7 @@ export default function Pet() {
   const [dayPeriod, setDayPeriod] = useState<DayPeriod>(() => getDayPeriod());
   const [placement, setPlacement] = useState("above-right");
   const [busy, setBusy] = useState(false);
+  const [chatPhase, setChatPhase] = useState<ChatPhase | null>(null);
   const [input, setInput] = useState("");
   const [reply, setReply] = useState(READY_MESSAGE);
   const [translationPackages, setTranslationPackages] = useState<TranslationPackage[]>([]);
@@ -1477,6 +1480,7 @@ export default function Pet() {
     }
     setInput("");
     setBusy(true);
+    setChatPhase("generating");
     setReply("正在想……");
     schedulePetMotion({ ...EMPTY_MOTION, action: "bounce", duration: 120000, intensity: .35 }, "chat", "waiting for model");
     try {
@@ -1508,6 +1512,7 @@ export default function Pet() {
       const decoder = new TextDecoder();
       let buffer = "";
       let complete = "";
+      let revisionStarted = false;
       let modelMotion: PetMotion | null = null;
       let modelMotionRaw = "";
       let streamingExpressionStarted = false;
@@ -1522,6 +1527,13 @@ export default function Pet() {
           if (!line) continue;
           const data = JSON.parse(line);
           if (data.error) throw new Error(data.error);
+          if (data.phase === "reviewing" || data.phase === "revising") setChatPhase(data.phase);
+          if (typeof data.revision_token === "string") {
+            complete = (revisionStarted ? complete : "") + data.revision_token;
+            revisionStarted = true;
+            setReply(complete);
+          }
+          if (typeof data.replace === "string") { complete = data.replace; setReply(complete); }
           if (data.pet_motion) {
             modelMotion = parseModelMotion(data.pet_motion);
             modelMotionRaw = String(data.pet_motion_raw ?? "");
@@ -1540,6 +1552,13 @@ export default function Pet() {
       if (buffer.trim()) {
         const data = JSON.parse(buffer);
         if (data.error) throw new Error(data.error);
+        if (data.phase === "reviewing" || data.phase === "revising") setChatPhase(data.phase);
+        if (typeof data.revision_token === "string") {
+          complete = (revisionStarted ? complete : "") + data.revision_token;
+          revisionStarted = true;
+          setReply(complete);
+        }
+        if (typeof data.replace === "string") { complete = data.replace; setReply(complete); }
         if (data.pet_motion) {
           modelMotion = parseModelMotion(data.pet_motion);
           modelMotionRaw = String(data.pet_motion_raw ?? "");
@@ -1555,6 +1574,7 @@ export default function Pet() {
     } finally {
       if (motionPriorityRef.current === MOTION_PRIORITY.chat) finishMotion(motionSequenceRef.current);
       setBusy(false);
+      setChatPhase(null);
     }
   }
 
@@ -1581,6 +1601,7 @@ export default function Pet() {
           <div className={`pet-reply ${busy ? "thinking" : ""}`}>
             <MessageContent content={reply} mode={isPluginEnabled(plugins, "message_display") ? messageDisplayMode : "raw"} />
           </div>
+          {busy && chatPhase && <small className="pet-chat-phase" role="status">{chatPhaseLabels[chatPhase]}</small>}
           <form onSubmit={send}>
             <input value={input} onChange={(event) => setInput(event.target.value)} placeholder="和我说点什么……" autoFocus />
             <button disabled={busy || !input.trim()} aria-label="发送">↑</button>
@@ -1681,7 +1702,7 @@ export default function Pet() {
           <button onClick={() => { setProactiveMessage(""); setProactiveMessageId(null); setProactiveConversationId(null); }} aria-label="关闭主动提醒">×</button>
           <small>{PERIOD_LABELS[dayPeriod]} · {character?.name ?? "蓝雨"}</small>
           {proactiveMessage}
-          {proactiveSources.length > 0 && <small>新闻参考来源已附在对话记录中</small>}
+          {proactiveSources.length > 0 && <small>回复这个话题后，参考来源会一起进入对话记录</small>}
           <a href="#" onClick={(event) => {
             event.preventDefault();
             replyToProactiveRef.current = proactiveMessageId && proactiveConversationId ? { messageId: proactiveMessageId, conversationId: proactiveConversationId } : null;

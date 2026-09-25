@@ -60,9 +60,11 @@ def test_proactive_opt_in_cooldown_and_saved_history(monkeypatch):
             assert result["pet_motion"]["mouth"] == "smile"
             assert result["pet_motion"]["action"] == "none"
             messages = client.get(f"/api/conversations/{result['conversation_id']}/messages").json()
-            assert messages[-1]["role"] == "assistant"
-            assert messages[-1]["id"] == result["message_id"]
-            assert messages[-1]["content"] == result["content"]
+            assert messages == []
+            assert all(item["id"] != result["conversation_id"] for item in client.get("/api/conversations").json())
+            with database.connect() as db:
+                pending = db.execute("SELECT content,origin FROM messages WHERE id=?", (result["message_id"],)).fetchone()
+                assert pending["content"] == result["content"] and pending["origin"] == "proactive"
             assert client.post("/api/plugins/proactive/generate", json=request).json()["reason"] == "cooldown"
             assert len(calls) == 1
             saved = client.get("/api/plugins/proactive").json()

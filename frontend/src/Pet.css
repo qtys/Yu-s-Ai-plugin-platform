@@ -276,6 +276,7 @@ button,input { font:inherit; }
 .pet-reply .markdown-content pre { max-width:100%; overflow:auto; margin:6px 0; padding:7px; border-radius:8px; background:#e7f5fc; }
 .pet-reply .markdown-content code { font-family:"Cascadia Code",Consolas,monospace; font-size:.88em; }
 .pet-reply.thinking { color:#55809d; }
+.pet-chat-phase { display:block; padding:2px 0 5px; color:inherit; opacity:.7; font-size:11px; }
 .speech-bubble form { display:grid; grid-template-columns:1fr 34px; gap:7px; margin-top:10px; }
 .speech-bubble form input { min-width:0; border:1px solid #a8d9f4; outline:0; background:white; color:#173b56; border-radius:11px; padding:8px 10px; font-size:calc(13px * var(--dialog-font-scale, 1)); }
 .speech-bubble form input:focus { border-color:#198fd4; box-shadow:0 0 0 3px rgba(25,143,212,.12); }

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "default",
+  "description": "Minimal mobile commands for local chat and direct model access",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

@@ -1,4 +1,4 @@
-export type PluginId = "translation" | "message_display" | "proactive";
+export type PluginId = "translation" | "message_display" | "conversation_environment" | "proactive" | "novel_reply" | "instruction_review";
 
 export type PluginInfo = {
   id: PluginId;
@@ -21,4 +21,6 @@ export const permissionLabels: Record<string, string> = {
   model_api: "调用模型 API",
   conversation_write: "写入对话",
   network_optional: "可选新闻网络请求",
+  local_time: "读取本机时间",
+  location_optional: "使用手动填写的地区",
 };
