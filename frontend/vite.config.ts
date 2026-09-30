@@ -10,6 +10,10 @@ export default defineConfig({
         main: 'index.html',
         pet: 'pet.html',
         mobile: 'mobile.html',
+        ...(process.env.NODE_ENV !== 'production' ? {
+          pixelLab: 'pixel-lab.html',
+          propLab: 'prop-lab.html',
+        } : {}),
       },
     },
   },

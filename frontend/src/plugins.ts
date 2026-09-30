@@ -1,4 +1,4 @@
-export type PluginId = "translation" | "message_display" | "conversation_environment" | "proactive" | "novel_reply" | "instruction_review";
+export type PluginId = "translation" | "message_display" | "conversation_environment" | "proactive" | "novel_reply" | "instruction_review" | "speech";
 
 export type PluginInfo = {
   id: PluginId;
@@ -16,6 +16,8 @@ export function isPluginEnabled(plugins: PluginInfo[], id: PluginId): boolean {
 }
 
 export const permissionLabels: Record<string, string> = {
+  microphone: "仅点击录音时访问麦克风",
+  speech_api: "向语音服务提交录音或朗读文字",
   local_storage: "本地文件",
   network_download: "下载语言包",
   model_api: "调用模型 API",

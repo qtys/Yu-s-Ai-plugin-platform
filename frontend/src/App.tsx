@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { FormEvent, ReactNode } from "react";
+import type { CSSProperties, FormEvent, ReactNode } from "react";
+import BackgroundSettings, { readWorkspaceBackground } from "./BackgroundSettings";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import MessageContent from "./MessageContent";
+import { SpeechSettingsPanel, useSpeech, SpeechToolbar, SpeechStatus } from "./Speech";
 import type { MessageDisplayMode } from "./MessageContent";
 import { isPluginEnabled, permissionLabels } from "./plugins";
 import type { PluginId, PluginInfo } from "./plugins";
 import "./App.css";
 import "./Desktop.css";
 import "./Themes.css";
+import WorkspaceNavigation, { WorkspaceIcon } from "./WorkspaceNavigation";
+import "./Workspace.css";
 
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:8000/api";
 type Character = {
@@ -49,11 +53,13 @@ type Settings = {
   location_context: string;
   screen_access_enabled: boolean;
 };
-type Theme = "paper" | "midnight" | "blossom" | "jade";
+type Theme = "graphite" | "monochrome" | "paper" | "midnight" | "blossom" | "jade";
 type UpdateInfo = { current_version: string; version: string; name: string; notes: string; published_at: string; release_url: string; available: boolean; asset: { name: string; size: number; digest: string } };
 type UpdateProgress = { stage: "downloading" | "retrying" | "complete"; percent: number; downloaded?: number; total?: number; resumed?: boolean; attempt?: number; max_attempts?: number; reason?: string; path?: string; sha256?: string; version?: string };
 type BackupInfo = { path: string; filename: string; size: number; sha256: string; created_at: string; counts: { characters: number; conversations: number; messages: number; documents: number } };
 const themes: { id: Theme; name: string; description: string }[] = [
+  { id: "graphite", name: "雾白", description: "雾白画布 · 石墨黑细节" },
+  { id: "monochrome", name: "黑曜", description: "极夜黑 · 冷白轮廓 · 黑白反差" },
   { id: "paper", name: "纸墨", description: "暖白纸张 · 高对比墨色" },
   { id: "midnight", name: "深海", description: "深蓝夜色 · 冰蓝高光" },
   { id: "blossom", name: "樱雾", description: "柔粉画布 · 莓红点缀" },
@@ -103,11 +109,13 @@ export default function App() {
   const [theme, setTheme] = useState<Theme>(
     () => {
       const saved = localStorage.getItem("yus-ai-theme");
+      if (!localStorage.getItem("yus-ai-workspace-layout")) return "graphite";
       if (themes.some((item) => item.id === saved)) return saved as Theme;
       return ({ violet: "midnight", sand: "paper", seafoam: "jade", ember: "midnight" } as Record<string, Theme>)[saved ?? ""] ?? "paper";
     },
   );
   const [backendReady, setBackendReady] = useState(false);
+  const [workspaceBackground, setWorkspaceBackground] = useState(readWorkspaceBackground);
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [pluginBusy, setPluginBusy] = useState<string | null>(null);
   const [selectedPluginId, setSelectedPluginId] = useState<PluginId | null>(null);
@@ -117,7 +125,7 @@ export default function App() {
   const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null);
   const [maintenanceBusy, setMaintenanceBusy] = useState<"update" | "backup" | "restore" | null>(null);
   const [maintenanceStatus, setMaintenanceStatus] = useState("");
-  const [panel, setPanel] = useState<"chat" | "characters" | "settings">(
+  const [panel, setPanel] = useState<"chat" | "characters" | "plugins" | "settings">(
     "chat",
   );
   const [settings, setSettings] = useState<Settings>({
@@ -190,6 +198,17 @@ export default function App() {
   const skipMessageLoadRef = useRef<number | null>(null);
   const selectionReadyRef = useRef(false);
   const desktop = "__TAURI_INTERNALS__" in window;
+  const speechEnabled = plugins.some((plugin) => plugin.id === "speech" && plugin.enabled);
+  const voice = useSpeech(speechEnabled, `${panel}:${activeCharacter}:${activeConversation}:${busy}`, (text) => {
+    const current = inputRef.current?.value ?? inputDraftRef.current;
+    const next = current ? `${current}\n${text}` : text;
+    inputDraftRef.current = next;
+    if (inputRef.current) {
+      inputRef.current.value = next;
+      inputRef.current.style.height = "0px";
+      inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 144)}px`;
+    }
+  });
 
   useEffect(() => {
     busyRef.current = busy;
@@ -414,6 +433,7 @@ export default function App() {
   }, [instructionPanelOpen, instructionTab]);
   useEffect(() => {
     localStorage.setItem("yus-ai-theme", theme);
+    localStorage.setItem("yus-ai-workspace-layout", "top-navigation");
     document.documentElement.dataset.theme = theme;
     return () => {
       delete document.documentElement.dataset.theme;
@@ -478,12 +498,7 @@ export default function App() {
       void listen("main-sync", () => { void syncPetConversation(); })
         .then((stop) => { if (cancelled) stop(); else unlisten = stop; });
       void listen("open-plugin-manager", () => {
-        setPanel("settings");
-        window.setTimeout(() => {
-          const drawer = document.getElementById("plugin-manager") as HTMLDetailsElement | null;
-          if (drawer) drawer.open = true;
-          drawer?.scrollIntoView({ behavior: "smooth", block: "start" });
-        }, 100);
+        setPanel("plugins");
       }).then((stop) => { if (cancelled) stop(); else unlistenPlugins = stop; });
     } else {
       window.addEventListener("focus", syncPetConversation);
@@ -1242,87 +1257,30 @@ export default function App() {
   const pluginSettingsStatus = selectedPluginId === "proactive" ? proactiveSaveStatus : settingsSaveStatus;
 
   return (
-    <div className={mini ? "shell mini" : "shell"} data-theme={theme}>
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark">雨</span>
-          <div>
-            <strong>Yu's AI</strong>
-            <small>私人智能空间</small>
-          </div>
-        </div>
-        <div className="sidebar-label">角色</div>
-        <div className="character-list">
-          {characters.map((x) => (
-            <button
-              key={x.id}
-              className={
-                activeCharacter === x.id
-                  ? "selected character-row"
-                  : "character-row"
-              }
-              onClick={() => void selectCharacter(x.id)}
-            >
-              <span className="avatar">{x.avatar_data ? <img src={x.avatar_data} alt="" /> : x.name[0]}</span>
-              <span>
-                <strong>{x.name}</strong>
-                <small>{x.description || "私人角色"}</small>
-              </span>
-            </button>
-          ))}
-        </div>
-        <div className="sidebar-label">最近对话</div>
-        <div className="conversation-list">
-          <button className="new-chat" onClick={createConversation} disabled={!activeCharacter} aria-label="新建对话" title="新建对话"><span aria-hidden="true">＋</span><span>新建对话</span></button>
-          {conversations.map((x) => (
-            <div
-              key={x.id}
-              className={
-                activeConversation === x.id
-                  ? "conversation-row selected"
-                  : "conversation-row"
-              }
-            >
-              <button
-                className="conversation-open"
-                title={x.title}
-                onClick={() => {
-                  requestLatestMessage();
-                  openConversation(x.id);
-                }}
-              >
-                {x.title}
-              </button>
-              <button
-                className="conversation-rename"
-                title={`重命名对话：${x.title}`}
-                onClick={() => void renameConversation(x)}
-              >✎</button>
-              <button
-                className="conversation-delete"
-                title={`删除对话：${x.title}`}
-                aria-label={`删除对话：${x.title}`}
-                onClick={() => deleteConversation(x)}
-              >
-                ×
-              </button>
-            </div>
-          ))}
-        </div>
-        <nav>
-          <button onClick={() => setPanel("characters")}>角色管理</button>
-          <button onClick={() => setPanel("settings")}>设置与插件</button>
-        </nav>
-      </aside>
+    <div className={`${mini ? "shell workspace mini" : "shell workspace"}${workspaceBackground ? " has-background" : ""}`} data-theme={theme} style={workspaceBackground ? { "--workspace-image": `url("${workspaceBackground.image}")`, "--background-veil": 1 - workspaceBackground.strength } as CSSProperties : undefined}>
+      <WorkspaceNavigation panel={panel} onPanel={setPanel} conversations={conversations} activeConversation={activeConversation}
+        onOpen={(id) => { setPanel("chat"); requestLatestMessage(); void openConversation(id); }}
+        onRename={(id) => { const item = conversations.find((value) => value.id === id); if (item) void renameConversation(item); }}
+        onDelete={(id) => { const item = conversations.find((value) => value.id === id); if (item) void deleteConversation(item); }}
+        onNew={() => { setPanel("chat"); void createConversation(); }} canCreate={Boolean(activeCharacter)} />
       <main>
         <header>
+          {panel === "chat" && <details className="workspace-role-picker" onKeyDown={(event) => { if (event.key === "Escape") event.currentTarget.open = false; }} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) event.currentTarget.open = false; }}>
+            <summary aria-label="选择当前角色"><span className="avatar">{character?.avatar_data ? <img src={character.avatar_data} alt="" /> : <WorkspaceIcon name="role" />}</span><span><strong>{character?.name || "选择角色"}<span className="role-chevron">⌄</span></strong><small>{backendReady ? busy ? "正在回复…" : "准备好与你对话" : "正在连接本地服务"}</small></span></summary>
+            <div className="workspace-role-menu">
+              {characters.map((item) => <button key={item.id} aria-label={`切换到角色：${item.name}`} className={item.id === activeCharacter ? "active" : ""} onClick={(event) => { const picker = event.currentTarget.closest("details"); if (picker) picker.open = false; void selectCharacter(item.id); }}><span className="avatar">{item.avatar_data ? <img src={item.avatar_data} alt="" /> : item.name[0]}</span><span><strong>{item.name}</strong><small>{item.description || "私人角色"}</small></span></button>)}
+              <button onClick={() => setPanel("characters")}>管理与创建角色 →</button>
+            </div>
+          </details>}
           <div className="header-copy">
             <strong>
               {panel === "settings"
-                ? "模型设置"
+                ? "设置"
                 : panel === "characters"
                   ? "角色管理"
-                  : conversation?.title || character?.name || "开始使用"}
+                  : panel === "plugins"
+                    ? "插件管理"
+                    : conversation?.title || character?.name || "开始使用"}
             </strong>
             <small>
               {panel === "chat" && character
@@ -1331,6 +1289,7 @@ export default function App() {
             </small>
           </div>
           <div className="window-tools">
+            {panel === "chat" && <button className="workspace-new" disabled={!activeCharacter || busy} onClick={() => void createConversation()}><span aria-hidden="true">＋</span>新对话</button>}
             {panel === "chat" && modelProfiles.length > 0 && (
               <details className="model-switcher" ref={modelSwitcherRef} onKeyDown={(event) => { if (event.key === "Escape") { event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); } }}>
                 <summary aria-label={`当前模型：${modelProfiles.find((item) => item.id === settings.active_model_profile_id)?.name ?? settings.model}，点击切换`} title="切换聊天模型；桌宠与文档分析也会使用所选配置" onClick={(event) => { if (profileBusy || busy) event.preventDefault(); }}>
@@ -1356,7 +1315,7 @@ export default function App() {
                   onClick={togglePin}
                   title="切换始终置顶"
                 >
-                  <span>◆</span> 置顶
+                  <WorkspaceIcon name="pin" /> 置顶
                 </button>
                 <button
                   onClick={toggleMini}
@@ -1366,9 +1325,6 @@ export default function App() {
                 </button>
               </>
             )}
-            <span className={backendReady ? "status" : "status starting"}>
-              <i /> {backendReady ? "本地服务已连接" : "正在启动服务"}
-            </span>
           </div>
         </header>
         {error && (
@@ -1380,9 +1336,9 @@ export default function App() {
         {panel === "settings" && (
           <section className="form-page">
             <Heading
-              eyebrow="外观、插件与模型"
+              eyebrow="外观与模型"
               title="定制你的 AI 空间"
-              text="主题与插件设置修改后自动保存。"
+              text="主题与模型设置修改后自动保存。"
             />
             <div className="theme-panel">
               <div className="form-section-title">
@@ -1408,6 +1364,7 @@ export default function App() {
                 ))}
               </div>
             </div>
+            <BackgroundSettings value={workspaceBackground} onChange={setWorkspaceBackground} />
             {desktop && (
               <div className="device-settings">
                 <div className="form-section-title">
@@ -1460,101 +1417,6 @@ export default function App() {
                 </div>
                 {maintenanceStatus && <p className="maintenance-status" role="status">{maintenanceStatus}</p>}
                 <small className="maintenance-warning">备份文件包含 API Key 和聊天内容，请存放在可信位置，不要上传到公开网盘或仓库。</small>
-              </div>
-            )}
-            <details className="plugin-manager settings-drawer" id="plugin-manager">
-              <summary className="drawer-trigger"><span><strong>插件管理</strong><small>按用途分类管理内置插件</small></span><span className="drawer-chevron" aria-hidden="true">⌄</span></summary>
-              <div className="drawer-content">
-              {([
-                ["对话呈现", ["message_display", "novel_reply"]],
-                ["对话增强", ["conversation_environment", "instruction_review"]],
-                ["桌宠互动", ["proactive"]],
-                ["效率工具", ["translation"]],
-              ] as [string, PluginId[]][]).map(([category, ids]) => (
-                <div className="plugin-category" key={category}>
-                  <h3>{category}</h3>
-                  <div className="plugin-manager-grid">
-                    {plugins.filter((plugin) => ids.includes(plugin.id)).map((plugin) => (
-                      <article className={plugin.enabled ? "plugin-manager-card active" : "plugin-manager-card"} key={plugin.id}>
-                        <button type="button" className="plugin-card-open" onClick={() => setSelectedPluginId(plugin.id)} aria-label={`打开${plugin.name}设置`}>
-                          <span className="plugin-card-heading"><strong>{plugin.name}</strong><small>内置 · v{plugin.version}</small></span>
-                          <span className="plugin-card-description">{plugin.description}</span>
-                          <span className="plugin-card-hint">查看设置 <span aria-hidden="true">↗</span></span>
-                        </button>
-                        <button type="button" role="switch" aria-label={`${plugin.name}开关`} aria-checked={plugin.enabled} disabled={pluginBusy !== null} className={plugin.enabled ? "autostart-switch enabled" : "autostart-switch"} onClick={() => void togglePlugin(plugin)}>
-                          <span><i /></span>{pluginBusy === plugin.id ? "正在切换…" : plugin.enabled ? "已启用" : "已停用"}
-                        </button>
-                      </article>
-                    ))}
-                    {plugins.length === 0 && <small>正在读取内置插件…</small>}
-                  </div>
-                </div>
-              ))}
-              <small>目前仅支持随应用打包的可信内置插件；不会加载外部脚本或第三方安装包。</small>
-              </div>
-            </details>
-            {selectedPlugin && (
-              <div className="plugin-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedPluginId(null); }}>
-                <section className="plugin-modal" role="dialog" aria-modal="true" aria-label={`${selectedPlugin.name}设置`}>
-                  <header className="plugin-modal-header">
-                    <div><small>内置插件 · v{selectedPlugin.version}</small><h2>{selectedPlugin.name}</h2><p>{selectedPlugin.description}</p></div>
-                    <button type="button" className="plugin-modal-close" onClick={() => setSelectedPluginId(null)} aria-label="关闭插件设置" autoFocus>×</button>
-                  </header>
-                  <div className="plugin-modal-content">
-                    {selectedPlugin.id === "translation" && <>
-                      <Field label="语言包镜像地址（可选）"><input type="url" placeholder="例如：https://mirror.example.com/argospm/v1" value={settings.translation_mirror_url} onChange={(e) => changeSettings({ ...settings, translation_mirror_url: e.target.value })} /></Field>
-                      <small>留空使用 Argos 官方源；国内镜像需提供相同的 .argosmodel 文件。语言包下载与进度在桌宠翻译功能中操作。</small>
-                    </>}
-                    {selectedPlugin.id === "message_display" && <>
-                      <small>选择 AI 回复的显示方式；三种处理器互斥，只会启用一个。</small>
-                      <div className="message-plugin-grid">
-                        {([
-                          ["markdown", "Markdown 渲染", "显示标题、列表、表格、引用和代码块"],
-                          ["plain", "Markdown 过滤", "移除格式标记，仅保留可读纯文本"],
-                          ["raw", "原始文本", "完整保留模型返回的所有标记，适合调试"],
-                        ] as [MessageDisplayMode, string, string][]).map(([mode, name, description]) => (
-                          <button type="button" key={mode} className={settings.message_display_mode === mode ? "message-plugin selected" : "message-plugin"} onClick={() => changeSettings({ ...settings, message_display_mode: mode })}>
-                            <span>{settings.message_display_mode === mode ? "●" : "○"}</span><strong>{name}</strong><small>{description}</small>
-                          </button>
-                        ))}
-                      </div>
-                    </>}
-                    {selectedPlugin.id === "conversation_environment" && <>
-                      <Field label="让模型感知当前日期、星期和时间"><input type="checkbox" checked={settings.include_local_time} onChange={(e) => changeSettings({ ...settings, include_local_time: e.target.checked })} /></Field>
-                      <Field label="向模型提供位置/地区"><input type="checkbox" checked={settings.include_location_context} onChange={(e) => changeSettings({ ...settings, include_location_context: e.target.checked })} /></Field>
-                      {settings.include_location_context && <Field label="位置或地区"><input maxLength={200} value={settings.location_context} onChange={(e) => changeSettings({ ...settings, location_context: e.target.value })} placeholder="例如：中国上海市浦东新区" /></Field>}
-                      <small>时间来自本机时钟；位置仅使用你手动填写的地区，不会读取 GPS。关闭插件会停止向聊天模型提供这两项信息，但不会清除已填写的设置。</small>
-                    </>}
-                    {selectedPlugin.id === "proactive" && <>
-                      <Field label="启用主动模型调用"><input type="checkbox" checked={proactivePlugin.enabled} onChange={(e) => changeProactive({ ...proactivePlugin, enabled: e.target.checked })} /></Field>
-                      <Field label="主动发言结合当前屏幕"><input type="checkbox" checked={proactivePlugin.screen_context_enabled} disabled={!settings.screen_access_enabled} onChange={(e) => changeProactive({ ...proactivePlugin, screen_context_enabled: e.target.checked })} /></Field>
-                      <small>需先在模型设置中允许桌宠读取屏幕；每次可能额外消耗视觉模型 token。</small>
-                      <Field label="随机时间主动发言"><input type="checkbox" checked={proactivePlugin.randomize_interval} onChange={(e) => changeProactive({ ...proactivePlugin, randomize_interval: e.target.checked })} /></Field>
-                      {proactivePlugin.randomize_interval ? <div className="proactive-random-range">
-                        <Field label="最短等待（分钟）"><input type="number" min="1" max="1440" value={proactivePlugin.random_min_minutes} onChange={(e) => changeProactive({ ...proactivePlugin, random_min_minutes: Number(e.target.value) })} /></Field>
-                        <Field label="最长等待（分钟）"><input type="number" min="1" max="1440" value={proactivePlugin.random_max_minutes} onChange={(e) => changeProactive({ ...proactivePlugin, random_max_minutes: Number(e.target.value) })} /></Field>
-                      </div> : <>
-                        <Field label="固定发言间隔（1–1440 分钟）"><input type="number" min="1" max="1440" value={proactivePlugin.interval_minutes} onChange={(e) => changeProactive({ ...proactivePlugin, interval_minutes: Number(e.target.value) })} /></Field>
-                        <div className="proactive-frequency-presets">{[1, 5, 15, 30, 60, 120].map((minutes) => <button type="button" key={minutes} className={proactivePlugin.interval_minutes === minutes ? "selected" : ""} onClick={() => changeProactive({ ...proactivePlugin, interval_minutes: minutes })}>{minutes} 分钟</button>)}</div>
-                      </>}
-                      <small>当前：{proactivePlugin.randomize_interval ? `每次在 ${proactivePlugin.random_min_minutes}–${proactivePlugin.random_max_minutes} 分钟之间重新随机` : `固定每 ${proactivePlugin.interval_minutes} 分钟`}。手动对话时会取消主动发言并重新计时。</small>
-                      <Field label={`承接最近聊天的概率（${proactivePlugin.history_weight}%）`}><input type="range" min="0" max="50" step="5" value={proactivePlugin.history_weight} onChange={(e) => changeProactive({ ...proactivePlugin, history_weight: Number(e.target.value) })} /></Field>
-                      <small>未抽中时会按人设聊日常、兴趣、轻松话题或可选时事。</small>
-                      <Field label="启用时间关心"><input type="checkbox" checked={proactivePlugin.care_enabled} onChange={(e) => changeProactive({ ...proactivePlugin, care_enabled: e.target.checked })} /></Field>
-                      {proactivePlugin.care_enabled && <Field label={`关心内容概率（${proactivePlugin.care_weight}%）`}><input type="range" min="0" max="100" step="5" value={proactivePlugin.care_weight} onChange={(e) => changeProactive({ ...proactivePlugin, care_weight: Number(e.target.value) })} /></Field>}
-                      <Field label="单次回复 token 上限（64–8192）"><input type="number" min="64" max="8192" value={proactivePlugin.max_tokens} onChange={(e) => changeProactive({ ...proactivePlugin, max_tokens: Number(e.target.value) })} /></Field>
-                      <small>建议从 1024 开始；推理模型空回复时可提高至 4096。重试会再次调用模型并可能计费。</small>
-                      {proactivePlugin.last_error && <small role="status">最近主动发言失败：{proactivePlugin.last_error}</small>}
-                      <Field label="启用时事话题"><input type="checkbox" checked={proactivePlugin.news_enabled} onChange={(e) => changeProactive({ ...proactivePlugin, news_enabled: e.target.checked })} /></Field>
-                      <Field label="新闻 RSS（HTTPS）"><input type="url" value={proactivePlugin.rss_url} onChange={(e) => changeProactive({ ...proactivePlugin, rss_url: e.target.value })} /></Field>
-                      <small>API 已报告累计 token：{proactivePlugin.total_tokens}（未提供 usage 的服务无法统计）。</small>
-                    </>}
-                    {selectedPlugin.id === "novel_reply" && <small>此插件目前只有启停开关，没有额外参数。它会把 AI 回复调整为第三人称小说式叙述；当前消息和已保存指令优先。</small>}
-                    {selectedPlugin.id === "instruction_review" && <small>默认关闭，聊天优先快速完成。开启后仅对已保存指令及本轮模板做二次审核；明确的字数限制先在本地检查，必要时最多流式修订一次。审核和修订总计最多等待 30 秒，超时则保留原回复。关闭不会停止生成前的指令注入。</small>}
-                    <div className="plugin-modal-permissions"><strong>使用权限</strong><span>{selectedPlugin.permissions.length ? selectedPlugin.permissions.map((permission) => permissionLabels[permission] ?? permission).join("、") : "无额外权限"}</span></div>
-                  </div>
-                  <footer className="plugin-modal-footer"><small role="status">{pluginSettingsStatus === "error" ? "自动保存失败，请检查提示后重试" : pluginSettingsStatus === "saving" ? "正在自动保存…" : "修改后自动保存"}</small><button type="button" onClick={() => setSelectedPluginId(null)}>完成</button></footer>
-                </section>
               </div>
             )}
             <details className="model-drawer settings-drawer">
@@ -1665,6 +1527,104 @@ export default function App() {
             </details>
           </section>
         )}
+        {panel === "plugins" && (
+          <section className="form-page plugin-page">
+            <Heading eyebrow="插件" title="让 AI 更合你心意" text="按用途管理插件。点击卡片调整属性，修改后自动保存。" />
+            <div className="plugin-manager" id="plugin-manager">
+              {([
+                ["对话呈现", ["message_display", "novel_reply"]],
+                ["对话增强", ["conversation_environment", "instruction_review"]],
+                ["桌宠互动", ["proactive"]],
+                ["效率工具", ["translation", "speech"]],
+              ] as [string, PluginId[]][]).map(([category, ids]) => (
+                <div className="plugin-category" key={category}>
+                  <h3>{category}</h3>
+                  <div className="plugin-manager-grid">
+                    {plugins.filter((plugin) => ids.includes(plugin.id)).map((plugin) => (
+                      <article className={plugin.enabled ? "plugin-manager-card active" : "plugin-manager-card"} key={plugin.id}>
+                        <button type="button" className="plugin-card-open" onClick={() => setSelectedPluginId(plugin.id)} aria-label={`打开${plugin.name}设置`}>
+                          <span className="plugin-card-heading"><strong>{plugin.name}</strong><small>内置 · v{plugin.version}</small></span>
+                          <span className="plugin-card-description">{plugin.description}</span>
+                          <span className="plugin-card-hint">查看设置 <span aria-hidden="true">↗</span></span>
+                        </button>
+                        <button type="button" role="switch" aria-label={`${plugin.name}开关`} aria-checked={plugin.enabled} disabled={pluginBusy !== null} className={plugin.enabled ? "autostart-switch enabled" : "autostart-switch"} onClick={() => void togglePlugin(plugin)}>
+                          <span><i /></span>{pluginBusy === plugin.id ? "正在切换…" : plugin.enabled ? "已启用" : "已停用"}
+                        </button>
+                      </article>
+                    ))}
+                    {plugins.length === 0 && <small>正在读取内置插件…</small>}
+                  </div>
+                </div>
+              ))}
+              <small>目前仅支持随应用打包的可信内置插件；不会加载外部脚本或第三方安装包。</small>
+            </div>
+            {selectedPlugin && (
+              <div className="plugin-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedPluginId(null); }}>
+                <section className="plugin-modal" role="dialog" aria-modal="true" aria-label={`${selectedPlugin.name}设置`}>
+                  <header className="plugin-modal-header">
+                    <div><small>内置插件 · v{selectedPlugin.version}</small><h2>{selectedPlugin.name}</h2><p>{selectedPlugin.description}</p></div>
+                    <button type="button" className="plugin-modal-close" onClick={() => setSelectedPluginId(null)} aria-label="关闭插件设置" autoFocus>×</button>
+                  </header>
+                  <div className="plugin-modal-content">
+                    {selectedPlugin.id === "speech" && <SpeechSettingsPanel />}
+                    {selectedPlugin.id === "translation" && <>
+                      <Field label="语言包镜像地址（可选）"><input type="url" placeholder="例如：https://mirror.example.com/argospm/v1" value={settings.translation_mirror_url} onChange={(e) => changeSettings({ ...settings, translation_mirror_url: e.target.value })} /></Field>
+                      <small>留空使用 Argos 官方源；国内镜像需提供相同的 .argosmodel 文件。语言包下载与进度在桌宠翻译功能中操作。</small>
+                    </>}
+                    {selectedPlugin.id === "message_display" && <>
+                      <small>选择 AI 回复的显示方式；三种处理器互斥，只会启用一个。</small>
+                      <div className="message-plugin-grid">
+                        {([
+                          ["markdown", "Markdown 渲染", "显示标题、列表、表格、引用和代码块"],
+                          ["plain", "Markdown 过滤", "移除格式标记，仅保留可读纯文本"],
+                          ["raw", "原始文本", "完整保留模型返回的所有标记，适合调试"],
+                        ] as [MessageDisplayMode, string, string][]).map(([mode, name, description]) => (
+                          <button type="button" key={mode} className={settings.message_display_mode === mode ? "message-plugin selected" : "message-plugin"} onClick={() => changeSettings({ ...settings, message_display_mode: mode })}>
+                            <span>{settings.message_display_mode === mode ? "●" : "○"}</span><strong>{name}</strong><small>{description}</small>
+                          </button>
+                        ))}
+                      </div>
+                    </>}
+                    {selectedPlugin.id === "conversation_environment" && <>
+                      <Field label="让模型感知当前日期、星期和时间"><input type="checkbox" checked={settings.include_local_time} onChange={(e) => changeSettings({ ...settings, include_local_time: e.target.checked })} /></Field>
+                      <Field label="向模型提供位置/地区"><input type="checkbox" checked={settings.include_location_context} onChange={(e) => changeSettings({ ...settings, include_location_context: e.target.checked })} /></Field>
+                      {settings.include_location_context && <Field label="位置或地区"><input maxLength={200} value={settings.location_context} onChange={(e) => changeSettings({ ...settings, location_context: e.target.value })} placeholder="例如：中国上海市浦东新区" /></Field>}
+                      <small>时间来自本机时钟；位置仅使用你手动填写的地区，不会读取 GPS。关闭插件会停止向聊天模型提供这两项信息，但不会清除已填写的设置。</small>
+                    </>}
+                    {selectedPlugin.id === "proactive" && <>
+                      <Field label="启用主动模型调用"><input type="checkbox" checked={proactivePlugin.enabled} onChange={(e) => changeProactive({ ...proactivePlugin, enabled: e.target.checked })} /></Field>
+                      <Field label="主动发言结合当前屏幕"><input type="checkbox" checked={proactivePlugin.screen_context_enabled} disabled={!settings.screen_access_enabled} onChange={(e) => changeProactive({ ...proactivePlugin, screen_context_enabled: e.target.checked })} /></Field>
+                      <small>需先在模型设置中允许桌宠读取屏幕；每次可能额外消耗视觉模型 token。</small>
+                      <Field label="随机时间主动发言"><input type="checkbox" checked={proactivePlugin.randomize_interval} onChange={(e) => changeProactive({ ...proactivePlugin, randomize_interval: e.target.checked })} /></Field>
+                      {proactivePlugin.randomize_interval ? <div className="proactive-random-range">
+                        <Field label="最短等待（分钟）"><input type="number" min="1" max="1440" value={proactivePlugin.random_min_minutes} onChange={(e) => changeProactive({ ...proactivePlugin, random_min_minutes: Number(e.target.value) })} /></Field>
+                        <Field label="最长等待（分钟）"><input type="number" min="1" max="1440" value={proactivePlugin.random_max_minutes} onChange={(e) => changeProactive({ ...proactivePlugin, random_max_minutes: Number(e.target.value) })} /></Field>
+                      </div> : <>
+                        <Field label="固定发言间隔（1–1440 分钟）"><input type="number" min="1" max="1440" value={proactivePlugin.interval_minutes} onChange={(e) => changeProactive({ ...proactivePlugin, interval_minutes: Number(e.target.value) })} /></Field>
+                        <div className="proactive-frequency-presets">{[1, 5, 15, 30, 60, 120].map((minutes) => <button type="button" key={minutes} className={proactivePlugin.interval_minutes === minutes ? "selected" : ""} onClick={() => changeProactive({ ...proactivePlugin, interval_minutes: minutes })}>{minutes} 分钟</button>)}</div>
+                      </>}
+                      <small>当前：{proactivePlugin.randomize_interval ? `每次在 ${proactivePlugin.random_min_minutes}–${proactivePlugin.random_max_minutes} 分钟之间重新随机` : `固定每 ${proactivePlugin.interval_minutes} 分钟`}。手动对话时会取消主动发言并重新计时。</small>
+                      <Field label={`承接最近聊天的概率（${proactivePlugin.history_weight}%）`}><input type="range" min="0" max="50" step="5" value={proactivePlugin.history_weight} onChange={(e) => changeProactive({ ...proactivePlugin, history_weight: Number(e.target.value) })} /></Field>
+                      <small>未抽中时会按人设聊日常、兴趣、轻松话题或可选时事。</small>
+                      <Field label="启用时间关心"><input type="checkbox" checked={proactivePlugin.care_enabled} onChange={(e) => changeProactive({ ...proactivePlugin, care_enabled: e.target.checked })} /></Field>
+                      {proactivePlugin.care_enabled && <Field label={`关心内容概率（${proactivePlugin.care_weight}%）`}><input type="range" min="0" max="100" step="5" value={proactivePlugin.care_weight} onChange={(e) => changeProactive({ ...proactivePlugin, care_weight: Number(e.target.value) })} /></Field>}
+                      <Field label="单次回复 token 上限（64–8192）"><input type="number" min="64" max="8192" value={proactivePlugin.max_tokens} onChange={(e) => changeProactive({ ...proactivePlugin, max_tokens: Number(e.target.value) })} /></Field>
+                      <small>建议从 1024 开始；推理模型空回复时可提高至 4096。重试会再次调用模型并可能计费。</small>
+                      {proactivePlugin.last_error && <small role="status">最近主动发言失败：{proactivePlugin.last_error}</small>}
+                      <Field label="启用时事话题"><input type="checkbox" checked={proactivePlugin.news_enabled} onChange={(e) => changeProactive({ ...proactivePlugin, news_enabled: e.target.checked })} /></Field>
+                      <Field label="新闻 RSS（HTTPS）"><input type="url" value={proactivePlugin.rss_url} onChange={(e) => changeProactive({ ...proactivePlugin, rss_url: e.target.value })} /></Field>
+                      <small>API 已报告累计 token：{proactivePlugin.total_tokens}（未提供 usage 的服务无法统计）。</small>
+                    </>}
+                    {selectedPlugin.id === "novel_reply" && <small>此插件目前只有启停开关，没有额外参数。它会把 AI 回复调整为第三人称小说式叙述；当前消息和已保存指令优先。</small>}
+                    {selectedPlugin.id === "instruction_review" && <small>默认关闭，聊天优先快速完成。开启后仅对已保存指令及本轮模板做二次审核；明确的字数限制先在本地检查，必要时最多流式修订一次。审核和修订总计最多等待 30 秒，超时则保留原回复。关闭不会停止生成前的指令注入。</small>}
+                    <div className="plugin-modal-permissions"><strong>使用权限</strong><span>{selectedPlugin.permissions.length ? selectedPlugin.permissions.map((permission) => permissionLabels[permission] ?? permission).join("、") : "无额外权限"}</span></div>
+                  </div>
+                  <footer className="plugin-modal-footer"><small role="status">{pluginSettingsStatus === "error" ? "自动保存失败，请检查提示后重试" : pluginSettingsStatus === "saving" ? "正在自动保存…" : "修改后自动保存"}</small><button type="button" onClick={() => setSelectedPluginId(null)}>完成</button></footer>
+                </section>
+              </div>
+            )}
+          </section>
+        )}
         {panel === "characters" && (
           <section className="form-page">
             <Heading
@@ -1729,7 +1689,7 @@ export default function App() {
             >
               {!messages.length && (
                 <div className="welcome">
-                  <div className="welcome-orb">雨</div>
+                  <div className="welcome-orb" aria-hidden="true"><WorkspaceIcon name="drop" /></div>
                   <span>你的私人 AI 空间</span>
                   <h1>
                     {character
@@ -1753,11 +1713,14 @@ export default function App() {
               {messages.map((m, i) => (
                 <article key={m.id ?? `pending-${i}`} className={m.role}>
                   <div className="message-avatar">
-                    {m.role === "user" ? "你" : character?.name[0] || "AI"}
+                    {m.role === "user" ? "你" : character?.avatar_data ? <img src={character.avatar_data} alt="" /> : character?.name[0] || "AI"}
                   </div>
                   <div className="message-body">
                     <div className="message-heading">
                       <strong>{m.role === "user" ? "你" : character?.name || "助手"}</strong>
+                      {speechEnabled && m.role === "assistant" && m.content && m.id && editingMessage !== m.id && (
+                        <button className="message-edit" type="button" disabled={busy} onClick={() => void voice.read(m.content, String(m.id))}>{voice.reading === String(m.id) ? "停止朗读" : "朗读"}</button>
+                      )}
                       {m.id && editingMessage !== m.id && (
                         <button className="message-edit" type="button" onClick={() => beginMessageEdit(m)} disabled={busy}>编辑</button>
                       )}
@@ -1871,8 +1834,6 @@ export default function App() {
                 </div>
               )}
               <div className="composer-main">
-                <button className="attach-button" type="button" disabled={!character || documentBusy || busy} onClick={() => documentInputRef.current?.click()} title="上传文档">📎</button>
-                <button className="instruction-button" type="button" disabled={!character} onClick={() => setInstructionPanelOpen((open) => !open)} title={`对话指令库 · 已启用 ${instructions.filter((item) => item.enabled).length} 条`} aria-label="打开对话指令库">指</button>
                 <textarea
                   ref={inputRef}
                   rows={1}
@@ -1892,18 +1853,28 @@ export default function App() {
                       e.currentTarget.form?.requestSubmit();
                     }
                   }}
-                  placeholder={documentBusy ? "正在读取文档…" : documents.length ? "针对附件提问…" : character ? `给 ${character.name} 发消息…` : "请先创建角色"}
+                  placeholder={documentBusy ? "正在读取文档…" : documents.length ? "针对附件提问…" : character ? "写下你想说的话…" : "请先创建角色"}
                   disabled={!character || busy || documentBusy}
                 />
-                <button className="send-button" type={busy ? "button" : "submit"} onClick={busy ? () => abortRef.current?.abort() : undefined}>
-                  {busy ? "■" : "↑"}
-                </button>
+                <div className="composer-toolbar">
+                  <div className="composer-tools">
+                    <button className="toolbar-button attach-button" type="button" disabled={!character || documentBusy || busy} onClick={() => documentInputRef.current?.click()} title="上传文档" aria-label="上传文档"><WorkspaceIcon name="attach" /></button>
+                    {speechEnabled && <SpeechToolbar voice={voice} disabled={!character || busy || documentBusy} />}
+                    <span className="composer-tool-divider" aria-hidden="true" />
+                    <button className="toolbar-button instruction-button" type="button" disabled={!character} onClick={() => setInstructionPanelOpen((open) => !open)} title={`对话指令库 · 已启用 ${instructions.filter((item) => item.enabled).length} 条`} aria-label="打开对话指令库" aria-expanded={instructionPanelOpen}><WorkspaceIcon name="command" /><span>指令</span></button>
+                  </div>
+                  <small className="composer-tip" role={busy ? "status" : undefined}>{busy && chatPhase ? chatPhaseLabels[chatPhase] : "Enter 发送 · Shift + Enter 换行"}</small>
+                  <button className="send-button" type={busy ? "button" : "submit"} onClick={busy ? () => abortRef.current?.abort() : undefined} aria-label={busy ? "停止生成" : "发送消息"} title={busy ? "停止生成" : "发送消息"}>
+                    <WorkspaceIcon name={busy ? "stop" : "send"} />
+                  </button>
+                </div>
               </div>
-              <small className="composer-tip" role={busy ? "status" : undefined}>{busy && chatPhase ? chatPhaseLabels[chatPhase] : "指令库可固定对话要求 · 支持 TXT、Markdown、PDF、DOCX · Enter 发送 · Shift + Enter 换行"}</small>
+              {speechEnabled && <SpeechStatus voice={voice} />}
               </form>
           </section>
         )}
       </main>
+      <footer className="workspace-footer"><span className={backendReady ? "status" : "status starting"}><i />{backendReady ? "本地已连接" : "正在启动本地服务"}</span><span>数据保存在本地</span></footer>
     </div>
   );
 }

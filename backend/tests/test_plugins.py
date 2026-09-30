@@ -27,8 +27,9 @@ def test_plugin_enablement_persists_and_gates_runtime(monkeypatch):
         monkeypatch.setattr(database, "DB_PATH", database.DATA_DIR / "plugins.db")
         with TestClient(app) as client:
             installed = {item["id"]: item for item in client.get("/api/plugins").json()}
-            assert set(installed) == {"translation", "message_display", "conversation_environment", "proactive", "novel_reply", "instruction_review"}
-            assert all(item["enabled"] and item["source"] == "builtin" for item in installed.values() if item["id"] not in {"novel_reply", "instruction_review"})
+            assert set(installed) == {"translation", "message_display", "conversation_environment", "proactive", "novel_reply", "instruction_review", "speech"}
+            assert all(item["enabled"] and item["source"] == "builtin" for item in installed.values() if item["id"] not in {"novel_reply", "instruction_review", "speech"})
+            assert installed["speech"]["enabled"] is False
             assert installed["novel_reply"]["enabled"] is False
             assert installed["instruction_review"]["enabled"] is False
             assert installed["novel_reply"]["permissions"] == ["model_api"]
@@ -51,7 +52,7 @@ def test_plugin_enablement_persists_and_gates_runtime(monkeypatch):
         # The startup migration must not reset existing choices.
         with TestClient(app) as client:
             persisted = {item["id"]: item["enabled"] for item in client.get("/api/plugins").json()}
-            assert persisted == {"translation": False, "message_display": False, "conversation_environment": True, "proactive": False, "novel_reply": True, "instruction_review": True}
+            assert persisted == {"translation": False, "message_display": False, "conversation_environment": True, "proactive": False, "novel_reply": True, "instruction_review": True, "speech": False}
             assert client.put("/api/plugins/novel_reply/state", json={"enabled": False}).status_code == 200
             assert client.put("/api/plugins/translation/state", json={"enabled": True}).status_code == 200
             assert client.post("/api/translation", json={"text": "hello", "source": "en", "target": "en"}).json() == {"translation": "hello"}

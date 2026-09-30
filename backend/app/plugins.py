@@ -40,6 +40,11 @@ class PluginRegistry:
 
 registry = PluginRegistry()
 registry.register(PluginManifest(
+    id="speech", name="语音输入与朗读", description="在线语音识别、转写确认与 AI 语音朗读",
+    version="1.0.0", surfaces=("chat_message", "pet_chat", "settings"),
+    permissions=("microphone", "speech_api"), default_enabled=False, platforms=("desktop",),
+))
+registry.register(PluginManifest(
     id="translation", name="离线翻译", description="桌宠翻译与中英双向语言包",
     version="1.0.0", surfaces=("pet_orb", "settings"),
     permissions=("local_storage", "network_download"), platforms=("desktop",),

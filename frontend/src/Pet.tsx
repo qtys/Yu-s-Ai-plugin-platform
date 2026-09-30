@@ -4,6 +4,7 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import MessageContent from "./MessageContent";
+import { useSpeech, VoiceControls } from "./Speech";
 import type { MessageDisplayMode } from "./MessageContent";
 import { isPluginEnabled } from "./plugins";
 import type { PluginInfo } from "./plugins";
@@ -505,6 +506,11 @@ export default function Pet() {
   proactiveContextRef.current = { character, expanded: open || translationOpen || settingsOpen, menuOpen, busy, dragging };
   const [messageDisplayMode, setMessageDisplayMode] = useState<MessageDisplayMode>("markdown");
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
+  const [speechConversationId, setSpeechConversationId] = useState<number | null>(null);
+  const speechEnabled = plugins.some((plugin) => plugin.id === "speech" && plugin.enabled);
+  const voice = useSpeech(speechEnabled, `${open}:${character?.id}:${speechConversationId}:${busy}`, (text) => {
+    setInput((current) => current ? `${current} ${text}` : text);
+  });
   const [petSize, setPetSize] = useState(
     () => Number(localStorage.getItem("yus-ai-pet-size")) || 100,
   );
@@ -587,6 +593,25 @@ export default function Pet() {
   useEffect(() => { dialogHeightRef.current = dialogHeight; }, [dialogHeight]);
   useEffect(() => { continuousTranslationRef.current = continuousTranslation; }, [continuousTranslation]);
   useEffect(() => { gazeRef.current = gaze; }, [gaze]);
+  useEffect(() => {
+    if (desktop) void invoke("set_pet_keyboard_focus", { enabled: false }).catch(console.error);
+  }, [desktop, open, translationOpen, settingsOpen]);
+
+  async function activateTextInput(event: React.PointerEvent<HTMLInputElement | HTMLTextAreaElement>) {
+    if (!desktop || event.button !== 0) return;
+    const target = event.currentTarget;
+    try {
+      await invoke("set_pet_keyboard_focus", { enabled: true });
+      if (target.isConnected) target.focus({ preventScroll: true });
+      else await invoke("set_pet_keyboard_focus", { enabled: false });
+    } catch (error) {
+      console.error("桌宠键盘输入激活失败", error);
+    }
+  }
+
+  function releaseTextInput() {
+    if (desktop) void invoke("set_pet_keyboard_focus", { enabled: false }).catch(console.error);
+  }
   useEffect(() => {
     if (expanded) return;
     const pending = pendingAutoMoveRef.current;
@@ -725,6 +750,7 @@ export default function Pet() {
         if (result.skipped) return true;
         if (!disposed && proactiveContextRef.current.character?.id === character.id) {
           conversationRef.current = result.conversation_id;
+          setSpeechConversationId(result.conversation_id);
           localStorage.setItem("yus-ai-conversation", String(result.conversation_id));
           setPendingProactive({ characterId: character.id, conversationId: result.conversation_id, content: result.content, messageId: result.message_id, sources: result.sources, motion: parseModelMotion(result.pet_motion) });
         }
@@ -809,6 +835,7 @@ export default function Pet() {
         const conversations = await request<Conversation[]>(`/conversations?character_id=${selected.id}`);
         const preferredConversation = Number(localStorage.getItem("yus-ai-conversation"));
         conversationRef.current = conversations.find((item) => item.id === preferredConversation)?.id ?? conversations[0]?.id ?? null;
+        setSpeechConversationId(conversationRef.current);
       } catch {
         setReply(WAITING_MESSAGE);
         if (!disposed) retryTimer = window.setTimeout(loadContext, 1000);
@@ -1492,6 +1519,7 @@ export default function Pet() {
         });
         id = conversation.id;
         conversationRef.current = id;
+        setSpeechConversationId(id);
         localStorage.setItem("yus-ai-conversation", String(id));
       }
       const followUp = replyToProactiveRef.current;
@@ -1593,6 +1621,7 @@ export default function Pet() {
           <div className="speech-head">
             <strong>{character?.name ?? "蓝雨"}</strong>
             <div className="speech-actions">
+              {speechEnabled && <button type="button" disabled={busy || !reply || reply === WAITING_MESSAGE} onClick={() => void voice.read(reply, "pet-reply")}>{voice.reading ? "停止" : "朗读"}</button>}
               <button type="button" onClick={() => void lookAtScreen()} disabled={screenBusy || busy} title="读取鼠标所在显示器的一帧；不保存截图">{screenBusy ? "识别中…" : "看屏幕"}</button>
               <button onClick={returnToMain}>展开</button>
               <button className="close-bubble" onClick={() => void toggleBubble()} aria-label="关闭对话框">×</button>
@@ -1602,8 +1631,9 @@ export default function Pet() {
             <MessageContent content={reply} mode={isPluginEnabled(plugins, "message_display") ? messageDisplayMode : "raw"} />
           </div>
           {busy && chatPhase && <small className="pet-chat-phase" role="status">{chatPhaseLabels[chatPhase]}</small>}
+          {speechEnabled && <VoiceControls voice={voice} disabled={busy || !character} />}
           <form onSubmit={send}>
-            <input value={input} onChange={(event) => setInput(event.target.value)} placeholder="和我说点什么……" autoFocus />
+            <input value={input} onChange={(event) => setInput(event.target.value)} placeholder="和我说点什么……" onPointerDown={activateTextInput} onBlur={releaseTextInput} title="点击输入框启用键盘输入；独占全屏游戏可能因此失焦" />
             <button disabled={busy || !input.trim()} aria-label="发送">↑</button>
           </form>
         </section>
@@ -1640,7 +1670,7 @@ export default function Pet() {
             ) : null;
           })()}
           <form className="translation-form" onSubmit={runTranslation}>
-            <textarea value={translationInput} onChange={(event) => setTranslationInput(event.target.value)} placeholder="输入要翻译的内容……" autoFocus />
+            <textarea value={translationInput} onChange={(event) => setTranslationInput(event.target.value)} placeholder="输入要翻译的内容……" onPointerDown={activateTextInput} onBlur={releaseTextInput} title="点击输入框启用键盘输入；独占全屏游戏可能因此失焦" />
             <button disabled={translationBusy || !translationInput.trim()}>翻译</button>
           </form>
           <div className={`translation-result ${translationBusy ? "thinking" : ""}`}>{translationOutput || "译文会显示在这里。"}</div>
@@ -1708,6 +1738,7 @@ export default function Pet() {
             replyToProactiveRef.current = proactiveMessageId && proactiveConversationId ? { messageId: proactiveMessageId, conversationId: proactiveConversationId } : null;
             if (proactiveConversationId) {
               conversationRef.current = proactiveConversationId;
+              setSpeechConversationId(proactiveConversationId);
               localStorage.setItem("yus-ai-conversation", String(proactiveConversationId));
             }
             setReply(proactiveMessage);

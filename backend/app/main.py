@@ -9,6 +9,7 @@ import zipfile
 import re
 import hashlib
 import os
+import sys
 import shutil
 import sqlite3
 import uuid
@@ -35,6 +36,8 @@ from .proactive import EmptyProactiveReply, generate_proactive
 from .plugins import NOVEL_REPLY_PROMPT, is_enabled as plugin_is_enabled, list_installed as list_installed_plugins, registry as plugin_registry, set_enabled as set_plugin_enabled
 from .documents import DOCUMENT_DIR, chunk_pages, decode_document, extract_pages, extract_visuals, relevant_chunks, remove_original, save_original
 from .instruction_review import length_issues, review_reply, revise_reply
+from .pixel_motion import router as pixel_motion_router
+from .speech import router as speech_router
 
 MODEL_GENERATION_LOCK = asyncio.Lock()
 INSTRUCTION_REVIEW_DEADLINE_SECONDS = 30
@@ -807,12 +810,16 @@ async def lifespan(_: FastAPI):
     UPDATE_RELEASE_CACHE = None
     configure_logging()
     init_db()
-    logger.info("backend_started version=0.15.27")
+    logger.info("backend_started version=0.15.30")
     yield
     logger.info("backend_stopped")
 
 
-app = FastAPI(title="Yu's AI API", version="0.15.27", lifespan=lifespan)
+app = FastAPI(title="Yu's AI API", version="0.15.30", lifespan=lifespan)
+# Keep shelved motion experiments available for development, never in the installer.
+if not getattr(sys, "frozen", False):
+    app.include_router(pixel_motion_router)
+app.include_router(speech_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://tauri.localhost", "tauri://localhost"],

@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "test:pixel": "node --experimental-strip-types --test src/pixel-lab/scene.test.mjs",
     "preview": "vite preview",
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build --bundles nsis"

@@ -168,10 +168,10 @@ fn set_mini_mode(window: WebviewWindow, enabled: bool, state: State<DesktopState
 fn enter_pet_mode(app: AppHandle) -> Result<(), String> {
   let pet = app.get_webview_window("pet").ok_or("找不到桌宠窗口")?;
   let _ = app.emit_to("pet", "pet-reset", ());
+  let _ = pet.set_focusable(false);
   pet.show().map_err(|error| error.to_string())?;
   PET_VISIBLE.store(true, Ordering::Release);
   let _ = pet.set_always_on_top(true);
-  let _ = pet.set_focus();
   if let Some(main) = app.get_webview_window("main") {
     main.hide().map_err(|error| error.to_string())?;
   }
@@ -262,6 +262,21 @@ fn resize_pet_dialog(window: WebviewWindow, width: f64, height: f64, scale: f64,
   window.set_size(new_size).map_err(|error| error.to_string())?;
   window.set_position(new_position).map_err(|error| error.to_string())?;
   Ok(placement)
+}
+
+#[tauri::command]
+fn set_pet_keyboard_focus(window: WebviewWindow, enabled: bool) -> Result<(), String> {
+  if window.label() != "pet" {
+    return Err("键盘输入模式仅适用于桌宠窗口".to_string());
+  }
+  // Passive pet interactions must not activate an exclusive-fullscreen game overlay.
+  // Keyboard focus is requested only after an explicit click on a text field.
+  window.set_focusable(enabled).map_err(|error| error.to_string())?;
+  if enabled {
+    window.set_focus().map_err(|error| error.to_string())?;
+  }
+  write_window_diagnostic("pet_keyboard_focus", &format!("enabled={enabled}"));
+  Ok(())
 }
 
 #[tauri::command]
@@ -382,6 +397,7 @@ fn hide_pet_window(window: WebviewWindow) -> Result<(), String> {
 
 #[tauri::command]
 fn show_pet_window(window: WebviewWindow) -> Result<(), String> {
+  window.set_focusable(false).map_err(|error| error.to_string())?;
   window.show().map_err(|error| error.to_string())?;
   PET_VISIBLE.store(true, Ordering::Release);
   window.set_always_on_top(true).map_err(|error| error.to_string())
@@ -430,6 +446,21 @@ fn start_selection_monitor(app: AppHandle) {
     std::thread::spawn(move || {
       while selection_receiver.recv().is_ok() {
         if !CONTINUOUS_TRANSLATION.load(Ordering::Relaxed) { continue; }
+        // A passive pet can receive mouse selections without document.hasFocus().
+        // Do not send Ctrl+C to the game when selecting our own translation result.
+        if PET_VISIBLE.load(Ordering::Acquire) {
+          if let Some(pet) = selection_app.get_webview_window("pet") {
+            if pet.is_focused().unwrap_or(false) { continue; }
+            if let (Ok(position), Ok(size)) = (pet.outer_position(), pet.outer_size()) {
+              let x = CURSOR_X.load(Ordering::Relaxed) as i64;
+              let y = CURSOR_Y.load(Ordering::Relaxed) as i64;
+              if x >= position.x as i64 && x < position.x as i64 + size.width as i64
+                && y >= position.y as i64 && y < position.y as i64 + size.height as i64 {
+                continue;
+              }
+            }
+          }
+        }
         std::thread::sleep(std::time::Duration::from_millis(45));
         let previous = clipboard_win::get_clipboard_string().ok();
         let sequence = clipboard_win::seq_num();
@@ -759,10 +790,10 @@ pub fn run() {
         }
       }
       if let Some(pet) = app.get_webview_window("pet") {
+        let _ = pet.set_focusable(false);
         let _ = pet.show();
         PET_VISIBLE.store(true, Ordering::Release);
         let _ = pet.set_always_on_top(true);
-        let _ = pet.set_focus();
       }
     }))
     .plugin(tauri_plugin_shell::init())
@@ -776,7 +807,7 @@ pub fn run() {
       always_on_top: Mutex::new(false),
       mini_mode: Mutex::new(false),
     })
-    .invoke_handler(tauri::generate_handler![set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, resize_pet_dialog, start_pet_drag, cancel_pet_auto_move, move_pet_by, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, set_pet_interaction_mode, get_autostart_status, set_autostart, export_character_card, copy_backup_file, install_update, confirm_update_startup, restart_application, record_window_diagnostic, capture_screen])
+    .invoke_handler(tauri::generate_handler![set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, resize_pet_dialog, start_pet_drag, cancel_pet_auto_move, move_pet_by, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, set_pet_interaction_mode, set_pet_keyboard_focus, get_autostart_status, set_autostart, export_character_card, copy_backup_file, install_update, confirm_update_startup, restart_application, record_window_diagnostic, capture_screen])
     .setup(|app| {
       let legacy_data_dir = app.path().app_data_dir()?;
       let data_dir = prepare_install_data_dir(app.handle())?;
@@ -851,7 +882,7 @@ pub fn run() {
           },
           "pet_toggle" => if let Some(pet) = app.get_webview_window("pet") {
             if pet.is_visible().unwrap_or(false) { let _ = pet.hide(); PET_VISIBLE.store(false, Ordering::Release); }
-            else { let _ = pet.show(); PET_VISIBLE.store(true, Ordering::Release); let _ = pet.set_focus(); }
+            else { let _ = pet.set_focusable(false); let _ = pet.show(); PET_VISIBLE.store(true, Ordering::Release); }
           },
           "autostart" => {
             let manager = app.autolaunch();
@@ -889,6 +920,14 @@ pub fn run() {
       Ok(())
     })
     .on_window_event(|window, event| {
+      if window.label() == "pet" {
+        if let WindowEvent::Focused(focused) = event {
+          write_window_diagnostic("pet_native_focus", &format!("focused={focused}"));
+          if !focused {
+            let _ = window.set_focusable(false);
+          }
+        }
+      }
       if window.label() == "main" {
         if let WindowEvent::Focused(focused) = event {
           write_window_diagnostic("native_focus", &format!("focused={focused}"));
@@ -900,6 +939,7 @@ pub fn run() {
         if window.label() == "main" {
           if let Some(pet) = window.app_handle().get_webview_window("pet") {
             let _ = window.app_handle().emit_to("pet", "pet-reset", ());
+            let _ = pet.set_focusable(false);
             let _ = pet.show();
             PET_VISIBLE.store(true, Ordering::Release);
             let _ = pet.set_always_on_top(true);

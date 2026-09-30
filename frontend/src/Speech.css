@@ -1,0 +1,16 @@
+.voice-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 0; min-width: 0; }
+.voice-controls button, .speech-settings button { color: var(--text); background: var(--surface, var(--panel)); border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; cursor: pointer; font: inherit; font-size: 12px; }
+.voice-controls button:disabled { opacity: .5; cursor: not-allowed; }
+.voice-controls small { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.voice-controls .voice-recording { color: var(--accent); border-color: var(--accent); }
+.speech-settings { display: grid; gap: 14px; }
+.speech-settings fieldset { display: grid; gap: 12px; min-width: 0; border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+.speech-settings legend { color: var(--text); padding: 0 6px; font-size: 13px; }
+.speech-settings label { display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
+.speech-settings input, .speech-settings select { width: 100%; min-width: 0; box-sizing: border-box; }
+.speech-settings small { color: var(--muted); line-height: 1.6; overflow-wrap: anywhere; }
+.speech-bubble .voice-controls { --text: #173b56; --muted: #4e718c; --line: #a8d9f4; --surface: #f1f9ff; --accent: #198fd4; flex-shrink: 0; padding: 4px 0; gap: 5px; }
+.pet-stage.model-alice .voice-controls { --text: #665024; --muted: #826f4b; --line: #d9c690; --surface: #fff9e9; --accent: #a47b2b; }
+.speech-bubble .speech-head { gap: 6px; }
+.speech-bubble .speech-head > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.speech-bubble .speech-actions { flex-wrap: wrap; justify-content: flex-end; }

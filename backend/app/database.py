@@ -78,6 +78,19 @@ def init_db() -> None:
                 enabled INTEGER NOT NULL CHECK (enabled IN (0, 1))
             );
 
+            CREATE TABLE IF NOT EXISTS speech_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                stt_base_url TEXT NOT NULL DEFAULT '',
+                stt_api_key TEXT NOT NULL DEFAULT '',
+                stt_model TEXT NOT NULL DEFAULT '',
+                tts_base_url TEXT NOT NULL DEFAULT '',
+                tts_api_key TEXT NOT NULL DEFAULT '',
+                tts_model TEXT NOT NULL DEFAULT '',
+                tts_voice TEXT NOT NULL DEFAULT 'alloy',
+                tts_speed REAL NOT NULL DEFAULT 1
+            );
+            INSERT OR IGNORE INTO speech_settings (id) VALUES (1);
+
             CREATE TABLE IF NOT EXISTS plugin_device_states (
                 device_id TEXT NOT NULL,
                 plugin_id TEXT NOT NULL,
@@ -112,6 +125,9 @@ def init_db() -> None:
             if name not in existing:
                 db.execute(f"ALTER TABLE characters ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
         setting_columns = {row[1] for row in db.execute("PRAGMA table_info(settings)")}
+        speech_columns = {row[1] for row in db.execute("PRAGMA table_info(speech_settings)")}
+        if "proxy_mode" not in speech_columns:
+            db.execute("ALTER TABLE speech_settings ADD COLUMN proxy_mode TEXT NOT NULL DEFAULT 'auto'")
         if "context_message_limit" not in setting_columns:
             db.execute("ALTER TABLE settings ADD COLUMN context_message_limit INTEGER NOT NULL DEFAULT 20")
         if "memory_limit" not in setting_columns:
