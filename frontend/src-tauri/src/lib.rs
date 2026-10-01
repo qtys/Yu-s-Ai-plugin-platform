@@ -11,6 +11,12 @@ use tauri::{
 use tauri_plugin_shell::{process::{CommandChild, CommandEvent}, ShellExt};
 use tauri_plugin_autostart::ManagerExt;
 use serde::Serialize;
+mod window_appearance;
+
+#[tauri::command]
+fn set_main_window_theme(window: WebviewWindow, dark: bool, background: [u8; 3], foreground: [u8; 3], border: [u8; 3]) -> Result<(), String> {
+  window_appearance::apply(&window, dark, background, foreground, border)
+}
 
 #[cfg(target_os = "windows")]
 use base64::Engine;
@@ -613,6 +619,22 @@ fn copy_backup_file(source: String, destination: String) -> Result<String, Strin
   Ok(destination_path.to_string_lossy().into_owned())
 }
 
+#[tauri::command]
+fn export_generated_image(image_id: String, destination: String) -> Result<String, String> {
+  if image_id.len() != 36 || !image_id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+    return Err("图片编号无效".into());
+  }
+  let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+  let install_dir = executable.parent().ok_or("无法确定软件安装目录")?;
+  let root = std::fs::canonicalize(install_dir.join("data").join("generated-images")).map_err(|error| error.to_string())?;
+  let source = std::fs::canonicalize(root.join(format!("{image_id}.png"))).map_err(|error| error.to_string())?;
+  if !source.starts_with(&root) { return Err("只能导出生成的图片".into()); }
+  let mut target = std::path::PathBuf::from(destination);
+  target.set_extension("png");
+  std::fs::copy(source, &target).map_err(|error| error.to_string())?;
+  Ok(target.to_string_lossy().into_owned())
+}
+
 fn spawn_after_exit(path: &std::path::Path) -> Result<(), String> {
   let powershell = std::env::var_os("SystemRoot")
     .map(std::path::PathBuf::from)
@@ -807,7 +829,7 @@ pub fn run() {
       always_on_top: Mutex::new(false),
       mini_mode: Mutex::new(false),
     })
-    .invoke_handler(tauri::generate_handler![set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, resize_pet_dialog, start_pet_drag, cancel_pet_auto_move, move_pet_by, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, set_pet_interaction_mode, set_pet_keyboard_focus, get_autostart_status, set_autostart, export_character_card, copy_backup_file, install_update, confirm_update_startup, restart_application, record_window_diagnostic, capture_screen])
+    .invoke_handler(tauri::generate_handler![set_main_window_theme, set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, resize_pet_dialog, start_pet_drag, cancel_pet_auto_move, move_pet_by, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, set_pet_interaction_mode, set_pet_keyboard_focus, get_autostart_status, set_autostart, export_character_card, copy_backup_file, export_generated_image, install_update, confirm_update_startup, restart_application, record_window_diagnostic, capture_screen])
     .setup(|app| {
       let legacy_data_dir = app.path().app_data_dir()?;
       let data_dir = prepare_install_data_dir(app.handle())?;

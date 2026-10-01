@@ -50,7 +50,7 @@ export default function BackgroundSettings({ value, onChange }: { value: Workspa
     finally { setBusy(false); }
   }
   return <div className="background-settings">
-    <div className="form-section-title"><strong>自定义背景</strong><small>仅保存在本机，不会发送给模型。自动压缩，重新启动后保留。</small></div>
+    <div className="form-section-title"><strong>自定义背景</strong><small>铺满整个内容窗口，随窗口尺寸缩放，保持比例并居中裁切。仅保存在本机。</small></div>
     <input ref={picker} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void select(file); }} />
     <div className="background-actions">
       {value && <img className="background-thumbnail" src={value.image} alt="当前背景预览" />}

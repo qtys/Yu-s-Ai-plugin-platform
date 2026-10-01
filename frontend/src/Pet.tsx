@@ -502,8 +502,8 @@ export default function Pet() {
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
   const [continuousTranslation, setContinuousTranslation] = useState(false);
   const [character, setCharacter] = useState<Character | null>(null);
-  const proactiveContextRef = useRef({ character, expanded: false, menuOpen: false, busy: false, dragging: false });
-  proactiveContextRef.current = { character, expanded: open || translationOpen || settingsOpen, menuOpen, busy, dragging };
+  const proactiveContextRef = useRef({ character, expanded: false, menuOpen: false, busy: false, dragging: false, proactiveMessageId });
+  proactiveContextRef.current = { character, expanded: open || translationOpen || settingsOpen, menuOpen, busy, dragging, proactiveMessageId };
   const [messageDisplayMode, setMessageDisplayMode] = useState<MessageDisplayMode>("markdown");
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [speechConversationId, setSpeechConversationId] = useState<number | null>(null);
@@ -511,6 +511,7 @@ export default function Pet() {
   const voice = useSpeech(speechEnabled, `${open}:${character?.id}:${speechConversationId}:${busy}`, (text) => {
     setInput((current) => current ? `${current} ${text}` : text);
   });
+  const stopSpeechReading = voice.stopReading;
   const [petSize, setPetSize] = useState(
     () => Number(localStorage.getItem("yus-ai-pet-size")) || 100,
   );
@@ -911,6 +912,22 @@ export default function Pet() {
     let unlistenReset: (() => void) | undefined;
     let unlistenSelection: (() => void) | undefined;
     let unlistenGaze: (() => void) | undefined;
+    let unlistenWithdrawal: (() => void) | undefined;
+    void listen<{ conversation_id: number; deleted_ids: number[] }>("messages-withdrawn", (event) => {
+      const { conversation_id, deleted_ids } = event.payload;
+      setPendingProactive((current) => current && deleted_ids.includes(current.messageId) ? null : current);
+      const proactiveId = proactiveContextRef.current.proactiveMessageId;
+      if (proactiveId && deleted_ids.includes(proactiveId)) {
+        setProactiveMessageId(null); setProactiveMessage(""); setProactiveConversationId(null); setProactiveSources([]);
+      }
+      if (replyToProactiveRef.current && deleted_ids.includes(replyToProactiveRef.current.messageId)) replyToProactiveRef.current = null;
+      if (conversationRef.current !== conversation_id || proactiveContextRef.current.busy) return;
+      stopSpeechReading();
+      void request<{ role: string; content: string }[]>(`/conversations/${conversation_id}/messages`).then((items) => {
+        if (disposed || conversationRef.current !== conversation_id || proactiveContextRef.current.busy) return;
+        setReply(items.filter((item) => item.role === "assistant").at(-1)?.content ?? READY_MESSAGE);
+      }).catch(() => { if (!disposed && conversationRef.current === conversation_id && !proactiveContextRef.current.busy) setReply(READY_MESSAGE); });
+    }).then((stop) => { if (disposed) stop(); else unlistenWithdrawal = stop; });
     void listen<string>("pet-control", (event) => {
       if (event.payload === "size-up" || event.payload === "size-down") {
         setPetSize((current) => {
@@ -980,9 +997,9 @@ export default function Pet() {
     return () => {
       disposed = true;
       void invoke("set_continuous_translation", { enabled: false });
-      unlisten?.(); unlistenReset?.(); unlistenSelection?.(); unlistenGaze?.();
+      unlisten?.(); unlistenReset?.(); unlistenSelection?.(); unlistenGaze?.(); unlistenWithdrawal?.();
     };
-  }, [desktop]);
+  }, [desktop, stopSpeechReading]);
 
   async function beginLayoutChange() {
     if (!desktop) return;

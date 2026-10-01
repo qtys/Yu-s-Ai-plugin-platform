@@ -38,6 +38,7 @@ from .documents import DOCUMENT_DIR, chunk_pages, decode_document, extract_pages
 from .instruction_review import length_issues, review_reply, revise_reply
 from .pixel_motion import router as pixel_motion_router
 from .speech import router as speech_router
+from .image_generation import router as image_router
 
 MODEL_GENERATION_LOCK = asyncio.Lock()
 INSTRUCTION_REVIEW_DEADLINE_SECONDS = 30
@@ -557,7 +558,7 @@ def _create_backup_archive(prefix: str, app_version: str, preferences: dict[str,
         "format_version": BACKUP_FORMAT_VERSION,
         "app_version": app_version,
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "includes": ["database", "documents", "character-exports", "desktop-preferences"],
+        "includes": ["database", "documents", "character-exports", "generated-images", "desktop-preferences"],
         "excludes": ["api-logs", "temporary-files", "translation-models"],
         "counts": counts,
     }
@@ -570,7 +571,7 @@ def _create_backup_archive(prefix: str, app_version: str, preferences: dict[str,
             }
             archive.writestr("preferences.json", json.dumps(safe_preferences, ensure_ascii=False, indent=2))
             archive.write(snapshot_db, "database/yus_ai.db")
-            for folder_name in ("documents", "character-exports"):
+            for folder_name in ("documents", "character-exports", "generated-images"):
                 folder = data_dir / folder_name
                 if not folder.exists():
                     continue
@@ -609,7 +610,7 @@ def _restore_backup_archive(source_path: str, app_version: str) -> dict:
             for info in infos:
                 normalized = Path(info.filename.replace("\\", "/"))
                 parts = normalized.parts
-                allowed = info.filename in {"manifest.json", "preferences.json", "database/yus_ai.db"} or (parts and parts[0] in {"documents", "character-exports"})
+                allowed = info.filename in {"manifest.json", "preferences.json", "database/yus_ai.db"} or (parts and parts[0] in {"documents", "character-exports", "generated-images"})
                 if not allowed or normalized.is_absolute() or ".." in parts:
                     raise ValueError(f"备份包含不安全路径：{info.filename}")
                 if info.is_dir() or info.filename in {"manifest.json", "preferences.json"}:
@@ -637,7 +638,7 @@ def _restore_backup_archive(source_path: str, app_version: str) -> dict:
         preferences = {key: value for key, value in preferences.items() if isinstance(key, str) and key.startswith("yus-ai-") and isinstance(value, str)}
         safety_backup = _create_backup_archive("Yus-AI-pre-restore", app_version)
         rollback.mkdir(parents=True, exist_ok=False)
-        for folder_name in ("documents", "character-exports"):
+        for folder_name in ("documents", "character-exports", "generated-images"):
             current = data_dir / folder_name
             replacement = staging / folder_name
             old = rollback / folder_name
@@ -810,16 +811,17 @@ async def lifespan(_: FastAPI):
     UPDATE_RELEASE_CACHE = None
     configure_logging()
     init_db()
-    logger.info("backend_started version=0.15.30")
+    logger.info("backend_started version=0.15.31")
     yield
     logger.info("backend_stopped")
 
 
-app = FastAPI(title="Yu's AI API", version="0.15.30", lifespan=lifespan)
+app = FastAPI(title="Yu's AI API", version="0.15.31", lifespan=lifespan)
 # Keep shelved motion experiments available for development, never in the installer.
 if not getattr(sys, "frozen", False):
     app.include_router(pixel_motion_router)
 app.include_router(speech_router)
+app.include_router(image_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://tauri.localhost", "tauri://localhost"],
@@ -1186,6 +1188,8 @@ def delete_model_profile(profile_id: int):
             db.execute("UPDATE settings SET active_model_profile_id=?,base_url=?,api_key=?,model=?,vision_model=? WHERE id=1",
                 (fallback["id"], fallback["base_url"], fallback["api_key"], fallback["model"], fallback["vision_model"]))
         db.execute("UPDATE settings SET vision_model_profile_id=NULL WHERE vision_model_profile_id=?", (profile_id,))
+        # Never silently fall back to an unrelated custom drawing provider.
+        db.execute("UPDATE image_settings SET model_profile_id=NULL,base_url='',api_key='' WHERE model_profile_id=?", (profile_id,))
         db.execute("DELETE FROM model_profiles WHERE id=?", (profile_id,))
     return {"ok": True}
 
@@ -2017,6 +2021,35 @@ def update_message(message_id: int, payload: MessageUpdate):
             db.execute("DELETE FROM memories WHERE source_message_id=?", (message_id,))
             maybe_store_memory(db, message["character_id"], message_id, content)
         return dict(db.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone())
+
+
+@app.delete("/api/messages/{message_id}")
+async def withdraw_message(message_id: int):
+    if MODEL_GENERATION_LOCK.locked():
+        raise HTTPException(409, "模型正在生成或分析，请完成后再撤回")
+    async with MODEL_GENERATION_LOCK:
+        with connect() as db:
+            message = db.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone()
+            if not message:
+                raise HTTPException(404, "消息不存在或已撤回")
+            conversation_id = message["conversation_id"]
+            deleted_ids = [message_id]
+            if message["role"] == "user":
+                next_user = db.execute(
+                    "SELECT MIN(id) FROM messages WHERE conversation_id=? AND role='user' AND id>?",
+                    (conversation_id, message_id),
+                ).fetchone()[0]
+                deleted_ids += [row[0] for row in db.execute(
+                    """SELECT id FROM messages WHERE conversation_id=? AND role='assistant'
+                    AND origin!='proactive' AND id>? AND (? IS NULL OR id<?) ORDER BY id""",
+                    (conversation_id, message_id, next_user, next_user),
+                ).fetchall()]
+            placeholders = ",".join("?" for _ in deleted_ids)
+            db.execute(f"DELETE FROM memories WHERE source_message_id IN ({placeholders})", deleted_ids)
+            db.execute(f"DELETE FROM messages WHERE id IN ({placeholders})", deleted_ids)
+            db.execute("UPDATE conversations SET summary='', updated_at=CURRENT_TIMESTAMP WHERE id=?", (conversation_id,))
+    logger.info("message_withdrawn conversation_id=%s deleted_count=%s", conversation_id, len(deleted_ids))
+    return {"ok": True, "conversation_id": conversation_id, "deleted_ids": deleted_ids}
 
 
 @app.post("/api/conversations/{conversation_id}/chat")

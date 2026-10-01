@@ -1,4 +1,34 @@
 /* Desktop workspace: top navigation, readable chat canvas, on-demand history. */
+.character-avatar-field { display:grid; gap:10px; }
+.character-avatar-field > span { font-size:13px; font-weight:600; }
+.character-avatar-picker { display:flex; gap:18px; align-items:center; padding:18px; border:1px solid var(--line); border-radius:13px; background:var(--input); }
+.shell.workspace .avatar-preview { flex:0 0 76px; width:76px; height:76px; padding:0; overflow:hidden; display:grid; place-items:center; background:var(--surface); color:var(--muted); border:1px solid var(--line); border-radius:20px; }
+.avatar-preview img { width:100%; height:100%; object-fit:cover; }
+.avatar-preview svg { width:30px; height:30px; }
+.character-avatar-picker strong { display:block; font-size:13px; font-weight:500; }
+.character-avatar-picker small { display:block; margin-top:6px; font-size:11px; color:var(--muted); }
+.avatar-picker-actions { display:flex; gap:8px; margin-top:12px; }
+.shell.workspace .avatar-picker-actions button { border:1px solid var(--line); border-radius:7px; padding:6px 10px; background:var(--panel); color:var(--text); font-size:12px; }
+.shell.workspace .image-settings { display:grid; gap:16px; }
+.shell.workspace .image-settings label, .image-prompt { display:grid; gap:8px; color:var(--text); font-size:13px; }
+.image-settings p, .image-settings small { color:var(--muted); font-size:12px; line-height:1.6; margin:0; }
+.image-options { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+.shell.workspace .image-studio { width:min(800px,100%); }
+.shell.workspace .image-studio .plugin-modal-content { display:block; }
+.shell.workspace .image-studio textarea { width:100%; min-height:108px; padding:14px; resize:vertical; border:1px solid var(--line); border-radius:12px; color:var(--text); background:var(--input); font:inherit; line-height:1.6; box-sizing:border-box; }
+.image-studio-actions { display:flex; justify-content:space-between; gap:12px; margin:12px 0; }
+.shell.workspace .image-studio-actions button, .shell.workspace .image-gallery button { padding:8px 14px; border:1px solid var(--line); border-radius:8px; color:var(--text); background:var(--surface); }
+.shell.workspace .image-studio-actions .primary { background:var(--accent); color:var(--accent-text); border-color:var(--accent); }
+.image-studio small { color:var(--muted); font-size:12px; line-height:1.6; }
+.image-error { padding:12px; border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:8px; overflow-wrap:anywhere; font-size:13px; }
+.image-empty { display:grid; place-items:center; min-height:140px; color:var(--muted); font-size:13px; border:1px solid var(--line); border-radius:12px; margin-top:18px; }
+.image-gallery { display:grid; gap:18px; margin-top:18px; }
+.image-gallery article { overflow:hidden; border:1px solid var(--line); border-radius:14px; background:var(--input); }
+.image-gallery img { display:block; width:100%; max-height:420px; object-fit:contain; background:var(--surface); }
+.image-gallery article > div { padding:16px; }
+.image-gallery p { margin:0 0 8px; font-size:13px; line-height:1.6; overflow-wrap:anywhere; }
+.image-gallery button { float:right; }
+@media (max-width:500px) { .image-options { grid-template-columns:1fr; } .character-avatar-picker { gap:12px; padding:12px; } }
 :root[data-theme="monochrome"], .shell[data-theme="monochrome"] {
   color-scheme:dark;
   --bg:#0b0c0e; --panel:#141518; --surface:#202226; --surface-strong:#2d3035;
@@ -18,7 +48,12 @@
 .shell.workspace .theme-card[data-preview="monochrome"] .theme-preview { background:#0b0c0e; }
 .shell.workspace .theme-card[data-preview="monochrome"] .theme-preview i { background:#34373e; }
 .shell.workspace .theme-card[data-preview="monochrome"] .theme-preview i:last-child { background:#f5f6f8; }
-.shell.workspace.has-background { background-image:linear-gradient(color-mix(in srgb,var(--bg) calc(var(--background-veil) * 100%),transparent),color-mix(in srgb,var(--bg) calc(var(--background-veil) * 100%),transparent)),var(--workspace-image); background-size:cover; background-position:center; }
+.shell.workspace { position:relative; isolation:isolate; }
+.shell.workspace > .workspace-wallpaper { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; object-position:center; max-width:none; pointer-events:none; user-select:none; z-index:-2; }
+.shell.workspace.has-background::before { content:""; position:absolute; inset:0; background:var(--bg); opacity:var(--background-veil,0.8); pointer-events:none; z-index:-1; }
+.shell.workspace.has-background .workspace-topbar,
+.shell.workspace.has-background main > header,
+.shell.workspace.has-background .workspace-footer { background:color-mix(in srgb,var(--panel) 65%,transparent); }
 .shell.workspace.has-background main, .shell.workspace.has-background .chat-page, .shell.workspace.has-background .form-page { background:transparent; }
 .shell.workspace.has-background .messages article.assistant .message-body { background:color-mix(in srgb,var(--panel) 94%,transparent); border:1px solid var(--line); border-radius:16px; padding:16px 20px; }
 .shell.workspace.has-background .welcome { background:color-mix(in srgb,var(--bg) 90%,transparent); border-radius:24px; padding:24px; width:fit-content; max-width:calc(100% - 48px); align-self:center; }
@@ -53,6 +88,11 @@
 .shell.workspace .workspace-navigation > button.active, .shell.workspace .workspace-recent > button.active { color:var(--text); }
 .workspace-navigation > button.active::after, .workspace-recent > button.active::after { content:""; position:absolute; height:2px; border-radius:2px; background:var(--text); bottom:0; left:10px; right:10px; }
 .workspace-recent { position:relative; display:flex; }
+.shell.workspace main > header > .workspace-recent { flex:0 0 auto; flex-direction:row; }
+.shell.workspace .workspace-recent button { border:0; background:transparent; color:var(--text); font:inherit; }
+.shell.workspace .workspace-recent > button { display:flex; align-items:center; gap:7px; height:34px; padding:0 12px; border:1px solid var(--line); border-radius:9px; background:var(--panel); font-size:12px; white-space:nowrap; }
+.shell.workspace .workspace-recent > button:hover, .shell.workspace .workspace-recent > button.active { background:var(--surface); }
+.shell.workspace .workspace-recent > button.active::after { display:none; }
 .shell.workspace .workspace-history { position:absolute; top:calc(100% + 8px); left:0; width:310px; max-width:calc(100vw - 32px); box-sizing:border-box; padding:14px; border:1px solid var(--line); border-radius:14px; background:var(--panel); box-shadow:0 12px 35px #00000015; color:var(--text); }
 .history-heading { display:flex; justify-content:space-between; align-items:center; padding:0 4px 10px; font-size:13px; }
 .shell.workspace .history-heading button { padding:0; width:30px; height:30px; font-size:22px; }
@@ -98,6 +138,7 @@
 .workspace .message-avatar img { width:100%; height:100%; object-fit:cover; }
 .shell.workspace .message-heading { gap:8px; flex-wrap:wrap; }
 .shell.workspace .message-edit { border:0; background:transparent; font-size:11px; padding:3px 5px; opacity:.85; }
+.shell.workspace .message-withdraw:hover:not(:disabled) { color:var(--text); background:var(--surface); border-radius:5px; opacity:1; }
 .shell.workspace .messages > article.user { grid-template-columns:minmax(0,1fr); margin-left:15%; }
 .workspace article.user > .message-avatar { display:none; }
 .workspace article.user .message-body { display:flex; flex-direction:column; align-items:flex-end; }
@@ -152,7 +193,7 @@
   .workspace-brand { font-size:13px; gap:6px; }
   .shell.workspace .workspace-navigation { gap:0; }
   .shell.workspace .workspace-navigation button { padding:8px; font-size:12px; gap:5px; }
-  .shell.workspace .workspace-history { position:fixed; top:60px; left:12px; width:min(330px,calc(100vw - 24px)); }
+  .shell.workspace .workspace-history { position:fixed; top:124px; left:12px; width:min(330px,calc(100vw - 24px)); }
   .shell.workspace main > header { flex-wrap:wrap; padding:12px 16px; gap:10px; }
   .shell.workspace .header-copy { text-align:right; }
   .shell.workspace main > header > .window-tools { flex:1 0 100%; max-width:100%; justify-content:flex-end; }

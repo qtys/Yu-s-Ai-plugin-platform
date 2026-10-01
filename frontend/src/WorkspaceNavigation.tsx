@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-export function WorkspaceIcon({ name }: { name: "chat" | "role" | "recent" | "plugin" | "settings" | "attach" | "pin" | "drop" | "mic" | "command" | "send" | "stop" }) {
+export function WorkspaceIcon({ name }: { name: "chat" | "role" | "recent" | "plugin" | "settings" | "attach" | "pin" | "drop" | "mic" | "command" | "send" | "stop" | "image" }) {
   const paths = {
     chat: "M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-2 2v-9.5A8.5 8.5 0 0 1 10.5 4h2A8.5 8.5 0 0 1 21 11.5Z",
     role: "M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0ZM4 21v-2a8 8 0 0 1 16 0v2H4Z",
@@ -14,13 +14,12 @@ export function WorkspaceIcon({ name }: { name: "chat" | "role" | "recent" | "pl
     command: "M9 9V5a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v13a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V9Z",
     send: "M12 20V4M5 11l7-7 7 7",
     stop: "M6 6h12v12H6Z",
+    image: "M4 3h16v18H4V3ZM4 16l5-5 4 4 3-3 4 4M16 7h.01",
   };
   return <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name]} /></svg>;
 }
 
-type Props = {
-  panel: "chat" | "characters" | "plugins" | "settings";
-  onPanel: (panel: Props["panel"]) => void;
+type RecentProps = {
   conversations: { id: number; title: string }[];
   activeConversation: number | null;
   onOpen: (id: number) => void;
@@ -30,7 +29,24 @@ type Props = {
   canCreate: boolean;
 };
 
-export default function WorkspaceNavigation(props: Props) {
+type NavigationProps = {
+  panel: "chat" | "characters" | "plugins" | "settings";
+  onPanel: (panel: NavigationProps["panel"]) => void;
+};
+
+export default function WorkspaceNavigation({ panel, onPanel }: NavigationProps) {
+  return <div className="workspace-topbar">
+    <button className="workspace-brand" onClick={() => onPanel("chat")} aria-label="Yu's AI，返回对话"><span className="workspace-logo"><WorkspaceIcon name="drop" /></span><strong>Yu’s AI</strong></button>
+    <nav className="workspace-navigation" aria-label="主导航">
+      <button className={panel === "chat" ? "active" : ""} aria-current={panel === "chat" ? "page" : undefined} onClick={() => onPanel("chat")}><WorkspaceIcon name="chat" />对话</button>
+      <button className={panel === "characters" ? "active" : ""} aria-current={panel === "characters" ? "page" : undefined} onClick={() => onPanel("characters")}><WorkspaceIcon name="role" />角色</button>
+      <button className={panel === "plugins" ? "active" : ""} aria-current={panel === "plugins" ? "page" : undefined} onClick={() => onPanel("plugins")}><WorkspaceIcon name="plugin" />插件</button>
+      <button className={panel === "settings" ? "active workspace-settings" : "workspace-settings"} onClick={() => onPanel("settings")} aria-label="设置" title="设置"><WorkspaceIcon name="settings" /></button>
+    </nav>
+  </div>;
+}
+
+export function WorkspaceRecent(props: RecentProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const recentRef = useRef<HTMLDivElement>(null);
@@ -50,13 +66,7 @@ export default function WorkspaceNavigation(props: Props) {
     return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", escape); };
   }, [open]);
   const matching = props.conversations.filter((item) => item.title.toLowerCase().includes(query.toLowerCase()));
-  function navigate(panel: Props["panel"]) { setOpen(false); props.onPanel(panel); }
-  return <div className="workspace-topbar">
-    <button className="workspace-brand" onClick={() => navigate("chat")} aria-label="Yu's AI，返回对话"><span className="workspace-logo"><WorkspaceIcon name="drop" /></span><strong>Yu’s AI</strong></button>
-    <nav className="workspace-navigation" aria-label="主导航">
-      <button className={props.panel === "chat" ? "active" : ""} aria-current={props.panel === "chat" ? "page" : undefined} onClick={() => navigate("chat")}><WorkspaceIcon name="chat" />对话</button>
-      <button className={props.panel === "characters" ? "active" : ""} aria-current={props.panel === "characters" ? "page" : undefined} onClick={() => navigate("characters")}><WorkspaceIcon name="role" />角色</button>
-      <div className="workspace-recent" ref={recentRef}>
+  return <div className="workspace-recent" ref={recentRef}>
         <button ref={triggerRef} className={open ? "active" : ""} aria-expanded={open} aria-controls="workspace-history" onClick={() => setOpen((value) => !value)}><WorkspaceIcon name="recent" />最近</button>
         {open && <section className="workspace-history" id="workspace-history" aria-label="最近对话">
           <div className="history-heading"><strong>最近对话</strong><button disabled={!props.canCreate} onClick={() => { setOpen(false); props.onNew(); }} aria-label="新建对话">＋</button></div>
@@ -70,9 +80,5 @@ export default function WorkspaceNavigation(props: Props) {
             {!matching.length && <p className="history-empty">{query ? "没有找到匹配的对话" : "还没有对话，从新对话开始吧"}</p>}
           </div>
         </section>}
-      </div>
-      <button className={props.panel === "plugins" ? "active" : ""} aria-current={props.panel === "plugins" ? "page" : undefined} onClick={() => navigate("plugins")}><WorkspaceIcon name="plugin" />插件</button>
-      <button className={props.panel === "settings" ? "active workspace-settings" : "workspace-settings"} onClick={() => navigate("settings")} aria-label="设置" title="设置"><WorkspaceIcon name="settings" /></button>
-    </nav>
-  </div>;
+      </div>;
 }

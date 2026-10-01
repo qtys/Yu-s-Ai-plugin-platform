@@ -40,6 +40,11 @@ class PluginRegistry:
 
 registry = PluginRegistry()
 registry.register(PluginManifest(
+    id="image_generation", name="图片生成", description="手动调用绘图 API，预览并保存生成图片",
+    version="1.0.0", surfaces=("chat_message", "settings"),
+    permissions=("image_api", "local_storage"), default_enabled=False, platforms=("desktop",),
+))
+registry.register(PluginManifest(
     id="speech", name="语音输入与朗读", description="在线语音识别、转写确认与 AI 语音朗读",
     version="1.0.0", surfaces=("chat_message", "pet_chat", "settings"),
     permissions=("microphone", "speech_api"), default_enabled=False, platforms=("desktop",),

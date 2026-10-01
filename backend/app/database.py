@@ -91,6 +91,24 @@ def init_db() -> None:
             );
             INSERT OR IGNORE INTO speech_settings (id) VALUES (1);
 
+            CREATE TABLE IF NOT EXISTS image_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                model_profile_id INTEGER REFERENCES model_profiles(id) ON DELETE SET NULL,
+                base_url TEXT NOT NULL DEFAULT '',
+                api_key TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                size TEXT NOT NULL DEFAULT '1024x1024',
+                quality TEXT NOT NULL DEFAULT 'default',
+                response_format TEXT NOT NULL DEFAULT 'auto',
+                proxy_mode TEXT NOT NULL DEFAULT 'auto'
+            );
+            CREATE TABLE IF NOT EXISTS generated_images (
+                id TEXT PRIMARY KEY,
+                prompt TEXT NOT NULL,
+                model TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
             CREATE TABLE IF NOT EXISTS plugin_device_states (
                 device_id TEXT NOT NULL,
                 plugin_id TEXT NOT NULL,
@@ -167,6 +185,7 @@ def init_db() -> None:
             db.execute("""INSERT INTO model_profiles(name,base_url,api_key,model,vision_model)
                 SELECT CASE WHEN model='' THEN '默认模型' ELSE model END,base_url,api_key,model,vision_model
                 FROM settings WHERE id=1""")
+        db.execute("INSERT OR IGNORE INTO image_settings (id) VALUES (1)")
         active_id = db.execute("SELECT active_model_profile_id FROM settings WHERE id=1").fetchone()[0]
         if not db.execute("SELECT 1 FROM model_profiles WHERE id=?", (active_id,)).fetchone():
             profile = db.execute("SELECT id,base_url,api_key,model,vision_model FROM model_profiles ORDER BY id LIMIT 1").fetchone()

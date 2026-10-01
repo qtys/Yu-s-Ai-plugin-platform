@@ -1,4 +1,4 @@
-export type PluginId = "translation" | "message_display" | "conversation_environment" | "proactive" | "novel_reply" | "instruction_review" | "speech";
+export type PluginId = "translation" | "message_display" | "conversation_environment" | "proactive" | "novel_reply" | "instruction_review" | "speech" | "image_generation";
 
 export type PluginInfo = {
   id: PluginId;
@@ -16,6 +16,7 @@ export function isPluginEnabled(plugins: PluginInfo[], id: PluginId): boolean {
 }
 
 export const permissionLabels: Record<string, string> = {
+  image_api: "仅手动生成时向绘图服务提交图片描述（可能收费）",
   microphone: "仅点击录音时访问麦克风",
   speech_api: "向语音服务提交录音或朗读文字",
   local_storage: "本地文件",

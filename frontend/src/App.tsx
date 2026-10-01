@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties, FormEvent, ReactNode } from "react";
 import BackgroundSettings, { readWorkspaceBackground } from "./BackgroundSettings";
+import CharacterAvatarPicker from "./CharacterAvatarPicker";
+import { ImageSettingsPanel, ImageGenerationDialog } from "./ImageGeneration";
+import { cssRgb } from "./window-theme";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import MessageContent from "./MessageContent";
 import { SpeechSettingsPanel, useSpeech, SpeechToolbar, SpeechStatus } from "./Speech";
@@ -12,7 +15,7 @@ import type { PluginId, PluginInfo } from "./plugins";
 import "./App.css";
 import "./Desktop.css";
 import "./Themes.css";
-import WorkspaceNavigation, { WorkspaceIcon } from "./WorkspaceNavigation";
+import WorkspaceNavigation, { WorkspaceIcon, WorkspaceRecent } from "./WorkspaceNavigation";
 import "./Workspace.css";
 
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:8000/api";
@@ -119,6 +122,8 @@ export default function App() {
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [pluginBusy, setPluginBusy] = useState<string | null>(null);
   const [selectedPluginId, setSelectedPluginId] = useState<PluginId | null>(null);
+  const [imageStudioOpen, setImageStudioOpen] = useState(false);
+  const closeImageStudio = useCallback(() => setImageStudioOpen(false), []);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [autostartBusy, setAutostartBusy] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
@@ -157,6 +162,8 @@ export default function App() {
   const [proactivePlugin, setProactivePlugin] = useState({ enabled: false, interval_minutes: 30, randomize_interval: true, random_min_minutes: 15, random_max_minutes: 60, history_weight: 15, care_enabled: true, care_weight: 45, max_tokens: 1024, news_enabled: false, rss_url: "https://www.chinanews.com.cn/rss/scroll-news.xml", screen_context_enabled: false, total_tokens: 0, last_error: "" });
   const [editingCharacter, setEditingCharacter] = useState<number | null>(null);
   const [editingMessage, setEditingMessage] = useState<number | null>(null);
+  const [withdrawingMessage, setWithdrawingMessage] = useState<number | null>(null);
+  const withdrawingMessageRef = useRef(false);
   const [messageDraft, setMessageDraft] = useState("");
   const [instructions, setInstructions] = useState<SavedInstruction[]>([]);
   const [instructionPanelOpen, setInstructionPanelOpen] = useState(false);
@@ -435,10 +442,18 @@ export default function App() {
     localStorage.setItem("yus-ai-theme", theme);
     localStorage.setItem("yus-ai-workspace-layout", "top-navigation");
     document.documentElement.dataset.theme = theme;
+    if (desktop) {
+      const colors = getComputedStyle(document.documentElement);
+      const topbar = document.querySelector(".workspace-topbar");
+      const background = (topbar ? cssRgb(getComputedStyle(topbar).backgroundColor) : null) ?? cssRgb(colors.getPropertyValue("--panel"));
+      const foreground = cssRgb(colors.getPropertyValue("--text"));
+      const border = cssRgb(colors.getPropertyValue("--line"));
+      if (background && foreground && border) void invoke("set_main_window_theme", { dark: ["monochrome", "midnight", "jade"].includes(theme), background, foreground, border }).catch(() => console.warn("Native titlebar theme could not be applied"));
+    }
     return () => {
       delete document.documentElement.dataset.theme;
     };
-  }, [theme]);
+  }, [theme, desktop]);
   useEffect(() => {
     const closeOnOutsideClick = (event: PointerEvent) => {
       if (modelSwitcherRef.current && !modelSwitcherRef.current.contains(event.target as Node)) {
@@ -693,13 +708,13 @@ export default function App() {
     } catch (e) { setError((e as Error).message); }
   }
   function beginMessageEdit(message: Message) {
-    if (!message.id || busy) return;
+    if (!message.id || busy || withdrawingMessageRef.current) return;
     setEditingMessage(message.id);
     setMessageDraft(message.content);
   }
   async function saveMessageEdit(message: Message) {
     const content = messageDraft.trim();
-    if (!message.id || !content) return;
+    if (!message.id || !content || withdrawingMessageRef.current) return;
     try {
       const updated = await request<Message>(`/messages/${message.id}`, {
         method: "PUT",
@@ -710,6 +725,36 @@ export default function App() {
       setMessageDraft("");
       setError("");
     } catch (e) { setError((e as Error).message); }
+  }
+  async function withdrawMessage(message: Message) {
+    if (!message.id || busy || withdrawingMessageRef.current) return;
+    const generation = chatGenerationRef.current;
+    const detail = message.role === "user"
+      ? "撤回这条消息及这一轮的 AI 回复？后面的其他轮对话保留。相关自动记忆会清理，已保存的指令不会删除。撤回后无法恢复；输入框为空时，会放回你的原文。"
+      : "撤回这条 AI 回复？其他消息保留，撤回后不再提交给模型。此操作无法恢复。";
+    withdrawingMessageRef.current = true;
+    setWithdrawingMessage(message.id);
+    try {
+      const accepted = desktop ? await confirm(detail, { title: "撤回消息", kind: "warning" }) : window.confirm(detail);
+      if (!accepted) return;
+      const result = await request<{ conversation_id: number; deleted_ids: number[] }>(`/messages/${message.id}`, { method: "DELETE" });
+      if (generation === chatGenerationRef.current) {
+        voice.stopReading();
+        setMessages((items) => items.filter((item) => !item.id || !result.deleted_ids.includes(item.id)));
+        setEditingMessage((current) => current && result.deleted_ids.includes(current) ? null : current);
+        if (message.role === "user" && !(inputRef.current?.value ?? inputDraftRef.current).trim()) {
+          inputDraftRef.current = message.content;
+          if (inputRef.current) {
+            inputRef.current.value = message.content;
+            inputRef.current.style.height = "0px";
+            inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 144)}px`;
+          }
+        }
+        setError("");
+      }
+      if (desktop) await emit("messages-withdrawn", result).catch(() => {});
+    } catch (cause) { setError((cause as Error).message); }
+    finally { withdrawingMessageRef.current = false; setWithdrawingMessage(null); }
   }
   async function reloadInstructions() {
     if (!activeCharacter) return;
@@ -1075,7 +1120,7 @@ export default function App() {
   async function send(event: FormEvent) {
     event.preventDefault();
     const content = (inputRef.current?.value ?? inputDraftRef.current).trim();
-    if (!content || busy) return;
+    if (!content || busy || withdrawingMessageRef.current) return;
     const oneTimeTemplate = queuedTemplate?.characterId === activeCharacter ? queuedTemplate : null;
     const chatGeneration = chatGenerationRef.current;
     let id = conversations.some((item) => item.id === activeConversation && item.character_id === activeCharacter)
@@ -1257,12 +1302,9 @@ export default function App() {
   const pluginSettingsStatus = selectedPluginId === "proactive" ? proactiveSaveStatus : settingsSaveStatus;
 
   return (
-    <div className={`${mini ? "shell workspace mini" : "shell workspace"}${workspaceBackground ? " has-background" : ""}`} data-theme={theme} style={workspaceBackground ? { "--workspace-image": `url("${workspaceBackground.image}")`, "--background-veil": 1 - workspaceBackground.strength } as CSSProperties : undefined}>
-      <WorkspaceNavigation panel={panel} onPanel={setPanel} conversations={conversations} activeConversation={activeConversation}
-        onOpen={(id) => { setPanel("chat"); requestLatestMessage(); void openConversation(id); }}
-        onRename={(id) => { const item = conversations.find((value) => value.id === id); if (item) void renameConversation(item); }}
-        onDelete={(id) => { const item = conversations.find((value) => value.id === id); if (item) void deleteConversation(item); }}
-        onNew={() => { setPanel("chat"); void createConversation(); }} canCreate={Boolean(activeCharacter)} />
+    <div className={`${mini ? "shell workspace mini" : "shell workspace"}${workspaceBackground ? " has-background" : ""}`} data-theme={theme} style={workspaceBackground ? { "--background-veil": 1 - workspaceBackground.strength } as CSSProperties : undefined}>
+      {workspaceBackground && <img className="workspace-wallpaper" src={workspaceBackground.image} alt="" aria-hidden="true" draggable={false} />}
+      <WorkspaceNavigation panel={panel} onPanel={setPanel} />
       <main>
         <header>
           {panel === "chat" && <details className="workspace-role-picker" onKeyDown={(event) => { if (event.key === "Escape") event.currentTarget.open = false; }} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) event.currentTarget.open = false; }}>
@@ -1272,6 +1314,11 @@ export default function App() {
               <button onClick={() => setPanel("characters")}>管理与创建角色 →</button>
             </div>
           </details>}
+          {panel === "chat" && <WorkspaceRecent conversations={conversations} activeConversation={activeConversation}
+            onOpen={(id) => { requestLatestMessage(); void openConversation(id); }}
+            onRename={(id) => { const item = conversations.find((value) => value.id === id); if (item) void renameConversation(item); }}
+            onDelete={(id) => { const item = conversations.find((value) => value.id === id); if (item) void deleteConversation(item); }}
+            onNew={() => { void createConversation(); }} canCreate={Boolean(activeCharacter) && !busy && withdrawingMessage === null} />}
           <div className="header-copy">
             <strong>
               {panel === "settings"
@@ -1289,7 +1336,6 @@ export default function App() {
             </small>
           </div>
           <div className="window-tools">
-            {panel === "chat" && <button className="workspace-new" disabled={!activeCharacter || busy} onClick={() => void createConversation()}><span aria-hidden="true">＋</span>新对话</button>}
             {panel === "chat" && modelProfiles.length > 0 && (
               <details className="model-switcher" ref={modelSwitcherRef} onKeyDown={(event) => { if (event.key === "Escape") { event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); } }}>
                 <summary aria-label={`当前模型：${modelProfiles.find((item) => item.id === settings.active_model_profile_id)?.name ?? settings.model}，点击切换`} title="切换聊天模型；桌宠与文档分析也会使用所选配置" onClick={(event) => { if (profileBusy || busy) event.preventDefault(); }}>
@@ -1536,6 +1582,7 @@ export default function App() {
                 ["对话增强", ["conversation_environment", "instruction_review"]],
                 ["桌宠互动", ["proactive"]],
                 ["效率工具", ["translation", "speech"]],
+                ["创作工具", ["image_generation"]],
               ] as [string, PluginId[]][]).map(([category, ids]) => (
                 <div className="plugin-category" key={category}>
                   <h3>{category}</h3>
@@ -1567,6 +1614,7 @@ export default function App() {
                   </header>
                   <div className="plugin-modal-content">
                     {selectedPlugin.id === "speech" && <SpeechSettingsPanel />}
+                    {selectedPlugin.id === "image_generation" && <ImageSettingsPanel />}
                     {selectedPlugin.id === "translation" && <>
                       <Field label="语言包镜像地址（可选）"><input type="url" placeholder="例如：https://mirror.example.com/argospm/v1" value={settings.translation_mirror_url} onChange={(e) => changeSettings({ ...settings, translation_mirror_url: e.target.value })} /></Field>
                       <small>留空使用 Argos 官方源；国内镜像需提供相同的 .argosmodel 文件。语言包下载与进度在桌宠翻译功能中操作。</small>
@@ -1637,7 +1685,7 @@ export default function App() {
               <label className="import-character">导入角色卡<input type="file" accept="application/json,.json" onChange={(e) => void importCharacter(e.target.files?.[0])} /></label>
             </div>
             <form onSubmit={createCharacter}>
-              <Field label="角色头像"><input type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => { const file=e.target.files?.[0]; if (!file) return; const reader=new FileReader(); reader.onload=()=>setDraft({...draft,avatar_data:String(reader.result)}); reader.readAsDataURL(file); }} /></Field>
+              <CharacterAvatarPicker value={draft.avatar_data} onChange={(avatar_data) => setDraft((value) => ({ ...value, avatar_data }))} />
               <Field label="角色名称">
                 <input
                   required
@@ -1719,10 +1767,13 @@ export default function App() {
                     <div className="message-heading">
                       <strong>{m.role === "user" ? "你" : character?.name || "助手"}</strong>
                       {speechEnabled && m.role === "assistant" && m.content && m.id && editingMessage !== m.id && (
-                        <button className="message-edit" type="button" disabled={busy} onClick={() => void voice.read(m.content, String(m.id))}>{voice.reading === String(m.id) ? "停止朗读" : "朗读"}</button>
+                        <button className="message-edit" type="button" disabled={busy || withdrawingMessage !== null} onClick={() => void voice.read(m.content, String(m.id))}>{voice.reading === String(m.id) ? "停止朗读" : "朗读"}</button>
                       )}
                       {m.id && editingMessage !== m.id && (
-                        <button className="message-edit" type="button" onClick={() => beginMessageEdit(m)} disabled={busy}>编辑</button>
+                        <button className="message-edit" type="button" onClick={() => beginMessageEdit(m)} disabled={busy || withdrawingMessage !== null}>编辑</button>
+                      )}
+                      {m.id && editingMessage !== m.id && (
+                        <button className="message-edit message-withdraw" type="button" onClick={() => void withdrawMessage(m)} disabled={busy || withdrawingMessage !== null} title={m.role === "user" ? "撤回消息及这一轮 AI 回复" : "仅撤回这条 AI 回复"}>{withdrawingMessage === m.id ? "撤回中…" : "撤回"}</button>
                       )}
                       {m.id && m.role === "user" && editingMessage !== m.id && (
                         <button className="message-edit" type="button" onClick={() => prepareInstructionFromMessage(m)} disabled={busy}>存为指令</button>
@@ -1860,17 +1911,19 @@ export default function App() {
                   <div className="composer-tools">
                     <button className="toolbar-button attach-button" type="button" disabled={!character || documentBusy || busy} onClick={() => documentInputRef.current?.click()} title="上传文档" aria-label="上传文档"><WorkspaceIcon name="attach" /></button>
                     {speechEnabled && <SpeechToolbar voice={voice} disabled={!character || busy || documentBusy} />}
+                    {plugins.some((plugin) => plugin.id === "image_generation" && plugin.enabled) && <button className="toolbar-button" type="button" title="生成图片" aria-label="生成图片" onClick={() => setImageStudioOpen(true)}><WorkspaceIcon name="image" /></button>}
                     <span className="composer-tool-divider" aria-hidden="true" />
                     <button className="toolbar-button instruction-button" type="button" disabled={!character} onClick={() => setInstructionPanelOpen((open) => !open)} title={`对话指令库 · 已启用 ${instructions.filter((item) => item.enabled).length} 条`} aria-label="打开对话指令库" aria-expanded={instructionPanelOpen}><WorkspaceIcon name="command" /><span>指令</span></button>
                   </div>
                   <small className="composer-tip" role={busy ? "status" : undefined}>{busy && chatPhase ? chatPhaseLabels[chatPhase] : "Enter 发送 · Shift + Enter 换行"}</small>
-                  <button className="send-button" type={busy ? "button" : "submit"} onClick={busy ? () => abortRef.current?.abort() : undefined} aria-label={busy ? "停止生成" : "发送消息"} title={busy ? "停止生成" : "发送消息"}>
+                  <button className="send-button" disabled={withdrawingMessage !== null} type={busy ? "button" : "submit"} onClick={busy ? () => abortRef.current?.abort() : undefined} aria-label={busy ? "停止生成" : "发送消息"} title={busy ? "停止生成" : "发送消息"}>
                     <WorkspaceIcon name={busy ? "stop" : "send"} />
                   </button>
                 </div>
               </div>
               {speechEnabled && <SpeechStatus voice={voice} />}
               </form>
+              <ImageGenerationDialog open={imageStudioOpen} onClose={closeImageStudio} enabled={plugins.some((plugin) => plugin.id === "image_generation" && plugin.enabled)} onSettings={() => { setImageStudioOpen(false); setPanel("plugins"); setSelectedPluginId("image_generation"); }} />
           </section>
         )}
       </main>
