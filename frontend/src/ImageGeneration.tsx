@@ -5,8 +5,33 @@ import { save } from "@tauri-apps/plugin-dialog";
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:8000/api";
 type Config = { model_profile_id: number | null; base_url: string; api_key: string; model: string; size: string; quality: string; response_format: string; proxy_mode: string };
 type Profile = { id: number; name: string; model: string };
-type GeneratedImage = { id: string; prompt: string; model: string; image_url: string; created_at: string };
+type GeneratedImage = { id: string; prompt: string; model: string; image_url: string; created_at: string; conversation_id?: number | null; message_id?: number | null };
+export type ImageSource = { id: number; content: string; excerpt?: string };
 const imageUrl = (image: GeneratedImage) => `${API.replace(/\/api\/?$/, "")}${image.image_url}`;
+async function saveImage(imageId: string): Promise<string> {
+  if ("__TAURI_INTERNALS__" in window) {
+    const destination = await save({ defaultPath: `yus-ai-${imageId}.png`, filters: [{ name: "PNG 图片", extensions: ["png"] }] });
+    if (!destination) return "";
+    await invoke("export_generated_image", { imageId, destination });
+    return "图片已保存到选择的位置";
+  }
+  const response = await fetch(`${API}/images/${imageId}/file`);
+  if (!response.ok) throw new Error("图片文件读取失败");
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a"); link.href = url; link.download = `yus-ai-${imageId}.png`; link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return "已开始下载图片";
+}
+
+export function GeneratedImageMessage({ imageId }: { imageId: string }) {
+  const [status, setStatus] = useState("");
+  const [failed, setFailed] = useState(false);
+  return <figure className="message-generated-image">
+    {failed ? <p>图片文件暂时无法读取，请检查本地服务或数据文件。</p> : <a href={`${API}/images/${imageId}/file`} target="_blank" rel="noreferrer" title="查看原图"><img src={`${API}/images/${imageId}/file`} alt="生成的图片" loading="lazy" onError={() => setFailed(true)} /></a>}
+    <figcaption><span>AI 生成图片</span><button type="button" onClick={() => { void saveImage(imageId).then(setStatus).catch((error: Error) => setStatus(error.message)); }}>保存图片</button></figcaption>
+    {status && <small role="status">{status}</small>}
+  </figure>;
+}
 async function request<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const response = await fetch(`${API}${path}`, { method, headers: { "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const data = await response.json().catch(() => ({}));
@@ -73,8 +98,9 @@ export function ImageSettingsPanel() {
   </div>;
 }
 
-export function ImageGenerationDialog({ open, onClose, enabled, onSettings }: { open: boolean; onClose: () => void; enabled: boolean; onSettings: () => void }) {
+export function ImageGenerationDialog({ open, onClose, enabled, onSettings, source, initialPrompt, conversationId, ensureConversation, onGenerated }: { open: boolean; onClose: () => void; enabled: boolean; onSettings: () => void; source: ImageSource | null; initialPrompt: string; conversationId: number | null; ensureConversation: () => Promise<number | null | undefined>; onGenerated: (conversationId: number) => void }) {
   const [prompt, setPrompt] = useState("");
+  const [extraInstructions, setExtraInstructions] = useState("");
   const [images, setImages] = useState<GeneratedImage[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -83,6 +109,9 @@ export function ImageGenerationDialog({ open, onClose, enabled, onSettings }: { 
   const mounted = useRef(true);
   const focusRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  useEffect(() => {
+    if (open && !running.current) { setPrompt(initialPrompt); setExtraInstructions(""); setError(""); }
+  }, [open, initialPrompt, source]);
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -93,39 +122,31 @@ export function ImageGenerationDialog({ open, onClose, enabled, onSettings }: { 
     return () => { cancelled = true; document.removeEventListener("keydown", escape); };
   }, [open, onClose]);
   async function generate() {
-    if (running.current || !prompt.trim() || !enabled) return;
+    if (running.current || (!source && !prompt.trim()) || !enabled) return;
     running.current = true; setBusy(true); setError(""); setSaveStatus("");
     try {
-      const result = await request<GeneratedImage>("/images/generate", "POST", { prompt: prompt.trim() });
+      const targetConversation = conversationId ?? await ensureConversation();
+      if (!targetConversation) throw new Error("请先选择角色并创建对话");
+      const result = await request<GeneratedImage>("/images/generate", "POST", { prompt: prompt.trim(), conversation_id: targetConversation, source_message_id: source?.id, source_excerpt: source?.excerpt, extra_instructions: extraInstructions.trim() });
       if (mounted.current) setImages((items) => [result, ...items].slice(0, 24));
+      if (result.conversation_id) { onGenerated(result.conversation_id); if (mounted.current) onClose(); }
+      else if (mounted.current) setSaveStatus("原对话已删除，图片仍保留在作品库中，未添加到其他对话。");
     } catch (problem) { if (mounted.current) setError((problem as Error).message); }
     finally { running.current = false; if (mounted.current) setBusy(false); }
   }
   async function download(image: GeneratedImage) {
     try {
-      if ("__TAURI_INTERNALS__" in window) {
-        const destination = await save({ defaultPath: `yus-ai-${image.id}.png`, filters: [{ name: "PNG 图片", extensions: ["png"] }] });
-        if (destination) {
-          await invoke("export_generated_image", { imageId: image.id, destination });
-          setSaveStatus("图片已保存到选择的位置");
-        }
-      } else {
-        const response = await fetch(imageUrl(image));
-        if (!response.ok) throw new Error("图片文件读取失败");
-        const url = URL.createObjectURL(await response.blob());
-        const link = document.createElement("a"); link.href = url; link.download = `yus-ai-${image.id}.png`; link.click();
-        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-        setSaveStatus("已开始下载图片");
-      }
+      setSaveStatus(await saveImage(image.id));
     } catch (problem) { setError(String(problem)); }
   }
   if (!open) return null;
   return <div className="plugin-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="plugin-modal image-studio" role="dialog" aria-modal="true" aria-label="图片生成">
-      <header className="plugin-modal-header"><div><small>IMAGE STUDIO</small><h2>把想象画出来</h2><p>仅提交你填写的图片描述，生成结果保存在本地。</p></div><button type="button" className="plugin-modal-close" aria-label="关闭图片生成" onClick={onClose}>×</button></header>
+      <header className="plugin-modal-header"><div><small>IMAGE STUDIO</small><h2>{source ? "根据这段内容绘图" : "把想象画出来"}</h2><p>仅提交指定内容与额外指令，生成图片会保存到当前对话。</p></div><button type="button" className="plugin-modal-close" aria-label="关闭图片生成" onClick={onClose}>×</button></header>
       <div className="plugin-modal-content">
-        <label className="image-prompt">图片描述<textarea ref={focusRef} rows={4} maxLength={12000} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="例如：一只蓝色雨滴精灵坐在窗边，柔和晨光，水彩插画…" disabled={busy} /></label>
-        <div className="image-studio-actions"><button type="button" onClick={onSettings}>绘图设置</button><button type="button" className="primary" disabled={!enabled || busy || !prompt.trim()} onClick={() => void generate()}>{busy ? "正在生成…" : "生成一张"}</button></div>
+        <label className="image-prompt">{source ? "指定的对话内容" : "图片描述"}<textarea ref={focusRef} rows={4} maxLength={12000} value={source ? source.excerpt ?? source.content : prompt} readOnly={Boolean(source)} onChange={(event) => setPrompt(event.target.value)} placeholder="例如：一只蓝色雨滴精灵坐在窗边，柔和晨光，水彩插画…" disabled={busy} /></label>
+        <label className="image-prompt">额外绘图指令（可选）<textarea rows={2} maxLength={4000} value={extraInstructions} onChange={(event) => setExtraInstructions(event.target.value)} placeholder="例如：日系插画、横向构图、突出人物神态，不要文字…" disabled={busy} /></label>
+        <div className="image-studio-actions"><button type="button" onClick={onSettings}>绘图设置</button><button type="button" className="primary" disabled={!enabled || busy || (!source && !prompt.trim())} onClick={() => void generate()}>{busy ? "正在生成…" : "生成并加入对话"}</button></div>
         {!enabled && <small>请先在插件页面启用“图片生成”。</small>}
         {busy && <small role="status">正在等待绘图服务，可能需要几分钟。关闭窗口不会取消请求；请勿重复生成，以免重复收费。</small>}
         {error && <p className="image-error" role="alert">{error}</p>}

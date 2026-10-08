@@ -198,6 +198,8 @@ def init_db() -> None:
         if "origin" not in message_columns:
             db.execute("ALTER TABLE messages ADD COLUMN origin TEXT NOT NULL DEFAULT 'chat'")
             db.execute("UPDATE conversations SET summary='' ")
+        if "image_id" not in message_columns:
+            db.execute("ALTER TABLE messages ADD COLUMN image_id TEXT REFERENCES generated_images(id) ON DELETE SET NULL")
         db.executescript("""
             CREATE TABLE IF NOT EXISTS proactive_plugin (
                 id INTEGER PRIMARY KEY CHECK (id = 1),

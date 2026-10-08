@@ -1,0 +1,5 @@
+.pet-chat-satellite { position:absolute; left:0; top:0; transform-origin:0 0; font-family:"Noto Sans SC","Microsoft YaHei",sans-serif; }
+.pet-chat-satellite .pet-sentence-stack { width:var(--chat-bubble-width,300px); right:auto; top:auto; transform:translateX(-50%); align-items:center; }
+.pet-chat-satellite .pet-chat-input { right:auto; transform:none; }
+.pet-chat-satellite.model-alice .pet-chat-input,.pet-chat-satellite.model-alice .pet-sentence { color:#594529; background:#fff9ee; border-color:#d9bf93; box-shadow:0 5px 18px rgba(91,66,25,.12); }
+.pet-chat-satellite.model-alice .pet-chat-input form button { background:#a47b40; }

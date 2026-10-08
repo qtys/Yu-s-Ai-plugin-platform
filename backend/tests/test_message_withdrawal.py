@@ -1,4 +1,5 @@
 import json
+import asyncio
 import sqlite3
 
 import httpx
@@ -71,6 +72,40 @@ def test_withdraw_latest_user_without_next_turn(client):
     _, conversation_id, ids = seed(client)
     assert client.delete(f"/api/messages/{ids[5]}").json()["deleted_ids"] == [ids[5], ids[6]]
     assert [row["id"] for row in client.get(f"/api/conversations/{conversation_id}/messages").json()] == [ids[0], ids[1], ids[2], ids[4]]
+
+
+def test_cancelled_stream_keeps_ids_and_can_withdraw_partial_turn(client, monkeypatch):
+    from app.main import ChatRequest, chat, MODEL_GENERATION_LOCK
+    character_id = client.post("/api/characters", json={"name": "中断测试"}).json()["id"]
+    conversation_id = client.post("/api/conversations", json={"character_id": character_id}).json()["id"]
+    settings = client.get("/api/settings").json()
+    settings["api_key"] = "test-only"
+    client.put("/api/settings", json=settings)
+    original = httpx.AsyncClient
+
+    async def respond(request):
+        return httpx.Response(200, content='data: {"choices":[{"delta":{"content":"部分回复"},"finish_reason":null}]}\ndata: [DONE]\n')
+
+    monkeypatch.setattr("app.main.httpx.AsyncClient", lambda **kwargs: original(transport=httpx.MockTransport(respond), **kwargs))
+
+    async def cancel_after_first_token():
+        response = await chat(conversation_id, ChatRequest(content="请继续"))
+        iterator = response.body_iterator
+        event = json.loads(await anext(iterator))
+        assert event["token"] == "部分回复"
+        with pytest.raises(asyncio.CancelledError):
+            await iterator.athrow(asyncio.CancelledError())
+        assert not MODEL_GENERATION_LOCK.locked()
+
+    asyncio.run(cancel_after_first_token())
+    messages = client.get(f"/api/conversations/{conversation_id}/messages").json()
+    user = next(message for message in messages if message["role"] == "user")
+    assert user["id"]
+    assert messages[-1]["content"] == "部分回复"
+    response = client.delete(f"/api/messages/{user['id']}")
+    assert response.status_code == 200
+    assert user["id"] in response.json()["deleted_ids"]
+    assert messages[-1]["id"] in response.json()["deleted_ids"]
 
 
 def test_generation_blocks_withdrawal_without_mutation(client, monkeypatch):

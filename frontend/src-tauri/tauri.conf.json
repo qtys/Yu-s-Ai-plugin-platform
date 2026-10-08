@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Yus AI",
-  "version": "0.15.31",
+  "version": "0.15.38",
   "identifier": "com.qtys.yus-ai",
   "build": {
     "frontendDist": "../dist",
@@ -40,6 +40,24 @@
         "additionalBrowserArgs": "--disable-renderer-backgrounding --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion",
         "visible": false,
         "shadow": false
+      },
+      {
+        "label": "pet-chat",
+        "create": false,
+        "title": "Yu's AI 桌宠聊天",
+        "url": "pet-chat.html",
+        "width": 430,
+        "height": 520,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "focus": false,
+        "focusable": false,
+        "visible": false,
+        "shadow": false,
+        "additionalBrowserArgs": "--disable-renderer-backgrounding --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion"
       }
     ],
     "security": {

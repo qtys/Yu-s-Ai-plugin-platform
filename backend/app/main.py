@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 
 from . import database
 from .database import connect, init_db
-from .logging_config import LOG_FILE, configure_logging
+from .logging_config import LOG_FILE, PLUGIN_CONTEXT, configure_logging, plugin_for_path, get_plugin_logger
 from .translation import install_package, package_status, translate_text
 from .proactive import EmptyProactiveReply, generate_proactive
 from .plugins import NOVEL_REPLY_PROMPT, is_enabled as plugin_is_enabled, list_installed as list_installed_plugins, registry as plugin_registry, set_enabled as set_plugin_enabled
@@ -458,6 +458,7 @@ class ChatRequest(BaseModel):
     character_id: int | None = None
     reply_to_proactive_id: int | None = Field(default=None, gt=0)
     pet_motion_enabled: bool = False
+    pet_chat_mode: bool = False
     pet_model: Literal["slime", "alice"] = "slime"
     recent_pet_motions: list[str] = Field(default_factory=list, max_length=5)
     screen_context: str | None = Field(default=None, max_length=1500)
@@ -811,12 +812,12 @@ async def lifespan(_: FastAPI):
     UPDATE_RELEASE_CACHE = None
     configure_logging()
     init_db()
-    logger.info("backend_started version=0.15.31")
+    logger.info("backend_started version=0.15.38")
     yield
     logger.info("backend_stopped")
 
 
-app = FastAPI(title="Yu's AI API", version="0.15.31", lifespan=lifespan)
+app = FastAPI(title="Yu's AI API", version="0.15.38", lifespan=lifespan)
 # Keep shelved motion experiments available for development, never in the installer.
 if not getattr(sys, "frozen", False):
     app.include_router(pixel_motion_router)
@@ -834,14 +835,20 @@ app.add_middleware(
 @app.middleware("http")
 async def request_log(request, call_next):
     started = time.perf_counter()
+    plugin_id = plugin_for_path(request.url.path)
+    token = PLUGIN_CONTEXT.set(plugin_id)
     try:
         response = await call_next(request)
         elapsed = (time.perf_counter() - started) * 1000
         logger.info("request method=%s path=%s status=%s duration_ms=%.1f", request.method, request.url.path, response.status_code, elapsed)
+        if plugin_id and response.status_code >= 400:
+            get_plugin_logger(plugin_id).warning("plugin_request_failed method=%s path=%s status=%s duration_ms=%.1f", request.method, request.url.path, response.status_code, elapsed)
         return response
     except Exception:
         logger.exception("request_failed method=%s path=%s", request.method, request.url.path)
         raise
+    finally:
+        PLUGIN_CONTEXT.reset(token)
 
 
 @app.get("/api/health")
@@ -860,15 +867,19 @@ def diagnostic_status():
         "version": app.version,
         "database": {"characters": character_count, "conversations": conversation_count, "messages": message_count},
         "log_file": str(LOG_FILE),
+        "plugin_log_dir": str(LOG_FILE.parent / "plugins"),
     }
 
 
 @app.get("/api/diagnostics/logs")
-def diagnostic_logs(lines: int = 200):
+def diagnostic_logs(lines: int = 200, plugin_id: str | None = None):
     line_count = max(1, min(lines, 1000))
-    if not LOG_FILE.exists():
+    if plugin_id is not None and plugin_registry.get(plugin_id) is None:
+        raise HTTPException(404, "插件不存在")
+    log_file = LOG_FILE.parent / "plugins" / f"{plugin_id}.log" if plugin_id else LOG_FILE
+    if not log_file.exists():
         return {"lines": [], "count": 0}
-    with LOG_FILE.open("r", encoding="utf-8", errors="replace") as file:
+    with log_file.open("r", encoding="utf-8", errors="replace") as file:
         content = list(deque(file, maxlen=line_count))
     return {"lines": [line.rstrip("\r\n") for line in content], "count": len(content)}
 
@@ -2158,6 +2169,13 @@ async def chat(conversation_id: int, payload: ChatRequest):
         )})
     if novel_reply_enabled:
         model_messages.append({"role": "system", "content": NOVEL_REPLY_PROMPT})
+    if payload.pet_chat_mode:
+        model_messages.append({"role": "system", "content": (
+            "【桌宠轻对话模式】本轮回复会逐句显示为小气泡。保持角色卡的人设，"
+            "像真人当面聊天一样，先说关键内容，默认只用1至4个简短自然的句子，约120字以内。"
+            "不要使用标题、列表、Markdown或长篇旁白，不要为了凑气泡重复内容。"
+            "这只是默认表达风格；用户明确的内容、字数和格式指令优先。"
+        )})
     if saved_instructions:
         model_messages.append({"role": "system", "content": (
             "【用户明确保存的长期对话指令——本轮必须核对】以下指令在本角色或当前会话内持续有效。"

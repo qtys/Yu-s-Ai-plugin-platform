@@ -9,6 +9,7 @@ export default defineConfig({
       input: {
         main: 'index.html',
         pet: 'pet.html',
+        petChat: 'pet-chat.html',
         mobile: 'mobile.html',
         ...(process.env.NODE_ENV !== 'production' ? {
           pixelLab: 'pixel-lab.html',

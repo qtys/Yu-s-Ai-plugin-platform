@@ -2,7 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { CSSProperties, FormEvent, ReactNode } from "react";
 import BackgroundSettings, { readWorkspaceBackground } from "./BackgroundSettings";
 import CharacterAvatarPicker from "./CharacterAvatarPicker";
-import { ImageSettingsPanel, ImageGenerationDialog } from "./ImageGeneration";
+import { ImageSettingsPanel, ImageGenerationDialog, GeneratedImageMessage } from "./ImageGeneration";
+import type { ImageSource } from "./ImageGeneration";
 import { cssRgb } from "./window-theme";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
@@ -29,7 +30,7 @@ type Character = {
 };
 const emptyCharacter = { name: "", description: "", system_prompt: "", avatar_data: "", greeting: "", background: "", personality: "", speaking_style: "", relationship: "", boundaries: "", example_dialogue: "" };
 type Conversation = { id: number; character_id: number; title: string };
-type Message = { id?: number; conversation_id?: number; clientKey?: string; role: "user" | "assistant"; content: string };
+type Message = { id?: number; conversation_id?: number; clientKey?: string; role: "user" | "assistant"; content: string; image_id?: string | null; origin?: string };
 type ChatPhase = "generating" | "reviewing" | "revising";
 const chatPhaseLabels: Record<ChatPhase, string> = { generating: "正在生成回复…", reviewing: "正在审核指令…", revising: "正在流式修订回复…" };
 type SavedInstruction = { id: number; character_id: number; conversation_id: number | null; content: string; enabled: boolean; source_template_name: string; created_at: string };
@@ -123,6 +124,10 @@ export default function App() {
   const [pluginBusy, setPluginBusy] = useState<string | null>(null);
   const [selectedPluginId, setSelectedPluginId] = useState<PluginId | null>(null);
   const [imageStudioOpen, setImageStudioOpen] = useState(false);
+  const [imageSource, setImageSource] = useState<ImageSource | null>(null);
+  const [imageInitialPrompt, setImageInitialPrompt] = useState("");
+  const imageConversationRef = useRef(activeConversation);
+  imageConversationRef.current = activeConversation;
   const closeImageStudio = useCallback(() => setImageStudioOpen(false), []);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [autostartBusy, setAutostartBusy] = useState(false);
@@ -421,6 +426,7 @@ export default function App() {
     setDocuments([]);
   }, [activeConversation]);
   useEffect(() => {
+    setInstructions([]);
     if (!activeCharacter) return;
     let cancelled = false;
     const query = new URLSearchParams({ character_id: String(activeCharacter) });
@@ -429,7 +435,7 @@ export default function App() {
       .then((items) => { if (!cancelled) setInstructions(items); })
       .catch((cause) => { if (!cancelled) setError((cause as Error).message); });
     return () => { cancelled = true; };
-  }, [activeCharacter, activeConversation]);
+  }, [activeCharacter, activeConversation, instructionPanelOpen]);
   useEffect(() => {
     if (!instructionPanelOpen || instructionTab !== "templates") return;
     let cancelled = false;
@@ -656,6 +662,7 @@ export default function App() {
       if (generation !== chatGenerationRef.current) return;
       setConversations((c) => [value, ...c]);
       openConversation(value.id);
+      return value.id;
     } catch (e) {
       setError((e as Error).message);
     }
@@ -674,6 +681,32 @@ export default function App() {
       setActiveConversation(conversationId);
     }
     setPanel("chat");
+  }
+  function openImageStudio(message?: Message) {
+    if (message?.id) {
+      const selected = window.getSelection()?.toString().trim();
+      setImageSource({ id: message.id, content: message.content, ...(selected && message.content.includes(selected) ? { excerpt: selected } : {}) });
+      setImageInitialPrompt("");
+    } else {
+      setImageSource(null);
+      setImageInitialPrompt(inputRef.current?.value ?? "");
+    }
+    setImageStudioOpen(true);
+  }
+  async function refreshImageConversation(conversationId: number) {
+    if (imageConversationRef.current !== conversationId) return;
+    try {
+      const items = await request<Message[]>(`/conversations/${conversationId}/messages`);
+      if (imageConversationRef.current === conversationId) {
+        requestLatestMessage();
+        setMessages((current) => {
+          const existing = new Set(current.map((item) => item.id));
+          const added = items.filter((item) => item.origin === "image_generation" && !existing.has(item.id));
+          // Do not overwrite a simultaneously streaming text reply.
+          return [...current, ...added];
+        });
+      }
+    } catch (problem) { setError(`图片已保存，对话刷新失败：${(problem as Error).message}`); }
   }
   async function deleteConversation(item: Conversation) {
     if (!window.confirm(`确定删除对话“${item.title}”吗？\n其中的消息、附件及由消息生成的自动记忆也会删除；该角色通用指令不受影响。`)) return;
@@ -1227,18 +1260,24 @@ export default function App() {
       setMessages(latestMessages);
       setConversations(latestConversations);
     } catch (e) {
-      if (chatGeneration === chatGenerationRef.current && (e as Error).name !== "AbortError") {
-        setError((e as Error).message);
+      if (chatGeneration === chatGenerationRef.current) {
+        if ((e as Error).name !== "AbortError") setError((e as Error).message);
         if (id) {
-          const latestMessages = await request<Message[]>(`/conversations/${id}/messages`).catch(() => []);
-          if (chatGeneration === chatGenerationRef.current) setMessages(latestMessages);
+          // Aborting the browser stream does not remove the saved user message.
+          // Reload its database ID so edit/withdraw actions remain available.
+          try {
+            const latestMessages = await request<Message[]>(`/conversations/${id}/messages`);
+            if (chatGeneration === chatGenerationRef.current) setMessages(latestMessages);
+          } catch (cause) { if (chatGeneration === chatGenerationRef.current) setError(`消息同步失败，请重新打开对话：${(cause as Error).message}`); }
         }
       }
     } finally {
-      setBusy(false);
-      setChatPhase(null);
-      busyRef.current = false;
-      abortRef.current = null;
+      if (chatGeneration === chatGenerationRef.current) {
+        setBusy(false);
+        setChatPhase(null);
+        busyRef.current = false;
+        abortRef.current = null;
+      }
     }
   }
   async function uploadDocument(file: File) {
@@ -1305,8 +1344,10 @@ export default function App() {
     <div className={`${mini ? "shell workspace mini" : "shell workspace"}${workspaceBackground ? " has-background" : ""}`} data-theme={theme} style={workspaceBackground ? { "--background-veil": 1 - workspaceBackground.strength } as CSSProperties : undefined}>
       {workspaceBackground && <img className="workspace-wallpaper" src={workspaceBackground.image} alt="" aria-hidden="true" draggable={false} />}
       <WorkspaceNavigation panel={panel} onPanel={setPanel} />
-      <main>
-        <header>
+      <main className={panel === "chat" ? "workspace-chat-canvas" : undefined}>
+        {panel === "chat" && <div className="workspace-header-reveal" aria-hidden="true" />}
+        <header className={panel === "chat" ? "workspace-chat-header" : undefined}>
+          {panel === "chat" && <div className="workspace-header-left">
           {panel === "chat" && <details className="workspace-role-picker" onKeyDown={(event) => { if (event.key === "Escape") event.currentTarget.open = false; }} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) event.currentTarget.open = false; }}>
             <summary aria-label="选择当前角色"><span className="avatar">{character?.avatar_data ? <img src={character.avatar_data} alt="" /> : <WorkspaceIcon name="role" />}</span><span><strong>{character?.name || "选择角色"}<span className="role-chevron">⌄</span></strong><small>{backendReady ? busy ? "正在回复…" : "准备好与你对话" : "正在连接本地服务"}</small></span></summary>
             <div className="workspace-role-menu">
@@ -1319,6 +1360,7 @@ export default function App() {
             onRename={(id) => { const item = conversations.find((value) => value.id === id); if (item) void renameConversation(item); }}
             onDelete={(id) => { const item = conversations.find((value) => value.id === id); if (item) void deleteConversation(item); }}
             onNew={() => { void createConversation(); }} canCreate={Boolean(activeCharacter) && !busy && withdrawingMessage === null} />}
+          </div>}
           <div className="header-copy">
             <strong>
               {panel === "settings"
@@ -1765,12 +1807,15 @@ export default function App() {
                   </div>
                   <div className="message-body">
                     <div className="message-heading">
-                      <strong>{m.role === "user" ? "你" : character?.name || "助手"}</strong>
+                      <strong>{m.image_id ? "图片生成" : m.role === "user" ? "你" : character?.name || "助手"}</strong>
                       {speechEnabled && m.role === "assistant" && m.content && m.id && editingMessage !== m.id && (
                         <button className="message-edit" type="button" disabled={busy || withdrawingMessage !== null} onClick={() => void voice.read(m.content, String(m.id))}>{voice.reading === String(m.id) ? "停止朗读" : "朗读"}</button>
                       )}
-                      {m.id && editingMessage !== m.id && (
+                      {m.id && !m.image_id && editingMessage !== m.id && (
                         <button className="message-edit" type="button" onClick={() => beginMessageEdit(m)} disabled={busy || withdrawingMessage !== null}>编辑</button>
+                      )}
+                      {m.id && !m.image_id && editingMessage !== m.id && plugins.some((plugin) => plugin.id === "image_generation" && plugin.enabled) && (
+                        <button className="message-edit" type="button" onClick={() => openImageStudio(m)} disabled={busy || withdrawingMessage !== null}>生成图片</button>
                       )}
                       {m.id && editingMessage !== m.id && (
                         <button className="message-edit message-withdraw" type="button" onClick={() => void withdrawMessage(m)} disabled={busy || withdrawingMessage !== null} title={m.role === "user" ? "撤回消息及这一轮 AI 回复" : "仅撤回这条 AI 回复"}>{withdrawingMessage === m.id ? "撤回中…" : "撤回"}</button>
@@ -1779,7 +1824,7 @@ export default function App() {
                         <button className="message-edit" type="button" onClick={() => prepareInstructionFromMessage(m)} disabled={busy}>存为指令</button>
                       )}
                     </div>
-                    {editingMessage === m.id ? (
+                    {m.image_id ? <><GeneratedImageMessage imageId={m.image_id} /><details className="image-message-description"><summary>绘图描述与指令</summary><MessageContent content={m.content} mode="raw" /></details></> : editingMessage === m.id ? (
                       <div className="message-editor">
                         <div className="message-editor-header">
                           <strong>编辑这条{m.role === "user" ? "消息" : "回复"}</strong>
@@ -1911,7 +1956,7 @@ export default function App() {
                   <div className="composer-tools">
                     <button className="toolbar-button attach-button" type="button" disabled={!character || documentBusy || busy} onClick={() => documentInputRef.current?.click()} title="上传文档" aria-label="上传文档"><WorkspaceIcon name="attach" /></button>
                     {speechEnabled && <SpeechToolbar voice={voice} disabled={!character || busy || documentBusy} />}
-                    {plugins.some((plugin) => plugin.id === "image_generation" && plugin.enabled) && <button className="toolbar-button" type="button" title="生成图片" aria-label="生成图片" onClick={() => setImageStudioOpen(true)}><WorkspaceIcon name="image" /></button>}
+                    {plugins.some((plugin) => plugin.id === "image_generation" && plugin.enabled) && <button className="toolbar-button" type="button" title="生成图片；输入框内容可作为绘图描述" aria-label="生成图片" disabled={busy || !activeCharacter} onClick={() => openImageStudio()}><WorkspaceIcon name="image" /></button>}
                     <span className="composer-tool-divider" aria-hidden="true" />
                     <button className="toolbar-button instruction-button" type="button" disabled={!character} onClick={() => setInstructionPanelOpen((open) => !open)} title={`对话指令库 · 已启用 ${instructions.filter((item) => item.enabled).length} 条`} aria-label="打开对话指令库" aria-expanded={instructionPanelOpen}><WorkspaceIcon name="command" /><span>指令</span></button>
                   </div>
@@ -1923,7 +1968,7 @@ export default function App() {
               </div>
               {speechEnabled && <SpeechStatus voice={voice} />}
               </form>
-              <ImageGenerationDialog open={imageStudioOpen} onClose={closeImageStudio} enabled={plugins.some((plugin) => plugin.id === "image_generation" && plugin.enabled)} onSettings={() => { setImageStudioOpen(false); setPanel("plugins"); setSelectedPluginId("image_generation"); }} />
+              <ImageGenerationDialog open={imageStudioOpen} onClose={closeImageStudio} enabled={plugins.some((plugin) => plugin.id === "image_generation" && plugin.enabled)} source={imageSource} initialPrompt={imageInitialPrompt} conversationId={activeConversation} ensureConversation={createConversation} onGenerated={(id) => { void refreshImageConversation(id); }} onSettings={() => { setImageStudioOpen(false); setPanel("plugins"); setSelectedPluginId("image_generation"); }} />
           </section>
         )}
       </main>

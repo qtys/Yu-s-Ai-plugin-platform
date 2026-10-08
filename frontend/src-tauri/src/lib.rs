@@ -12,6 +12,9 @@ use tauri_plugin_shell::{process::{CommandChild, CommandEvent}, ShellExt};
 use tauri_plugin_autostart::ManagerExt;
 use serde::Serialize;
 mod window_appearance;
+mod window_bounds;
+mod pet_chat_window;
+use pet_chat_window::{fit_pet_chat_window, hide_pet_chat_window, show_pet_chat_window, set_pet_chat_regions};
 
 #[tauri::command]
 fn set_main_window_theme(window: WebviewWindow, dark: bool, background: [u8; 3], foreground: [u8; 3], border: [u8; 3]) -> Result<(), String> {
@@ -30,6 +33,8 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 const DATABASE_FILES: [&str; 3] = ["yus_ai.db", "yus_ai.db-wal", "yus_ai.db-shm"];
 static CONTINUOUS_TRANSLATION: AtomicBool = AtomicBool::new(false);
 static PET_INTERACTION_MODE: AtomicU8 = AtomicU8::new(0);
+// Compact chat must not intercept clicks in the transparent area between bubbles.
+static PET_CHAT_REGIONS: Mutex<Vec<[f64; 4]>> = Mutex::new(Vec::new());
 static PET_CURSOR_IGNORED: AtomicBool = AtomicBool::new(false);
 static PET_ALIGN_LEFT: AtomicBool = AtomicBool::new(false);
 static PET_MODEL_ALICE: AtomicBool = AtomicBool::new(false);
@@ -184,54 +189,74 @@ fn enter_pet_mode(app: AppHandle) -> Result<(), String> {
   Ok(())
 }
 
-fn resize_pet_window(window: &WebviewWindow, expanded: bool, pet_scale: f64, current_expanded: bool, current_placement: &str, dialog_width: f64, dialog_height: f64) -> Result<String, String> {
+fn resize_pet_window(window: &WebviewWindow, expanded: bool, pet_scale: f64, current_expanded: bool, current_placement: &str, dialog_width: f64, dialog_height: f64, chat_mode: bool) -> Result<String, String> {
   let dpi_scale = window.scale_factor().map_err(|error| error.to_string())?;
   let old_position = window.outer_position().map_err(|error| error.to_string())?.to_logical::<f64>(dpi_scale);
   let old_size = window.outer_size().map_err(|error| error.to_string())?.to_logical::<f64>(dpi_scale);
-  let old_base_height = if current_expanded { dialog_height.clamp(520.0, 760.0) } else { 320.0 };
-  let old_factor = old_size.height / old_base_height;
+  let old_factor = (PET_SCALE_MILLI.load(Ordering::Relaxed) as f64 / 1000.0).clamp(0.7, 1.25);
+  let old_base_height = old_size.height / old_factor;
   let old_base_size = LogicalSize::new(old_size.width / old_factor, old_base_height);
   let old_align_left = current_placement.ends_with("left");
   let old_below = current_expanded && current_placement.starts_with("below");
-  let old_pet_x = if old_align_left { 21.0 } else { old_base_size.width - 191.0 };
+  let old_pet_x = if current_expanded && current_placement.starts_with("chat-") { (old_base_size.width - 170.0) / 2.0 } else if old_align_left { 21.0 } else { old_base_size.width - 191.0 };
   let old_pet_y = if current_expanded { if old_below { 12.0 } else { old_base_height - 234.0 } } else { 80.0 };
   let pet_left = old_position.x + old_pet_x * old_factor;
   let pet_top = old_position.y + old_pet_y * old_factor;
   let pet_right = pet_left + 170.0 * old_factor;
 
   let factor = pet_scale.clamp(0.7, 1.25);
-  let base_size: LogicalSize<f64> = if expanded { LogicalSize::new(dialog_width.clamp(430.0, 720.0), dialog_height.clamp(520.0, 760.0)) } else { LogicalSize::new(250.0, 320.0) };
-  let new_size = LogicalSize::new(base_size.width * factor, base_size.height * factor);
-  let mut placement = "above-right".to_string();
-  let mut new_position = LogicalPosition::new(pet_right - (base_size.width - 21.0) * factor, pet_top - 80.0 * factor);
+  let mut base_size: LogicalSize<f64> = if expanded { LogicalSize::new(dialog_width.clamp(430.0, 720.0), dialog_height.clamp(520.0, if chat_mode { 2000.0 } else { 760.0 })) } else { LogicalSize::new(250.0, 320.0) };
+  let mut new_size = LogicalSize::new(base_size.width * factor, base_size.height * factor);
+  let mut placement = if expanded && chat_mode { "chat-above-right" } else { "above-right" }.to_string();
+  let initial_pet_x = if expanded && chat_mode { (base_size.width - 170.0) / 2.0 } else { base_size.width - 191.0 };
+  let initial_pet_y = if expanded { base_size.height - 234.0 } else { 80.0 };
+  let mut new_position = LogicalPosition::new(pet_left - initial_pet_x * factor, pet_top - initial_pet_y * factor);
   if let Some(monitor) = window.current_monitor().map_err(|error| error.to_string())? {
     let monitor_scale = monitor.scale_factor();
     let monitor_position = monitor.position().to_logical::<f64>(monitor_scale);
     let monitor_size = monitor.size().to_logical::<f64>(monitor_scale);
     let monitor_right = monitor_position.x + monitor_size.width;
     let monitor_bottom = monitor_position.y + monitor_size.height;
+    if chat_mode {
+      base_size.height = base_size.height.min(monitor_size.height / factor);
+      base_size.width = base_size.width.min(monitor_size.width / factor);
+      new_size = LogicalSize::new(base_size.width * factor, base_size.height * factor);
+    }
     let align_left = pet_right - (base_size.width - 21.0) * factor < monitor_position.x;
-    let below = expanded && pet_top - (base_size.height - 234.0) * factor < monitor_position.y;
-    placement = format!("{}-{}", if below { "below" } else { "above" }, if align_left { "left" } else { "right" });
-    let new_pet_x = if align_left { 21.0 } else { base_size.width - 191.0 };
+    let below = expanded && !chat_mode && pet_top - (base_size.height - 234.0) * factor < monitor_position.y;
+    placement = format!("{}{}-{}", if chat_mode { "chat-" } else { "" }, if below { "below" } else { "above" }, if align_left { "left" } else { "right" });
+    let new_pet_x = if expanded && chat_mode { (base_size.width - 170.0) / 2.0 } else if align_left { 21.0 } else { base_size.width - 191.0 };
     let new_pet_y = if expanded { if below { 12.0 } else { base_size.height - 234.0 } } else { 80.0 };
     new_position = LogicalPosition::new(pet_left - new_pet_x * factor, pet_top - new_pet_y * factor);
     new_position.x = new_position.x.clamp(monitor_position.x, (monitor_right - new_size.width).max(monitor_position.x));
     new_position.y = new_position.y.clamp(monitor_position.y, (monitor_bottom - new_size.height).max(monitor_position.y));
   }
-  window.set_size(new_size).map_err(|error| error.to_string())?;
-  window.set_position(new_position).map_err(|error| error.to_string())?;
+  window_bounds::apply(window, new_position, new_size)?;
+  write_window_diagnostic("pet_layout_bounds", &format!("old=({:.1},{:.1},{:.1},{:.1}) new=({:.1},{:.1},{:.1},{:.1}) placement={placement}", old_position.x, old_position.y, old_size.width, old_size.height, new_position.x, new_position.y, new_size.width, new_size.height));
   Ok(placement)
 }
 
 #[tauri::command]
-fn set_pet_layout(window: WebviewWindow, expanded: bool, scale: f64, current_expanded: bool, current_placement: String, dialog_width: f64, dialog_height: f64) -> Result<String, String> {
+fn set_pet_layout(window: WebviewWindow, expanded: bool, scale: f64, current_expanded: bool, current_placement: String, dialog_width: f64, dialog_height: f64, chat_mode: Option<bool>) -> Result<String, String> {
+  let placement = resize_pet_window(&window, expanded, scale, current_expanded, &current_placement, dialog_width, dialog_height, expanded && chat_mode.unwrap_or(false))?;
   PET_SCALE_MILLI.store((scale.clamp(0.7, 1.25) * 1000.0).round() as u32, Ordering::Relaxed);
-  PET_DIALOG_WIDTH.store(dialog_width.clamp(430.0, 720.0).round() as u32, Ordering::Relaxed);
-  PET_DIALOG_HEIGHT.store(dialog_height.clamp(520.0, 760.0).round() as u32, Ordering::Relaxed);
-  let placement = resize_pet_window(&window, expanded, scale, current_expanded, &current_placement, dialog_width, dialog_height)?;
+  let actual = window.outer_size().map_err(|error| error.to_string())?.to_logical::<f64>(window.scale_factor().map_err(|error| error.to_string())?);
+  let factor = scale.clamp(0.7, 1.25);
+  PET_DIALOG_WIDTH.store((actual.width / factor).round() as u32, Ordering::Relaxed);
+  PET_DIALOG_HEIGHT.store((actual.height / factor).round() as u32, Ordering::Relaxed);
   PET_PLACEMENT_BELOW.store(placement.starts_with("below"), Ordering::Relaxed);
   Ok(placement)
+}
+
+#[derive(Serialize)]
+struct PetChatLayout { placement: String, width: f64, height: f64 }
+
+#[tauri::command]
+fn fit_pet_chat_layout(window: WebviewWindow, scale: f64, current_expanded: bool, current_placement: String, width: f64, height: f64) -> Result<PetChatLayout, String> {
+  let placement = set_pet_layout(window.clone(), true, scale, current_expanded, current_placement, width, height, Some(true))?;
+  let dpi = window.scale_factor().map_err(|error| error.to_string())?;
+  let size = window.outer_size().map_err(|error| error.to_string())?.to_logical::<f64>(dpi);
+  Ok(PetChatLayout { placement, width: size.width / scale.clamp(0.7,1.25), height: size.height / scale.clamp(0.7,1.25) })
 }
 
 #[tauri::command]
@@ -265,14 +290,13 @@ fn resize_pet_dialog(window: WebviewWindow, width: f64, height: f64, scale: f64,
     new_position.x = new_position.x.clamp(monitor_position.x, (monitor_position.x + monitor_size.width - new_size.width).max(monitor_position.x));
     new_position.y = new_position.y.clamp(monitor_position.y, (monitor_position.y + monitor_size.height - new_size.height).max(monitor_position.y));
   }
-  window.set_size(new_size).map_err(|error| error.to_string())?;
-  window.set_position(new_position).map_err(|error| error.to_string())?;
+  window_bounds::apply(&window, new_position, new_size)?;
   Ok(placement)
 }
 
 #[tauri::command]
 fn set_pet_keyboard_focus(window: WebviewWindow, enabled: bool) -> Result<(), String> {
-  if window.label() != "pet" {
+  if window.label() != "pet" && window.label() != "pet-chat" {
     return Err("键盘输入模式仅适用于桌宠窗口".to_string());
   }
   // Passive pet interactions must not activate an exclusive-fullscreen game overlay.
@@ -280,6 +304,9 @@ fn set_pet_keyboard_focus(window: WebviewWindow, enabled: bool) -> Result<(), St
   window.set_focusable(enabled).map_err(|error| error.to_string())?;
   if enabled {
     window.set_focus().map_err(|error| error.to_string())?;
+    if window.label() == "pet-chat" {
+      window.as_ref().set_focus().map_err(|error| error.to_string())?;
+    }
   }
   write_window_diagnostic("pet_keyboard_focus", &format!("enabled={enabled}"));
   Ok(())
@@ -375,7 +402,7 @@ fn get_pet_position(window: WebviewWindow, expanded: bool, scale: f64, placement
   let width = if expanded {
     window.outer_size().map_err(|error| error.to_string())?.to_logical::<f64>(dpi_scale).width / factor
   } else { 250.0 };
-  let pet_x = if placement.ends_with("left") { 21.0 } else { width - 191.0 };
+  let pet_x = if expanded && placement.starts_with("chat-") { (width - 170.0) / 2.0 } else if placement.ends_with("left") { 21.0 } else { width - 191.0 };
   let height = if expanded {
     window.outer_size().map_err(|error| error.to_string())?.to_logical::<f64>(dpi_scale).height / factor
   } else { 320.0 };
@@ -387,6 +414,7 @@ fn get_pet_position(window: WebviewWindow, expanded: bool, scale: f64, placement
 fn set_pet_position(window: WebviewWindow, x: f64, y: f64, scale: f64) -> Result<String, String> {
   PET_SCALE_MILLI.store((scale.clamp(0.7, 1.25) * 1000.0).round() as u32, Ordering::Relaxed);
   let factor = scale.clamp(0.7, 1.25);
+  window.set_size(LogicalSize::new(250.0 * factor, 320.0 * factor)).map_err(|error| error.to_string())?;
   let align_left = x - 59.0 * factor < 0.0;
   let pet_x = if align_left { 21.0 } else { 59.0 };
   window.set_position(LogicalPosition::new(x - pet_x * factor, y - 80.0 * factor)).map_err(|error| error.to_string())?;
@@ -416,8 +444,12 @@ fn set_continuous_translation(enabled: bool) -> bool {
 }
 
 #[tauri::command]
-fn set_pet_interaction_mode(window: WebviewWindow, mode: u8, align_left: bool, proactive_height: u32, model: String) -> Result<(), String> {
-  PET_INTERACTION_MODE.store(mode.min(3), Ordering::Relaxed);
+fn set_pet_interaction_mode(window: WebviewWindow, mode: u8, align_left: bool, proactive_height: u32, model: String, interactive_regions: Option<Vec<[f64; 4]>>) -> Result<(), String> {
+  if let Ok(mut regions) = PET_CHAT_REGIONS.lock() {
+    *regions = interactive_regions.unwrap_or_default().into_iter().take(8)
+      .filter(|rect| rect.iter().all(|value| value.is_finite()) && rect[2] > 0.0 && rect[3] > 0.0).collect();
+  }
+  PET_INTERACTION_MODE.store(mode.min(4), Ordering::Relaxed);
   PET_ALIGN_LEFT.store(align_left, Ordering::Relaxed);
   PET_MODEL_ALICE.store(model == "alice", Ordering::Relaxed);
   PET_PROACTIVE_HEIGHT.store(proactive_height.min(250), Ordering::Relaxed);
@@ -513,10 +545,10 @@ fn start_selection_monitor(app: AppHandle) {
           };
           if let Some((base_x, base_y)) = geometry {
             let placement_left = PET_ALIGN_LEFT.load(Ordering::Relaxed);
-            let base_width = if mode == 2 { PET_DIALOG_WIDTH.load(Ordering::Relaxed) as f64 } else { 250.0 };
-            let base_height = if mode == 2 { PET_DIALOG_HEIGHT.load(Ordering::Relaxed) as f64 } else { 320.0 };
-            let pet_left = if placement_left { 36.0 } else { base_width - 176.0 };
-            let pet_top = if mode == 2 {
+            let base_width = if mode == 2 || mode == 4 { PET_DIALOG_WIDTH.load(Ordering::Relaxed) as f64 } else { 250.0 };
+            let base_height = if mode == 2 || mode == 4 { PET_DIALOG_HEIGHT.load(Ordering::Relaxed) as f64 } else { 320.0 };
+            let pet_left = if mode == 4 { (base_width - 140.0) / 2.0 } else if placement_left { 36.0 } else { base_width - 176.0 };
+            let pet_top = if mode == 2 || mode == 4 {
               if PET_PLACEMENT_BELOW.load(Ordering::Relaxed) { 32.0 } else { base_height - 214.0 }
             } else {
               100.0
@@ -535,6 +567,11 @@ fn start_selection_monitor(app: AppHandle) {
           }
           let interactive = if mode == 2 {
             true
+          } else if mode == 4 {
+            geometry.map(|(x, y)| PET_CHAT_REGIONS.lock().map(|regions|
+              regions.iter().any(|rect| x >= rect[0] && x <= rect[0] + rect[2]
+                && y >= rect[1] && y <= rect[1] + rect[3])
+            ).unwrap_or(false)).unwrap_or(false)
           } else if let Some((base_x, base_y)) = geometry {
               let placement_left = PET_ALIGN_LEFT.load(Ordering::Relaxed);
               let pet_left = if placement_left { 36.0 } else { 74.0 };
@@ -829,8 +866,9 @@ pub fn run() {
       always_on_top: Mutex::new(false),
       mini_mode: Mutex::new(false),
     })
-    .invoke_handler(tauri::generate_handler![set_main_window_theme, set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, resize_pet_dialog, start_pet_drag, cancel_pet_auto_move, move_pet_by, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, set_pet_interaction_mode, set_pet_keyboard_focus, get_autostart_status, set_autostart, export_character_card, copy_backup_file, export_generated_image, install_update, confirm_update_startup, restart_application, record_window_diagnostic, capture_screen])
+    .invoke_handler(tauri::generate_handler![fit_pet_chat_window, hide_pet_chat_window, show_pet_chat_window, set_pet_chat_regions, fit_pet_chat_layout, set_main_window_theme, set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, resize_pet_dialog, start_pet_drag, cancel_pet_auto_move, move_pet_by, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, set_pet_interaction_mode, set_pet_keyboard_focus, get_autostart_status, set_autostart, export_character_card, copy_backup_file, export_generated_image, install_update, confirm_update_startup, restart_application, record_window_diagnostic, capture_screen])
     .setup(|app| {
+      pet_chat_window::start_following(app.handle().clone());
       let legacy_data_dir = app.path().app_data_dir()?;
       let data_dir = prepare_install_data_dir(app.handle())?;
       let fallback_logs = legacy_data_dir.join("logs");
@@ -942,6 +980,9 @@ pub fn run() {
       Ok(())
     })
     .on_window_event(|window, event| {
+      if window.label() == "pet-chat" {
+        if let WindowEvent::Focused(false) = event { let _ = window.set_focusable(false); }
+      }
       if window.label() == "pet" {
         if let WindowEvent::Focused(focused) = event {
           write_window_diagnostic("pet_native_focus", &format!("focused={focused}"));

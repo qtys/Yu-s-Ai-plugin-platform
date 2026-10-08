@@ -23,5 +23,16 @@
 2. 功能入口必须在执行实际操作前检查 `is_enabled`；不能只在界面隐藏按钮。关闭时应取消或停止相关后台任务。
 3. 对桌宠/主界面提供的入口，通过 `GET /api/plugins` 返回的状态控制显示与行为。状态修改走 `PUT /api/plugins/{id}/state`，请求体为 `{"enabled": true|false}`。
 4. 新插件至少补齐启用、停用、重启持久化、直接调用 API 绕过界面的测试。
+5. 使用 `get_plugin_logger(plugin_id)` 记录关键步骤与异常；不得记录密钥、提示词、聊天正文、完整接口响应或带签名的图片 URL。异常应记录类型、阶段和脱敏诊断信息。
+
+## 插件日志
+
+Windows 安装版保留 `logs/yus-ai.log` 总日志，并按注册的插件 ID 分流到 `logs/plugins/<插件ID>.log`。例如图片生成使用 `image_generation.log`，语音使用 `speech.log`，翻译使用 `translation.log`，主动互动使用 `proactive.log`。文件在首次产生相关记录时创建。
+
+插件请求失败状态也记录到对应文件；插件模块和后台任务通过上述专用 logger 记录具体原因。新注册插件会自动获得独立日志出口。纯界面渲染错误不属于 Python 后端日志。
+
+总日志每个文件 2 MB，保留 5 个轮转备份；每个插件每个文件 2 MB，保留 2 个轮转备份。日志不会无限增长。日志隐藏 URL 凭证、查询签名与 Bearer Token，异常只保留类型及代码位置，不保存可能含私人内容的异常原文。
+
+调试接口 `GET /api/diagnostics/logs?plugin_id=image_generation&lines=200` 可读取指定插件日志；不提供 `plugin_id` 时保持读取总日志。只接受已注册 ID，不能读取任意文件。
 
 `permissions` 目前是**能力声明**，用于让用户看清插件可能访问什么，不是操作系统沙箱授权。第三方插件加载、签名校验、独立进程隔离和细粒度权限授予，需在开放外部安装前设计并实现。

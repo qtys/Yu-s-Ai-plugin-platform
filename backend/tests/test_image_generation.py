@@ -133,10 +133,11 @@ def test_url_download_pins_public_address_and_never_sends_key(client, monkeypatc
     assert len(calls) == 2
 
 
-def test_private_url_blocked(client, monkeypatch):
+@pytest.mark.parametrize("ip", ["127.0.0.1", "10.0.0.1", "169.254.169.254", "198.18.0.2", "224.0.0.1", "::1", "fc00::1", "fe80::1", "ff02::1"])
+def test_private_url_blocked(client, monkeypatch, ip):
     configure(client)
     async def resolve(self, host, port, **kwargs):
-        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))]
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 443))]
     monkeypatch.setattr("asyncio.BaseEventLoop.getaddrinfo", resolve)
     calls = []
     def respond(request):
@@ -145,6 +146,48 @@ def test_private_url_blocked(client, monkeypatch):
     mock(monkeypatch, respond)
     assert client.post("/api/images/generate", json={"prompt": "draw"}).status_code == 502
     assert len(calls) == 1
+
+
+def test_mixed_dns_uses_only_public_ip(client, monkeypatch):
+    configure(client)
+    async def resolve(self, host, port, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 443))
+                for ip in ("127.0.0.1", "198.18.0.2", "93.184.216.34")]
+    monkeypatch.setattr("asyncio.BaseEventLoop.getaddrinfo", resolve)
+    def respond(request):
+        if request.method == "POST":
+            return httpx.Response(200, json={"data": [{"url": "https://cdn.example/pic?signature=secret"}]})
+        assert request.url.host == "93.184.216.34"
+        assert "authorization" not in request.headers
+        return httpx.Response(200, content=png())
+    mock(monkeypatch, respond)
+    assert client.post("/api/images/generate", json={"prompt": "draw"}).status_code == 200
+
+
+def test_fake_ip_rejection_has_stage_and_no_signed_url(client, monkeypatch, caplog):
+    configure(client)
+    async def resolve(self, host, port, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.2", 443))]
+    monkeypatch.setattr("asyncio.BaseEventLoop.getaddrinfo", resolve)
+    mock(monkeypatch, lambda _: httpx.Response(200, json={"data": [{"url": "https://cdn.example/pic?signature=secret"}]}))
+    response = client.post("/api/images/generate", json={"prompt": "private prompt"})
+    assert response.status_code == 502 and "Fake-IP" in response.json()["detail"]
+    assert "stage=download_image" in caplog.text and "fake_ip_range=True" in caplog.text
+    assert "signature=secret" not in caplog.text and "private prompt" not in caplog.text
+
+
+def test_upstream_code_without_sensitive_message(client, monkeypatch, caplog):
+    configure(client)
+    mock(monkeypatch, lambda _: httpx.Response(429, headers={"x-request-id": "req-123"},
+         json={"error": {"code": "SetLimitExceeded", "message": "secret-image-key private prompt"}}))
+    assert client.post("/api/images/generate", json={"prompt": "private prompt"}).status_code == 502
+    assert "code=SetLimitExceeded" in caplog.text and "request_id=req-123" in caplog.text
+    assert "secret-image-key" not in caplog.text and "private prompt" not in caplog.text
+
+
+def test_plugin_log_diagnostic_rejects_path_traversal(client):
+    assert client.get("/api/diagnostics/logs", params={"plugin_id": "../../yus-ai"}).status_code == 404
+    assert client.get("/api/diagnostics/logs", params={"plugin_id": "image_generation"}).status_code == 200
 
 
 def test_busy_and_response_size_limit(client, monkeypatch):
@@ -196,3 +239,82 @@ def test_image_backup_restore_preserves_files(client, monkeypatch):
         db.execute("DELETE FROM generated_images")
     assert client.post("/api/system/backups/restore", json={"path": backup["path"]}).status_code == 200
     assert client.get(image["image_url"]).content == png()
+
+
+def image_conversation(client, content="少女站在雨中"):
+    character_id = client.post("/api/characters", json={"name": "绘图测试"}).json()["id"]
+    conversation_id = client.post("/api/conversations", json={"character_id": character_id}).json()["id"]
+    with database.connect() as db:
+        message_id = db.execute("INSERT INTO messages(conversation_id,role,content) VALUES (?,'assistant',?)", (conversation_id, content)).lastrowid
+    return conversation_id, message_id
+
+
+def test_source_image_with_extra_instructions_is_saved_in_own_chat(client, monkeypatch):
+    configure(client)
+    conversation_id, source_id = image_conversation(client)
+    calls = []
+    def respond(request):
+        calls.append(request)
+        body = json.loads(request.content)
+        assert body["prompt"] == "少女站在雨中\n\n【额外绘图指令】\n水彩画，不要文字"
+        assert "conversation_id" not in body and "source_message_id" not in body
+        return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(png()).decode()}]})
+    mock(monkeypatch, respond)
+    result = client.post("/api/images/generate", json={"conversation_id": conversation_id, "source_message_id": source_id, "extra_instructions": "水彩画，不要文字"}).json()
+    assert result["conversation_id"] == conversation_id
+    messages = client.get(f"/api/conversations/{conversation_id}/messages").json()
+    assert len(messages) == 3 and messages[-1]["image_id"] == result["id"]
+    assert messages[-1]["id"] == result["message_id"] and messages[-2]["role"] == "user"
+    assert "水彩画" in messages[-1]["content"] and len(calls) == 1
+    assert client.get(f"/api/images/{result['id']}/file").content == png()
+    database.init_db()  # Migration is repeatable and persisted messages survive.
+    assert client.get(f"/api/conversations/{conversation_id}/messages").json()[-1]["image_id"] == result["id"]
+    backup = client.post("/api/system/backups", json={"preferences": {}}).json()
+    assert client.delete(f"/api/messages/{messages[-2]['id']}").status_code == 200
+    assert len(client.get(f"/api/conversations/{conversation_id}/messages").json()) == 1
+    assert client.get(f"/api/images/{result['id']}/file").status_code == 200  # Gallery survives withdrawal.
+    assert client.post("/api/system/backups/restore", json={"path": backup["path"]}).status_code == 200
+    assert client.get(f"/api/conversations/{conversation_id}/messages").json()[-1]["image_id"] == result["id"]
+
+
+def test_source_validation_prevents_cross_chat_and_deleted_sources(client, monkeypatch):
+    configure(client)
+    conversation_id, source_id = image_conversation(client)
+    other_id, _ = image_conversation(client)
+    calls = []
+    mock(monkeypatch, lambda request: calls.append(request) or httpx.Response(500))
+    for payload, status in [
+        ({"conversation_id": other_id, "source_message_id": source_id}, 404),
+        ({"source_message_id": source_id}, 404),
+        ({"conversation_id": conversation_id, "source_message_id": source_id, "source_excerpt": "旧的内容"}, 409),
+        ({"conversation_id": 999999, "prompt": "draw"}, 404),
+    ]:
+        assert client.post("/api/images/generate", json=payload).status_code == status
+    client.delete(f"/api/messages/{source_id}")
+    assert client.post("/api/images/generate", json={"conversation_id": conversation_id, "source_message_id": source_id}).status_code == 404
+    assert calls == []
+
+
+def test_selected_excerpt_only_is_sent(client, monkeypatch):
+    configure(client)
+    conversation_id, source_id = image_conversation(client, "私人前文。少女站在雨中。私人后文。")
+    def respond(request):
+        assert json.loads(request.content)["prompt"] == "少女站在雨中"
+        return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(png()).decode()}]})
+    mock(monkeypatch, respond)
+    assert client.post("/api/images/generate", json={"conversation_id": conversation_id, "source_message_id": source_id, "source_excerpt": "少女站在雨中"}).status_code == 200
+
+
+def test_deleted_conversation_during_generation_keeps_gallery_without_cross_attach(client, monkeypatch):
+    configure(client)
+    conversation_id, _ = image_conversation(client)
+    other_id, _ = image_conversation(client)
+    def respond(request):
+        with database.connect() as db:
+            db.execute("DELETE FROM conversations WHERE id=?", (conversation_id,))
+        return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(png()).decode()}]})
+    mock(monkeypatch, respond)
+    response = client.post("/api/images/generate", json={"conversation_id": conversation_id, "prompt": "draw"})
+    assert response.status_code == 200 and response.json()["conversation_id"] is None
+    assert len(client.get(f"/api/conversations/{other_id}/messages").json()) == 1
+    assert len(client.get("/api/images").json()) == 1

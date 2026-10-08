@@ -2,8 +2,10 @@
 * { box-sizing:border-box; }
 button,input { font:inherit; }
 .pet-stage { position:relative; width:100%; height:100%; font-family:"Noto Sans SC","Microsoft YaHei",sans-serif; user-select:none; }
-.pet-canvas { position:absolute; inset:0; width:250px; height:320px; opacity:1; transform-origin:left top; transition:opacity .1s ease; }
-.pet-canvas.layout-changing { opacity:0; pointer-events:none; }
+.pet-canvas { position:absolute; inset:0; width:250px; height:320px; opacity:1; transform-origin:left top; }
+/* Keep the character painted during native resize; only suspend hit testing. */
+.pet-canvas[data-layout-anchor="locked"] { pointer-events:none; }
+.pet-canvas[data-layout-anchor="locked"] .pet-character { left:var(--layout-pet-x) !important; top:var(--layout-pet-y) !important; right:auto !important; bottom:auto !important; }
 .pet-canvas.open { width:var(--dialog-width,430px); height:var(--dialog-height,520px); }
 .pet-character { --flip-inward:-1; position:absolute; right:36px; bottom:70px; width:140px; height:150px; padding:0; border:0; outline:0; appearance:none; -webkit-appearance:none; -webkit-tap-highlight-color:transparent; background:transparent; box-shadow:none; cursor:grab; touch-action:none; filter:drop-shadow(0 12px 16px rgba(5,73,142,.35)); animation:pet-float 3.2s ease-in-out infinite; }
 .pet-character:focus,.pet-character:focus-visible,.pet-character:active { border-color:transparent; outline:0; box-shadow:none; }
@@ -369,3 +371,31 @@ button,input { font:inherit; }
 @keyframes emote-float { from{transform:translateY(2px)} to{transform:translateY(-4px)} }
 @keyframes bubble-arrive { from{opacity:0;transform:translateY(8px) scale(.96)} to{opacity:1;transform:translateY(0) scale(1)} }
 @keyframes download-pulse { from{opacity:.65} to{opacity:1} }
+
+/* Lightweight chat: one input beneath the pet, ephemeral sentences above it. */
+.pet-chat-input,.pet-sentence-stack { position:absolute; z-index:5; width:300px; right:12px; box-sizing:border-box; font-size:calc(13px * var(--dialog-font-scale,1)); }
+.browser-preview .pet-canvas.open { width:min(var(--dialog-width,430px),100vw); }
+.above-left .pet-chat-input,.below-left .pet-chat-input,.above-left .pet-sentence-stack,.below-left .pet-sentence-stack { left:12px; right:auto; }
+.pet-chat-input { width:200px; right:6px; top:calc(var(--dialog-height,520px) - 58px); padding:7px 9px 5px; border:1px solid #9ed4ed; border-radius:17px; background:rgba(249,253,255,.97); color:#173b56; box-shadow:0 5px 18px rgba(3,70,132,.12); }
+.above-left .pet-chat-input,.below-left .pet-chat-input { left:6px; }
+.below-right .pet-chat-input,.below-left .pet-chat-input { top:188px; }
+.pet-chat-input form { display:flex; gap:7px; margin:0; }
+.pet-chat-input input { min-width:0; flex:1; padding:5px 3px; border:0; outline:0; background:transparent; color:inherit; font:inherit; user-select:text; }
+.pet-chat-input input::placeholder { color:inherit; opacity:.5; }
+.pet-chat-input button { border:0; border-radius:10px; color:inherit; background:transparent; cursor:pointer; }
+.pet-chat-input form button { width:30px; height:30px; flex:none; background:#1687c4; color:white; font-size:20px; }
+.pet-chat-input button:disabled { opacity:.4; cursor:default; }
+.pet-input-status { display:block; margin-top:2px; font-size:10px; line-height:14px; overflow-wrap:anywhere; }
+.pet-sentence-stack { display:flex; flex-direction:column; align-items:flex-end; gap:7px; bottom:226px; pointer-events:none; transition:opacity .35s ease; }
+.pet-sentence-stack.fading { opacity:0; }
+.pet-sentence { max-width:100%; box-sizing:border-box; padding:9px 13px; border:1px solid #9ed4ed; border-radius:16px 16px 5px 16px; background:rgba(249,253,255,.97); color:#173b56; line-height:1.5; overflow-wrap:anywhere; user-select:text; pointer-events:auto; box-shadow:0 4px 14px rgba(3,70,132,.12); animation:bubble-arrive .25s ease-out; }
+.pet-sentence p { margin:0; }
+.pet-sentence-stack .pet-sentence { flex:none; max-height:none; overflow:visible; }
+.pet-stage.chat-open .pet-character { left:calc(50% - 70px); right:auto; top:calc(var(--dialog-height,520px) - 214px); bottom:auto; }
+.pet-stage.chat-open .pet-chat-input { left:50%; right:auto; transform:translateX(-50%); top:calc(var(--dialog-height,520px) - 58px); }
+.pet-stage.chat-open .pet-sentence-stack { width:var(--chat-bubble-width,300px); left:50%; right:auto; top:auto; bottom:226px; transform:translateX(-50%); align-items:center; }
+.pet-bubble-measurer { position:absolute; width:var(--chat-bubble-width,300px); display:flex; flex-direction:column; align-items:center; gap:7px; left:0; top:0; visibility:hidden; pointer-events:none; font-size:calc(13px * var(--dialog-font-scale,1)); }
+.pet-bubble-measurer .pet-sentence { flex:none; animation:none; }
+.pet-stage.model-alice .pet-chat-input,.pet-stage.model-alice .pet-sentence { color:var(--alice-text,#594529); background:var(--alice-surface,#fff9ee); border-color:var(--alice-border,#d9bf93); box-shadow:0 5px 18px rgba(91,66,25,.12); }
+.pet-stage.model-alice .pet-chat-input form button { background:#a47b40; }
+@media (prefers-reduced-motion:reduce) { .pet-sentence { animation:none; } .pet-sentence-stack { transition:none; } }
