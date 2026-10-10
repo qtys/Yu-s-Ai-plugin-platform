@@ -36,6 +36,7 @@ def test_template_import_render_scope_and_one_time_isolation(monkeypatch):
         monkeypatch.setattr(database, "DATA_DIR", database.Path(directory))
         monkeypatch.setattr(database, "DB_PATH", database.Path(directory) / "templates.db")
         with TestClient(app) as client:
+            client.put("/api/plugins/roleplay/state", json={"enabled": True})
             setting = client.get("/api/settings").json()
             setting["api_key"] = "test-key"
             assert client.put("/api/settings", json=setting).status_code == 200

@@ -34,6 +34,7 @@ def test_semantic_instruction_revision_replaces_streamed_draft_and_stored_reply(
         monkeypatch.setattr(database, "DATA_DIR", database.Path(directory))
         monkeypatch.setattr(database, "DB_PATH", database.Path(directory) / "review.db")
         with TestClient(app) as client:
+            client.put("/api/plugins/roleplay/state", json={"enabled": True})
             setting = client.get("/api/settings").json()
             setting["api_key"] = "mock"
             assert client.put("/api/settings", json=setting).status_code == 200
@@ -64,6 +65,7 @@ def test_review_switch_off_skips_remote_review_even_with_saved_rules(monkeypatch
         monkeypatch.setattr(database, "DATA_DIR", database.Path(directory))
         monkeypatch.setattr(database, "DB_PATH", database.Path(directory) / "review_off.db")
         with TestClient(app) as client:
+            client.put("/api/plugins/roleplay/state", json={"enabled": True})
             setting = client.get("/api/settings").json()
             setting["api_key"] = "mock"
             client.put("/api/settings", json=setting)
@@ -95,6 +97,7 @@ def test_review_timeout_keeps_draft_and_finishes(monkeypatch):
         monkeypatch.setattr(database, "DATA_DIR", database.Path(directory))
         monkeypatch.setattr(database, "DB_PATH", database.Path(directory) / "review_timeout.db")
         with TestClient(app) as client:
+            client.put("/api/plugins/roleplay/state", json={"enabled": True})
             setting = client.get("/api/settings").json()
             setting["api_key"] = "mock"
             client.put("/api/settings", json=setting)
@@ -130,6 +133,7 @@ def test_partial_revision_timeout_restores_original_reply(monkeypatch):
         monkeypatch.setattr(database, "DATA_DIR", database.Path(directory))
         monkeypatch.setattr(database, "DB_PATH", database.Path(directory) / "partial_revision.db")
         with TestClient(app) as client:
+            client.put("/api/plugins/roleplay/state", json={"enabled": True})
             setting = client.get("/api/settings").json()
             setting["api_key"] = "mock"
             client.put("/api/settings", json=setting)

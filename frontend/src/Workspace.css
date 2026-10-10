@@ -114,15 +114,14 @@
 .shell.workspace main { min-height:0; overflow:hidden; }
 .shell.workspace main > header { flex:0 0 auto; height:auto; min-height:76px; padding:12px 28px; gap:20px; box-sizing:border-box; background:color-mix(in srgb,var(--panel) 65%,var(--bg)); backdrop-filter:none; z-index:20; }
 .shell.workspace .workspace-chat-canvas { position:relative; }
-.workspace-header-reveal { position:absolute; top:0; left:0; right:0; height:18px; z-index:21; }
 .shell.workspace main > .workspace-chat-header { position:absolute; top:0; left:0; right:0; background:color-mix(in srgb,var(--panel) 78%,transparent); backdrop-filter:blur(16px); border-bottom:1px solid color-mix(in srgb,var(--line) 60%,transparent); box-shadow:0 8px 22px #00000006; opacity:0; transform:translateY(-8px); pointer-events:none; transition:opacity .16s ease,transform .16s ease; }
 .shell.workspace.has-background main > .workspace-chat-header { background:color-mix(in srgb,var(--panel) 72%,transparent); }
-.shell.workspace .workspace-chat-canvas:has(> .workspace-header-reveal:hover) > .workspace-chat-header,
+.shell.workspace .workspace-chat-canvas[data-header-nearby="true"] > .workspace-chat-header,
 .shell.workspace main > .workspace-chat-header:hover,
 .shell.workspace main > .workspace-chat-header:has(:focus-visible),
 .shell.workspace main > .workspace-chat-header:has(details[open]),
 .shell.workspace main > .workspace-chat-header:has(button[aria-expanded="true"]) { opacity:1; transform:translateY(0); pointer-events:auto; }
-@media (hover:none) { .workspace-header-reveal { display:none; } .shell.workspace main > .workspace-chat-header { position:relative; opacity:1; transform:none; pointer-events:auto; } }
+@media (hover:none) { .shell.workspace main > .workspace-chat-header { position:relative; opacity:1; transform:none; pointer-events:auto; } }
 @media (prefers-reduced-motion:reduce) { .shell.workspace main > .workspace-chat-header { transition:none; } }
 .workspace-role-picker { position:relative; flex:0 1 220px; min-width:110px; }
 .workspace-role-picker summary { display:flex; gap:10px; align-items:center; list-style:none; }
@@ -148,17 +147,17 @@
 .shell.workspace main > header > .window-tools { gap:5px; max-width:55%; flex-wrap:wrap; overflow:visible; }
 .shell.workspace .window-tools button { background:transparent; border:0; color:var(--text); height:34px; font-size:12px; padding:0 9px; }
 .shell.workspace .window-tools > button > span { transform:none; font-size:18px; }
-.shell.workspace .model-switcher { width:155px; order:-1; }
-.shell.workspace .model-switcher > summary { height:34px; border:0; background:transparent; box-shadow:none; padding:4px 8px; border-radius:8px; }
+.shell.workspace .model-switcher { width:155px; max-width:100%; order:-1; }
+.shell.workspace .model-switcher > summary { width:100%; box-sizing:border-box; height:34px; border:0; background:transparent; box-shadow:none; padding:4px 8px; border-radius:8px; }
 .shell.workspace .model-switcher-icon, .shell.workspace .model-switcher-copy small { display:none; }
 .shell.workspace .model-switcher-copy { display:block; min-width:0; }
-.shell.workspace .model-switcher-copy strong { font-size:12px; }
+.shell.workspace .model-switcher-copy strong { display:block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
 .shell.workspace .model-switcher-chevron { display:block; }
 .shell.workspace .model-switcher-menu { right:0; max-width:calc(100vw - 32px); }
 .shell.workspace .window-tools .model-switcher-option { justify-content:flex-start; text-align:left; }
 .shell.workspace .window-tools .model-switcher-option > span:last-child { flex:1; align-items:flex-start; text-align:left; }
 .shell.workspace .window-tools .model-switcher-option strong,
-.shell.workspace .window-tools .model-switcher-option small { text-align:left; }
+.shell.workspace .window-tools .model-switcher-option small { max-width:100%; text-align:left; }
 .shell.workspace .chat-page { height:auto; min-height:0; flex:1; }
 .shell.workspace .messages { min-height:0; padding:34px max(24px,calc((100% - 880px)/2)) 24px; scroll-padding-bottom:24px; }
 .shell.workspace .messages > article { margin-bottom:36px; }

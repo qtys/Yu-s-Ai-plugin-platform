@@ -1,5 +1,8 @@
 .pet-chat-satellite { position:absolute; left:0; top:0; transform-origin:0 0; font-family:"Noto Sans SC","Microsoft YaHei",sans-serif; }
-.pet-chat-satellite .pet-sentence-stack { width:var(--chat-bubble-width,300px); right:auto; top:auto; transform:translateX(-50%); align-items:center; }
+.pet-chat-satellite .pet-sentence-stack { inset:0; width:100%; transform:none; display:block; }
+.pet-chat-satellite .pet-sentence-stack .pet-sentence { position:absolute; width:max-content; }
+.satellite-measurer { position:absolute; left:0; top:0; visibility:hidden; pointer-events:none; width:var(--chat-bubble-width,300px); font-size:calc(13px * var(--dialog-font-scale,1)); }
+.satellite-measurer .pet-sentence { width:max-content; max-width:100%; animation:none; }
 .pet-chat-satellite .pet-chat-input { right:auto; transform:none; }
 .pet-chat-satellite.model-alice .pet-chat-input,.pet-chat-satellite.model-alice .pet-sentence { color:#594529; background:#fff9ee; border-color:#d9bf93; box-shadow:0 5px 18px rgba(91,66,25,.12); }
 .pet-chat-satellite.model-alice .pet-chat-input form button { background:#a47b40; }

@@ -199,6 +199,7 @@ def test_chat_rejects_conversation_from_another_character(monkeypatch):
             settings = client.get("/api/settings").json()
             settings["api_key"] = "mock"
             client.put("/api/settings", json=settings)
+            client.put("/api/plugins/roleplay/state", json={"enabled": True})
             first = client.post("/api/characters", json={"name": "旧角色", "personality": "只谈旧角色"}).json()
             second = client.post("/api/characters", json={"name": "新角色", "personality": "只谈新角色"}).json()
             old_conversation = client.post("/api/conversations", json={"character_id": first["id"]}).json()

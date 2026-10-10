@@ -21,6 +21,7 @@ def test_saved_instructions_scopes_management_and_prompt_focus(monkeypatch):
         monkeypatch.setattr(database, "DATA_DIR", database.Path(directory))
         monkeypatch.setattr(database, "DB_PATH", database.Path(directory) / "instructions.db")
         with TestClient(app) as client:
+            client.put("/api/plugins/roleplay/state", json={"enabled": True})
             setting = client.get("/api/settings").json()
             setting.update(api_key="mock", context_message_limit=2, memory_limit=10)
             assert client.put("/api/settings", json=setting).status_code == 200
@@ -46,8 +47,9 @@ def test_saved_instructions_scopes_management_and_prompt_focus(monkeypatch):
             assert "别的对话专用指令" not in prompt and "别的角色专用指令" not in prompt
             assert "先直接回应用户最新消息" in prompt
             sent_messages = [request for request in model_requests if request.get("stream")][-1]["messages"]
-            assert sent_messages[-1]["content"].startswith("你好\n\n【答复前核对】")
-            assert "回复长度与格式" in sent_messages[-1]["content"]
+            latest_user = next(message for message in reversed(sent_messages) if message["role"] == "user")
+            assert latest_user["content"].startswith("你好\n\n【答复前核对】")
+            assert "回复长度与格式" in latest_user["content"]
             system_texts = [message["content"] for message in sent_messages if message["role"] == "system"]
             assert next(i for i, text in enumerate(system_texts) if "用户明确保存的长期对话指令" in text) > next(i for i, text in enumerate(system_texts) if "本轮回答重点" in text)
             assert client.get(f"/api/conversations/{conversation['id']}/messages").json()[0]["content"] == "你好"

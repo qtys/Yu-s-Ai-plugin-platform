@@ -15,6 +15,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(database, "DATA_DIR", tmp_path)
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "withdraw.db")
     with TestClient(app) as test_client:
+        test_client.put("/api/plugins/roleplay/state", json={"enabled": True})
         yield test_client
 
 

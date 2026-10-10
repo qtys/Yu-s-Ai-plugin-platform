@@ -1,0 +1,9 @@
+.shell .form-page .role-initialization { display:grid; gap:14px; min-width:0; margin:8px 0; padding:20px; border:1px solid var(--line); border-radius:16px; background:var(--surface,var(--panel)); }
+.role-initialization legend { padding:0 8px; color:var(--text); font-size:14px; font-weight:600; }
+.shell .form-page .role-initialization-toggle { display:flex; align-items:center; gap:10px; }
+.role-initialization small { color:var(--muted); font-size:12px; line-height:1.6; overflow-wrap:anywhere; }
+.role-initialization-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.shell .form-page .role-initialization-actions button, .shell .form-page .role-initialization-variables button { padding:8px 12px; border:1px solid var(--line); border-radius:9px; background:var(--panel); color:var(--text); font-size:12px; }
+.shell .form-page .role-initialization-actions button.danger { color:var(--danger,#cc5362); }
+.role-initialization-variables { display:grid; gap:12px; min-width:0; }
+.role-initialization textarea { resize:vertical; min-height:140px; }

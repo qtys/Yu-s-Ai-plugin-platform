@@ -21,6 +21,7 @@ def test_deleted_conversation_memory_never_reaches_new_chat(monkeypatch):
         monkeypatch.setattr(database, "DATA_DIR", database.Path(directory))
         monkeypatch.setattr(database, "DB_PATH", database.Path(directory) / "isolated.db")
         with TestClient(app) as client:
+            client.put("/api/plugins/roleplay/state", json={"enabled": True})
             settings = client.get("/api/settings").json()
             settings.update(api_key="mock", memory_limit=10)
             assert client.put("/api/settings", json=settings).status_code == 200

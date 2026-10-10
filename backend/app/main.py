@@ -36,9 +36,12 @@ from .proactive import EmptyProactiveReply, generate_proactive
 from .plugins import NOVEL_REPLY_PROMPT, is_enabled as plugin_is_enabled, list_installed as list_installed_plugins, registry as plugin_registry, set_enabled as set_plugin_enabled
 from .documents import DOCUMENT_DIR, chunk_pages, decode_document, extract_pages, extract_visuals, relevant_chunks, remove_original, save_original
 from .instruction_review import length_issues, review_reply, revise_reply
+from .novel import NovelSettings, SentenceGate, build_prompt as build_novel_prompt, read_settings as read_novel_settings, violations as novel_violations
+from .role_initialization import TemplateInput as RoleTemplateInput, builtin_templates, render_initial_prompt
 from .pixel_motion import router as pixel_motion_router
 from .speech import router as speech_router
 from .image_generation import router as image_router
+from .roleplay import router as roleplay_router, compose as compose_roleplay, record_request as record_roleplay_request, opening_message as roleplay_opening_message
 
 MODEL_GENERATION_LOCK = asyncio.Lock()
 INSTRUCTION_REVIEW_DEADLINE_SECONDS = 30
@@ -347,6 +350,8 @@ class CharacterCreate(BaseModel):
     relationship: str = ""
     boundaries: str = ""
     example_dialogue: str = ""
+    initial_prompt_enabled: bool = False
+    initial_prompt: str = Field(default="", max_length=12000)
 
 
 class CharacterUpdate(CharacterCreate):
@@ -422,7 +427,7 @@ async def cancel_active_proactive_generation() -> None:
 
 
 class ConversationCreate(BaseModel):
-    character_id: int
+    character_id: int | None = None
     title: str = "新对话"
 
 
@@ -812,20 +817,22 @@ async def lifespan(_: FastAPI):
     UPDATE_RELEASE_CACHE = None
     configure_logging()
     init_db()
-    logger.info("backend_started version=0.15.38")
+    logger.info("backend_started version=0.16.4")
     yield
     logger.info("backend_stopped")
 
 
-app = FastAPI(title="Yu's AI API", version="0.15.38", lifespan=lifespan)
+app = FastAPI(title="Yu's AI API", version="0.16.4", lifespan=lifespan)
 # Keep shelved motion experiments available for development, never in the installer.
 if not getattr(sys, "frozen", False):
     app.include_router(pixel_motion_router)
 app.include_router(speech_router)
 app.include_router(image_router)
+app.include_router(roleplay_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://tauri.localhost", "tauri://localhost"],
+    allow_origin_regex=None if getattr(sys, "frozen", False) else r"http://(?:localhost|127\.0\.0\.1):[0-9]+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1210,6 +1217,22 @@ def get_pet_state():
     return rows("SELECT position_x, position_y FROM pet_state WHERE id = 1")[0]
 
 
+@app.get("/api/model-capabilities")
+def get_model_capabilities():
+    # Keep legacy state storage so upgrades preserve existing enablement and keys.
+    with connect() as db:
+        return {key: plugin_is_enabled(db, key) for key in ("speech", "image_generation")}
+
+
+@app.put("/api/model-capabilities/{capability}/state")
+def update_model_capability(capability: Literal["speech", "image_generation"], payload: PluginStateUpdate):
+    if payload.device_id is not None or payload.platform != "desktop":
+        raise HTTPException(409, "此模型能力目前仅支持电脑端")
+    with connect() as db:
+        set_plugin_enabled(db, capability, payload.enabled)
+    return {"id": capability, "enabled": payload.enabled}
+
+
 @app.get("/api/plugins")
 def get_installed_plugins(
     platform: Literal["desktop", "android"] = "desktop",
@@ -1242,6 +1265,26 @@ async def update_plugin_state(plugin_id: str, payload: PluginStateUpdate):
             await cancel_active_proactive_generation()
     logger.info("plugin_state_changed plugin_id=%s enabled=%s platform=%s", plugin_id, payload.enabled, payload.platform)
     return {"id": plugin_id, "enabled": payload.enabled}
+
+
+@app.get("/api/plugins/novel_reply/settings")
+async def get_novel_settings(device_id: str | None = Query(default=None, max_length=200)):
+    with connect() as db:
+        return read_novel_settings(db, device_id).model_dump()
+
+
+@app.patch("/api/plugins/novel_reply/settings")
+async def update_novel_settings(payload: dict, device_id: str | None = Query(default=None, max_length=200)):
+    with connect() as db:
+        merged = {**read_novel_settings(db, device_id).model_dump(), **payload}
+        try:
+            config = NovelSettings.model_validate(merged)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        db.execute("INSERT INTO novel_settings(scope,config) VALUES (?,?) ON CONFLICT(scope) DO UPDATE SET config=excluded.config",
+                   (device_id or "desktop", config.model_dump_json()))
+    get_plugin_logger("novel_reply").info("settings_saved terms=%s strict=%s", len(config.banned_terms.splitlines()), config.hard_bans_enabled)
+    return config.model_dump()
 
 
 def require_plugin_enabled(plugin_id: str) -> None:
@@ -1382,6 +1425,8 @@ async def proactive_generate(payload: ProactiveRequest):
         config = dict(db.execute("SELECT * FROM proactive_plugin WHERE id=1").fetchone())
         if not config["enabled"]:
             return {"skipped": True, "reason": "disabled"}
+        if not plugin_is_enabled(db, "roleplay"):
+            return {"skipped": True, "reason": "roleplay_disabled"}
         if time.time() < config["next_due"]:
             return {"skipped": True, "reason": "cooldown"}
         character = db.execute("SELECT * FROM characters WHERE id=?", (payload.character_id,)).fetchone()
@@ -1495,7 +1540,42 @@ def translate(payload: TranslationRequest):
 
 @app.get("/api/characters")
 def list_characters():
-    return rows("SELECT * FROM characters ORDER BY id DESC")
+    return rows("SELECT * FROM characters WHERE is_plain=0 ORDER BY id DESC")
+
+
+@app.get("/api/role-initialization/templates")
+def list_role_templates():
+    return builtin_templates() + [{**item, "source": "custom"} for item in rows("SELECT * FROM role_initialization_templates ORDER BY name,id")]
+
+
+@app.post("/api/role-initialization/templates", status_code=201)
+def create_role_template(payload: RoleTemplateInput):
+    template_id = "custom-" + uuid.uuid4().hex
+    with connect() as db:
+        if db.execute("SELECT COUNT(*) FROM role_initialization_templates").fetchone()[0] >= 100:
+            raise HTTPException(422, "自定义首轮模板最多 100 个")
+        db.execute("INSERT INTO role_initialization_templates(id,name,content) VALUES (?,?,?)", (template_id, payload.name, payload.content))
+    return {"id": template_id, **payload.model_dump(), "source": "custom"}
+
+
+@app.put("/api/role-initialization/templates/{template_id}")
+def update_role_template(template_id: str, payload: RoleTemplateInput):
+    if template_id.startswith("builtin-"):
+        raise HTTPException(409, "内置原版不可覆盖，请另存为自定义模板")
+    with connect() as db:
+        if not db.execute("UPDATE role_initialization_templates SET name=?,content=? WHERE id=?", (payload.name, payload.content, template_id)).rowcount:
+            raise HTTPException(404, "模板不存在")
+    return {"id": template_id, **payload.model_dump(), "source": "custom"}
+
+
+@app.delete("/api/role-initialization/templates/{template_id}")
+def delete_role_template(template_id: str):
+    if template_id.startswith("builtin-"):
+        raise HTTPException(409, "内置原版不可删除")
+    with connect() as db:
+        if not db.execute("DELETE FROM role_initialization_templates WHERE id=?", (template_id,)).rowcount:
+            raise HTTPException(404, "模板不存在")
+    return {"ok": True}
 
 
 @app.post("/api/characters", status_code=201)
@@ -1503,8 +1583,8 @@ def create_character(payload: CharacterCreate):
     with connect() as db:
         cursor = db.execute(
             """INSERT INTO characters(name, description, system_prompt, avatar_data, greeting, background,
-            personality, speaking_style, relationship, boundaries, example_dialogue) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            tuple(getattr(payload, key) for key in ("name", "description", "system_prompt", "avatar_data", "greeting", "background", "personality", "speaking_style", "relationship", "boundaries", "example_dialogue")),
+            personality, speaking_style, relationship, boundaries, example_dialogue, initial_prompt_enabled, initial_prompt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            tuple(getattr(payload, key) for key in ("name", "description", "system_prompt", "avatar_data", "greeting", "background", "personality", "speaking_style", "relationship", "boundaries", "example_dialogue", "initial_prompt_enabled", "initial_prompt")),
         )
         character_id = cursor.lastrowid
         return dict(db.execute("SELECT * FROM characters WHERE id=?", (character_id,)).fetchone())
@@ -1512,7 +1592,8 @@ def create_character(payload: CharacterCreate):
 
 @app.put("/api/characters/{character_id}")
 def update_character(character_id: int, payload: CharacterUpdate):
-    keys = ("name", "description", "system_prompt", "avatar_data", "greeting", "background", "personality", "speaking_style", "relationship", "boundaries", "example_dialogue")
+    keys = ("name", "description", "system_prompt", "avatar_data", "greeting", "background", "personality", "speaking_style", "relationship", "boundaries", "example_dialogue", "initial_prompt_enabled", "initial_prompt")
+    keys = tuple(key for key in keys if key not in ("initial_prompt_enabled", "initial_prompt") or key in payload.model_fields_set)
     with connect() as db:
         cursor = db.execute(f"UPDATE characters SET {', '.join(f'{key}=?' for key in keys)} WHERE id=?", tuple(getattr(payload, key) for key in keys) + (character_id,))
         if cursor.rowcount == 0:
@@ -1557,13 +1638,15 @@ async def stream_translation_package(source: str, target: str):
 
 
 @app.get("/api/conversations")
-def list_conversations(character_id: int | None = None):
+def list_conversations(character_id: int | None = None, plain: bool = False):
     query = "SELECT c.*, ch.name AS character_name FROM conversations c JOIN characters ch ON ch.id=c.character_id"
     params: tuple = ()
-    if character_id is not None:
+    if plain:
+        query += " WHERE ch.is_plain=1"
+    elif character_id is not None:
         query += " WHERE c.character_id=?"
         params = (character_id,)
-    query += (" AND " if character_id is not None else " WHERE ") + (
+    query += (" AND " if plain or character_id is not None else " WHERE ") + (
         "(EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id=c.id AND m.origin!='proactive') "
         "OR NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id=c.id))"
     )
@@ -1573,14 +1656,19 @@ def list_conversations(character_id: int | None = None):
 @app.post("/api/conversations", status_code=201)
 def create_conversation(payload: ConversationCreate):
     with connect() as db:
+        if payload.character_id is None:
+            # Internal storage owner only: never shown or exported as a user role card.
+            db.execute("INSERT OR IGNORE INTO characters(name,is_plain) VALUES ('AI',1)")
+            payload.character_id = db.execute("SELECT id FROM characters WHERE is_plain=1").fetchone()[0]
         if not db.execute("SELECT 1 FROM characters WHERE id=?", (payload.character_id,)).fetchone():
             raise HTTPException(404, "角色不存在")
         cursor = db.execute(
-            "INSERT INTO conversations(character_id, title) VALUES (?, ?)",
+            "INSERT INTO conversations(character_id, title, initial_prompt_applied) VALUES (?, ?, 0)",
             (payload.character_id, payload.title),
         )
         conversation_id = cursor.lastrowid
-        greeting = db.execute("SELECT greeting FROM characters WHERE id=?", (payload.character_id,)).fetchone()[0]
+        character = db.execute("SELECT * FROM characters WHERE id=?", (payload.character_id,)).fetchone()
+        greeting = roleplay_opening_message(db, character) if not character["is_plain"] else ""
         if greeting.strip():
             db.execute("INSERT INTO messages(conversation_id, role, content) VALUES (?, 'assistant', ?)", (conversation_id, greeting.strip()))
         return dict(db.execute("SELECT * FROM conversations WHERE id=?", (conversation_id,)).fetchone())
@@ -2024,6 +2112,7 @@ def update_message(message_id: int, payload: MessageUpdate):
         if not message:
             raise HTTPException(404, "消息不存在")
         db.execute("UPDATE messages SET content=? WHERE id=?", (content, message_id))
+        db.execute("DELETE FROM roleplay_requests WHERE conversation_id=?", (message["conversation_id"],))
         db.execute(
             "UPDATE conversations SET summary='', updated_at=CURRENT_TIMESTAMP WHERE id=?",
             (message["conversation_id"],),
@@ -2058,6 +2147,7 @@ async def withdraw_message(message_id: int):
             placeholders = ",".join("?" for _ in deleted_ids)
             db.execute(f"DELETE FROM memories WHERE source_message_id IN ({placeholders})", deleted_ids)
             db.execute(f"DELETE FROM messages WHERE id IN ({placeholders})", deleted_ids)
+            db.execute("DELETE FROM roleplay_requests WHERE conversation_id=?", (conversation_id,))
             db.execute("UPDATE conversations SET summary='', updated_at=CURRENT_TIMESTAMP WHERE id=?", (conversation_id,))
     logger.info("message_withdrawn conversation_id=%s deleted_count=%s", conversation_id, len(deleted_ids))
     return {"ok": True, "conversation_id": conversation_id, "deleted_ids": deleted_ids}
@@ -2075,6 +2165,13 @@ async def chat(conversation_id: int, payload: ChatRequest):
             raise HTTPException(404, "会话不存在")
         if payload.character_id is not None and payload.character_id != conversation["character_id"]:
             raise HTTPException(409, "当前会话不属于所选角色，请重新选择对话")
+        uses_character = not conversation["is_plain"] and (bool(payload.client_device_id) or plugin_is_enabled(db, "roleplay"))
+        initial_prompt = ""
+        if uses_character and not conversation["initial_prompt_applied"] and conversation["initial_prompt_enabled"] and conversation["initial_prompt"].strip():
+            try:
+                initial_prompt = render_initial_prompt(conversation["initial_prompt"], conversation["name"])
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
         one_time_prompt = None
         if payload.one_time_template_id is not None:
             template = db.execute("SELECT content FROM prompt_templates WHERE id=?", (payload.one_time_template_id,)).fetchone()
@@ -2085,6 +2182,9 @@ async def chat(conversation_id: int, payload: ChatRequest):
             raise HTTPException(422, "未选择仅本次使用的模板")
         setting = db.execute("SELECT * FROM settings WHERE id=1").fetchone()
         novel_reply_enabled = plugin_is_enabled(db, "novel_reply", payload.client_device_id)
+        # Roleplay support is desktop-only; mobile requests keep their existing composer.
+        roleplay_enabled = not payload.client_device_id and uses_character
+        novel_config = read_novel_settings(db, payload.client_device_id)
         instruction_review_enabled = plugin_is_enabled(db, "instruction_review", payload.client_device_id)
         environment_plugin_enabled = plugin_is_enabled(db, "conversation_environment", payload.client_device_id)
         if not setting["api_key"]:
@@ -2107,13 +2207,16 @@ async def chat(conversation_id: int, payload: ChatRequest):
         summary = "\n".join(f"{item['role']}: {item['content']}" for item in older)[-4000:] if older else ""
         if summary != conversation["summary"]:
             db.execute("UPDATE conversations SET summary=? WHERE id=?", (summary, conversation_id))
+        # Validate the deterministic roleplay plan before persisting a new user turn.
+        roleplay_plan = compose_roleplay(db, conversation, history, payload.content, compile_character_prompt(conversation)) if roleplay_enabled else None
         cursor = db.execute("INSERT INTO messages(conversation_id, role, content) VALUES (?, 'user', ?)", (conversation_id, payload.content))
-        memories = relevant_memories(db, conversation["character_id"], payload.content, setting["memory_limit"])
-        maybe_store_memory(db, conversation["character_id"], cursor.lastrowid, payload.content)
+        memories = relevant_memories(db, conversation["character_id"], payload.content, setting["memory_limit"]) if uses_character else []
+        if uses_character:
+            maybe_store_memory(db, conversation["character_id"], cursor.lastrowid, payload.content)
         saved_instructions = [row[0] for row in db.execute(
             "SELECT content FROM saved_instructions WHERE character_id=? AND enabled=1 AND (conversation_id IS NULL OR conversation_id=?) ORDER BY conversation_id IS NOT NULL, id",
             (conversation["character_id"], conversation_id),
-        ).fetchall()]
+        ).fetchall()] if uses_character else []
         repeated_replies = previous_replies_to_repeated_request(all_history, payload.content)
         documents = [dict(row) for row in db.execute("SELECT id,filename,summary FROM documents WHERE conversation_id=? ORDER BY id", (conversation_id,)).fetchall()]
         document_context = []
@@ -2129,8 +2232,10 @@ async def chat(conversation_id: int, payload: ChatRequest):
             db.execute("UPDATE conversations SET title=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (title, conversation_id))
 
     model_messages = []
-    prompt = compile_character_prompt(conversation)
-    if prompt:
+    prompt = compile_character_prompt(conversation) if uses_character else ""
+    if roleplay_plan:
+        model_messages.extend(roleplay_plan["before"])
+    elif prompt:
         model_messages.append({"role": "system", "content": prompt})
     if summary:
         model_messages.append({"role": "system", "content": f"【较早对话摘要】\n{summary}"})
@@ -2168,7 +2273,7 @@ async def chat(conversation_id: int, payload: ChatRequest):
             + "\n".join(f"{index}. {content}" for index, content in enumerate(repeated_replies, 1))
         )})
     if novel_reply_enabled:
-        model_messages.append({"role": "system", "content": NOVEL_REPLY_PROMPT})
+        model_messages.append({"role": "system", "content": build_novel_prompt(novel_config)})
     if payload.pet_chat_mode:
         model_messages.append({"role": "system", "content": (
             "【桌宠轻对话模式】本轮回复会逐句显示为小气泡。保持角色卡的人设，"
@@ -2194,6 +2299,8 @@ async def chat(conversation_id: int, payload: ChatRequest):
             "如果我这条消息明确改变了某项旧偏好，以这条消息的最新要求为准。"
         )
     model_messages.append({"role": "user", "content": latest_user_content})
+    if roleplay_plan:
+        model_messages.extend(roleplay_plan["after"])
     logger.info("model_chat_instruction_context conversation_id=%s saved_count=%s saved_chars=%s one_time=%s novel_reply=%s",
                 conversation_id, len(saved_instructions), sum(map(len, saved_instructions)), bool(one_time_prompt), novel_reply_enabled)
     # The character card and writing-style plugin guide generation, but do not
@@ -2209,20 +2316,37 @@ async def chat(conversation_id: int, payload: ChatRequest):
         action_started = False
         tool_call_arguments: dict[int, str] = {}
         saved = False
+        strict_novel = novel_reply_enabled and novel_config.hard_bans_enabled
+        novel_gate = SentenceGate(novel_config, payload.content) if strict_novel else None
+
+        def visible_token(token: str) -> str:
+            return novel_gate.feed(token) if novel_gate else token
         max_continuations = 3
         provider_url = setting["base_url"].lower()
         tool_call_enabled = payload.pet_motion_enabled and any(domain in provider_url for domain in ("api.openai.com", "api.deepseek.com"))
 
-        def save_complete_reply():
+        def save_complete_reply(successful: bool = False):
             nonlocal saved
             if not complete or saved:
+                return
+            if strict_novel and novel_violations(complete, novel_config, payload.content):
                 return
             with connect() as db:
                 db.execute("INSERT INTO messages(conversation_id, role, content) VALUES (?, 'assistant', ?)", (conversation_id, complete))
                 db.execute("UPDATE conversations SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (conversation_id,))
+                if successful and uses_character:
+                    db.execute("UPDATE conversations SET initial_prompt_applied=1 WHERE id=?", (conversation_id,))
             saved = True
 
         try:
+            # Recheck after acquiring the generation lock: a queued request must
+            # not reuse initialization already consumed by another successful turn.
+            with connect() as db:
+                current = db.execute("SELECT initial_prompt_applied FROM conversations WHERE id=?", (conversation_id,)).fetchone()
+            initial_prompt_used = bool(initial_prompt and current and not current[0])
+            if initial_prompt_used:
+                model_messages.insert(1, {"role": "system", "content": "【首轮角色初始化：仅本次请求】\n" + initial_prompt})
+            logger.info("role_initialization_context conversation_id=%s included=%s", conversation_id, initial_prompt_used)
             headers = {"Authorization": f"Bearer {setting['api_key']}", "Content-Type": "application/json"}
             async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
                 request_messages = list(model_messages)
@@ -2239,6 +2363,9 @@ async def chat(conversation_id: int, payload: ChatRequest):
                         }
                         body["tools"] = [tool]
                         body["tool_choice"] = "auto"
+                    if roleplay_plan and continuation == 0:
+                        with connect() as db:
+                            record_roleplay_request(db, conversation_id, roleplay_plan, body)
                     async with client.stream("POST", f"{setting['base_url'].rstrip('/')}/chat/completions", headers=headers, json=body) as response:
                         if response.status_code >= 400:
                             error = (await response.aread()).decode(errors="replace")
@@ -2268,7 +2395,7 @@ async def chat(conversation_id: int, payload: ChatRequest):
                                 raw_complete += token
                                 if not payload.pet_motion_enabled:
                                     complete += token
-                                    yield json.dumps({"token": token}, ensure_ascii=False) + "\n"
+                                    yield json.dumps({"token": visible_token(token)}, ensure_ascii=False) + "\n"
                                 elif not action_started:
                                     stream_buffer += token
                                     marker_at = stream_buffer.lower().find(PET_ACTION_OPEN)
@@ -2278,19 +2405,19 @@ async def chat(conversation_id: int, payload: ChatRequest):
                                         stream_buffer = ""
                                         if visible:
                                             complete += visible
-                                            yield json.dumps({"token": visible}, ensure_ascii=False) + "\n"
+                                            yield json.dumps({"token": visible_token(visible)}, ensure_ascii=False) + "\n"
                                     else:
                                         safe_length = max(0, len(stream_buffer) - len(PET_ACTION_OPEN) + 1)
                                         if safe_length:
                                             visible = stream_buffer[:safe_length]
                                             stream_buffer = stream_buffer[safe_length:]
                                             complete += visible
-                                            yield json.dumps({"token": visible}, ensure_ascii=False) + "\n"
+                                            yield json.dumps({"token": visible_token(visible)}, ensure_ascii=False) + "\n"
                     if finish_reason != "length":
                         break
                     if payload.pet_motion_enabled and not action_started and stream_buffer:
                         complete += stream_buffer
-                        yield json.dumps({"token": stream_buffer}, ensure_ascii=False) + "\n"
+                        yield json.dumps({"token": visible_token(stream_buffer)}, ensure_ascii=False) + "\n"
                         stream_buffer = ""
                     if continuation >= max_continuations:
                         logger.warning(
@@ -2309,7 +2436,7 @@ async def chat(conversation_id: int, payload: ChatRequest):
                     ]
             if payload.pet_motion_enabled and not action_started and stream_buffer:
                 complete += stream_buffer
-                yield json.dumps({"token": stream_buffer}, ensure_ascii=False) + "\n"
+                yield json.dumps({"token": visible_token(stream_buffer)}, ensure_ascii=False) + "\n"
             pet_motion = None
             pet_motion_raw = ""
             if payload.pet_motion_enabled:
@@ -2341,6 +2468,7 @@ async def chat(conversation_id: int, payload: ChatRequest):
                 else:
                     logger.info("pet_motion_missing conversation_id=%s raw_present=%s", conversation_id, bool(pet_motion_raw))
             complete = complete.rstrip()
+            reply_completed = finish_reason != "length"
             if complete:
                 if review_instructions:
                     local_issues = length_issues(complete, review_instructions)
@@ -2373,7 +2501,8 @@ async def chat(conversation_id: int, payload: ChatRequest):
                                             except StopAsyncIteration:
                                                 break
                                             revision_chunks.append(token)
-                                            yield json.dumps({"revision_token": token}, ensure_ascii=False) + "\n"
+                                            if not strict_novel:
+                                                yield json.dumps({"revision_token": token}, ensure_ascii=False) + "\n"
                                     finally:
                                         await revision_stream.aclose()
                                     revision = "".join(revision_chunks).strip()
@@ -2383,22 +2512,59 @@ async def chat(conversation_id: int, payload: ChatRequest):
                                     )
                                     if accepted:
                                         complete = revision
+                                        reply_completed = True
                                         pet_motion = None
                                         pet_motion_raw = ""
-                                    yield json.dumps({"replace": complete}, ensure_ascii=False) + "\n"
+                                    if not strict_novel:
+                                        yield json.dumps({"replace": complete}, ensure_ascii=False) + "\n"
                                     logger.info("model_chat_instruction_revision conversation_id=%s local_remaining=%s accepted=%s",
                                                 conversation_id, len(remaining_local), accepted)
                             except (asyncio.TimeoutError, httpx.HTTPError, ValueError) as exc:
                                 logger.warning("model_chat_instruction_review_abandoned conversation_id=%s error_type=%s", conversation_id, type(exc).__name__)
-                                yield json.dumps({"replace": complete}, ensure_ascii=False) + "\n"
+                                if not strict_novel:
+                                    yield json.dumps({"replace": complete}, ensure_ascii=False) + "\n"
                     elif local_issues:
                         logger.info("model_chat_instruction_local_check conversation_id=%s violations=%s review_disabled=True", conversation_id, len(local_issues))
-                save_complete_reply()
+                if strict_novel:
+                    issues = novel_violations(complete, novel_config, payload.content)
+                    if issues:
+                        get_plugin_logger("novel_reply").info("bans_revision_started conversation_id=%s count=%s", conversation_id, len(issues))
+                        yield json.dumps({"phase": "revising"}, ensure_ascii=False) + "\n"
+                        async def repair_novel():
+                            async with httpx.AsyncClient(timeout=30, trust_env=False) as repair_client:
+                                chunks = []
+                                async for token in revise_reply(repair_client, setting["base_url"], headers, setting["model"], setting["max_tokens"], model_messages, complete, issues):
+                                    chunks.append(token)
+                                return "".join(chunks).strip()
+                        try:
+                            repaired = await asyncio.wait_for(repair_novel(), timeout=30)
+                        except (asyncio.TimeoutError, httpx.HTTPError, ValueError):
+                            repaired = ""
+                        if not repaired or novel_violations(repaired, novel_config, payload.content):
+                            complete = ""
+                            get_plugin_logger("novel_reply").warning("bans_revision_failed conversation_id=%s", conversation_id)
+                            yield json.dumps({"replace": ""}, ensure_ascii=False) + "\n"
+                            yield json.dumps({"error": "小说禁词改写未通过，本次回复未保存；可重试或调整禁词设置。"}, ensure_ascii=False) + "\n"
+                            return
+                        complete = repaired
+                        reply_completed = True
+                        pet_motion = None
+                        pet_motion_raw = ""
+                        yield json.dumps({"replace": complete}, ensure_ascii=False) + "\n"
+                    elif (instruction_review_enabled and review_instructions) or (novel_gate and novel_gate.blocked):
+                        yield json.dumps({"replace": complete}, ensure_ascii=False) + "\n"
+                    elif novel_gate:
+                        yield json.dumps({"token": novel_gate.feed("", final=True)}, ensure_ascii=False) + "\n"
+                save_complete_reply(successful=reply_completed)
                 done_event = {"done": True}
+                if conversation["initial_prompt_enabled"]:
+                    with connect() as db:
+                        first_turn_state = db.execute("SELECT initial_prompt_applied FROM conversations WHERE id=?", (conversation_id,)).fetchone()
+                    done_event.update(initial_prompt_applied=bool(first_turn_state and first_turn_state[0]), initial_prompt_used=initial_prompt_used)
                 if pet_motion:
                     done_event["pet_motion"] = pet_motion
                     done_event["pet_motion_raw"] = pet_motion_raw
-                if finish_reason == "length":
+                if not reply_completed:
                     done_event["truncated"] = True
                 yield json.dumps(done_event, ensure_ascii=False) + "\n"
                 logger.info("model_chat_completed conversation_id=%s output_chars=%s", conversation_id, len(complete))

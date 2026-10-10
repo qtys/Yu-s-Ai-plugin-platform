@@ -1,6 +1,6 @@
 [package]
 name = "yus-ai-mobile"
-version = "0.1.0"
+version = "0.1.2"
 description = "Standalone Android chat client for Yu's AI"
 authors = ["qtys"]
 edition = "2021"

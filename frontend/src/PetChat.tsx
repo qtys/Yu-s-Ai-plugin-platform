@@ -1,14 +1,35 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import MessageContent from "./MessageContent";
 import type { PetChatSnapshot } from "./petChatBridge";
+import { placeSatelliteBubbles } from "./petSatelliteLayout";
+import type { BubbleBounds } from "./petSatelliteLayout";
 
 export default function PetChat() {
   const [snapshot, setSnapshot] = useState<PetChatSnapshot | null>(null);
   const [input, setInput] = useState("");
   const pending = useRef(false);
+  const stack = useRef<HTMLDivElement>(null);
+  const measurer = useRef<HTMLDivElement>(null);
+  const [positions, setPositions] = useState<BubbleBounds[]>([]);
+  useLayoutEffect(() => {
+    if (!snapshot?.open || !snapshot.ready || !stack.current || !measurer.current) return;
+    const measure = () => {
+      const displayed = Array.from(stack.current?.children ?? []) as HTMLElement[];
+      const sizes = Array.from(measurer.current?.children ?? []).map((element, index) => ({
+        width: (element as HTMLElement).offsetWidth, height: (element as HTMLElement).offsetHeight,
+        sideHeight: displayed[index]?.offsetHeight,
+      }));
+      const next = placeSatelliteBubbles(sizes, snapshot.layout);
+      setPositions(current => JSON.stringify(current) === JSON.stringify(next) ? current : next);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    [...stack.current.children, ...measurer.current.children].forEach(element => observer.observe(element));
+    return () => observer.disconnect();
+  }, [snapshot]);
   useEffect(() => {
     let disposed = false;
     let stop: (() => void) | undefined;
@@ -28,7 +49,7 @@ export default function PetChat() {
     if (!snapshot?.open || !snapshot.ready) return;
     const sync = async () => {
       const scale = snapshot.scale;
-      const regions = Array.from(document.querySelectorAll(".pet-chat-input, .pet-sentence")).map(element => {
+      const regions = Array.from(document.querySelectorAll(".pet-chat-input, .pet-sentence-stack .pet-sentence")).filter(element => getComputedStyle(element).visibility !== "hidden").map(element => {
         const rect = element.getBoundingClientRect();
         return [rect.left / scale, rect.top / scale, rect.width / scale, rect.height / scale];
       });
@@ -38,9 +59,9 @@ export default function PetChat() {
     let frame = requestAnimationFrame(() => { frame = requestAnimationFrame(() => void sync().catch(console.error)); });
     const timer = setTimeout(() => void sync().catch(console.error), 300);
     const observer = new ResizeObserver(() => void sync().catch(console.error));
-    document.querySelectorAll(".pet-chat-input, .pet-sentence").forEach(element => observer.observe(element));
+    document.querySelectorAll(".pet-chat-input, .pet-sentence-stack .pet-sentence").forEach(element => observer.observe(element));
     return () => { cancelAnimationFrame(frame); clearTimeout(timer); observer.disconnect(); };
-  }, [snapshot]);
+  }, [snapshot, positions]);
   if (!snapshot?.open || !snapshot.ready) return null;
   const { layout } = snapshot;
   return <main className={`pet-chat-satellite model-${snapshot.model}`} style={{
@@ -48,12 +69,19 @@ export default function PetChat() {
     "--chat-bubble-width": `${Math.min(snapshot.bubbleWidth, layout.bubbleWidthLimit ?? snapshot.bubbleWidth)}px`,
     width: layout.width, height: layout.height, transform: `scale(${snapshot.scale})`,
   } as CSSProperties}>
-    <div className={`pet-sentence-stack ${snapshot.fading ? "fading" : ""}`} style={{ left: layout.bubbleX ?? layout.petX, top: layout.bubbleTop, bottom: layout.bubbleTop === undefined ? layout.height - layout.petY + 12 : "auto" }}
+    <div ref={measurer} className="satellite-measurer" aria-hidden="true">
+      {snapshot.bubbles.map((bubble,index) => <div className="pet-sentence" key={bubble.id}><MessageContent content={bubble.text} mode={snapshot.mode} />{snapshot.proactive && index === snapshot.bubbles.length-1 && <button type="button" className="pet-proactive-reply">聊聊这个话题</button>}</div>)}
+    </div>
+    <div ref={stack} className={`pet-sentence-stack ${snapshot.fading ? "fading" : ""}`}
       aria-live="polite" onPointerEnter={() => void emitTo("pet", "pet-chat-event", { type: "hover", hovered: true })}
       onPointerLeave={() => void emitTo("pet", "pet-chat-event", { type: "hover", hovered: false })}>
-      {snapshot.bubbles.map(bubble => <div className="pet-sentence" key={bubble.id}><MessageContent content={bubble.text} mode={snapshot.mode} /></div>)}
+      {snapshot.bubbles.map((bubble, index) => <div className="pet-sentence" key={bubble.id} style={{
+        left: positions[index]?.left, top: positions[index]?.top,
+        maxWidth: Math.min(snapshot.bubbleWidth, positions[index]?.maxWidth ?? snapshot.bubbleWidth),
+        visibility: positions[index]?.visible ? "visible" : "hidden",
+      }}><MessageContent content={bubble.text} mode={snapshot.mode} />{snapshot.proactive && index === snapshot.bubbles.length - 1 && <button type="button" className="pet-proactive-reply" onClick={() => void emitTo("pet", "pet-chat-event", { type: "reply-proactive" })}>聊聊这个话题</button>}</div>)}
     </div>
-    <section className="pet-chat-input" style={{ left: layout.inputX, top: layout.inputY }}>
+    {snapshot.showInput && <section className="pet-chat-input" style={{ left: layout.inputX, top: layout.inputY }}>
       <form onSubmit={event => {
         event.preventDefault();
         if (!input.trim() || snapshot.busy || pending.current) return;
@@ -72,6 +100,6 @@ export default function PetChat() {
         <button disabled={snapshot.busy || !snapshot.enabled || !input.trim()} aria-label="发送">{snapshot.busy ? "· ·" : "↑"}</button>
       </form>
       {snapshot.status && <small className="pet-input-status" role="status">{snapshot.status}</small>}
-    </section>
+    </section>}
   </main>;
 }

@@ -5,9 +5,12 @@ import BottomSheet from "./BottomSheet";
 import { mobileDb, type MobileCharacter, type MobileConversation, type MobileInstruction, type MobileMessage, type MobileModelProfile, type MobilePromptTemplate, type MobileSettings } from "./localDb";
 import { streamModelReply } from "./modelClient";
 import { buildMessages, templateFields } from "./promptBuilder";
+import InitialPromptPanel from "./InitialPromptPanel";
+import { initialPromptFor } from "./roleInitialization";
+import MessageBubble from "./MessageBubble";
 
 type Tab = "chat" | "recent" | "roles" | "plugins" | "settings";
-type Drawer = "models" | "display" | "instructions" | null;
+type Drawer = "models" | "display" | "instructions" | "initial" | null;
 type UiMessage = MobileMessage & { pending?: boolean };
 const PLUGINS = [
   { id: "message_display", name: "消息显示", description: "渲染或过滤 Markdown", supported: true, defaultEnabled: true },
@@ -54,7 +57,14 @@ export default function StandaloneMobileApp() {
   });
   const [newCharacterName, setNewCharacterName] = useState("");
   const [newCharacterPrompt, setNewCharacterPrompt] = useState("");
+  const [initialRoleId, setInitialRoleId] = useState<string | null>(null);
+  const sendingRef = useRef(false);
   const [draft, setDraft] = useState("");
+  const [messageActionId, setMessageActionId] = useState<string | null>(null);
+  const [messageActionMode, setMessageActionMode] = useState<"actions" | "edit" | "withdraw">("actions");
+  const [messageEditDraft, setMessageEditDraft] = useState("");
+  const messageActionRef = useRef(false);
+  const preserveScrollRef = useRef<{ conversationId: string; top: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [ready, setReady] = useState(false);
@@ -63,6 +73,7 @@ export default function StandaloneMobileApp() {
   const keySaveQueue = useRef<Promise<unknown>>(Promise.resolve());
   const selectedCharacter = characters.find((item) => item.id === characterId);
   const selectedConversation = conversations.find((item) => item.id === conversationId);
+  const actionMessage = messages.find((item) => item.id === messageActionId && !item.pending);
 
   useEffect(() => {
     let live = true;
@@ -174,7 +185,13 @@ export default function StandaloneMobileApp() {
   }, [ready, settings.activeProfileId]);
 
   useLayoutEffect(() => {
-    if (tab !== "chat") return;
+    if (tab !== "chat") { preserveScrollRef.current = null; return; }
+    const preserved = preserveScrollRef.current;
+    if (preserved?.conversationId === conversationId) {
+      if (messageScrollRef.current) messageScrollRef.current.scrollTop = preserved.top;
+      return;
+    }
+    preserveScrollRef.current = null;
     const scrollToLatest = () => {
       const container = messageScrollRef.current;
       if (container) container.scrollTop = container.scrollHeight;
@@ -184,6 +201,28 @@ export default function StandaloneMobileApp() {
     const timer = window.setTimeout(scrollToLatest, 120);
     return () => { window.cancelAnimationFrame(frame); window.clearTimeout(timer); };
   }, [tab, conversationId, messages, keyboardOpen]);
+
+  useEffect(() => { setMessageActionId(null); }, [conversationId, tab]);
+
+  function openMessageActions(message: UiMessage) {
+    if (busy || message.pending || messageActionRef.current) return;
+    setMessageActionId(message.id); setMessageActionMode("actions"); setMessageEditDraft(message.content);
+  }
+
+  async function changeMessage(withdraw: boolean) {
+    if (!actionMessage || busy || messageActionRef.current || sendingRef.current || !conversationId) return;
+    const target = actionMessage;
+    messageActionRef.current = true; setBusy(true); setError("");
+    preserveScrollRef.current = { conversationId, top: messageScrollRef.current?.scrollTop ?? 0 };
+    try {
+      const history = await mobileDb.changeMessage(conversationId, target.id, withdraw ? null : messageEditDraft);
+      setMessages(history);
+      if (withdraw && target.role === "user") setDraft((current) => current || target.content);
+      if (characterId) setConversations(await mobileDb.conversations(characterId));
+      setMessageActionId(null);
+    } catch (cause) { setError((cause as Error).message); }
+    finally { messageActionRef.current = false; setBusy(false); }
+  }
 
   async function createCharacter() {
     const name = newCharacterName.trim();
@@ -199,7 +238,7 @@ export default function StandaloneMobileApp() {
 
   async function createConversation(): Promise<MobileConversation> {
     if (!characterId) throw new Error("请先创建角色");
-    const conversation: MobileConversation = { id: crypto.randomUUID(), characterId, title: "新对话", updatedAt: Date.now() };
+    const conversation: MobileConversation = { id: crypto.randomUUID(), characterId, title: "新对话", updatedAt: Date.now(), initialPromptApplied: false };
     await mobileDb.putConversation(conversation);
     setConversations((list) => [conversation, ...list]);
     setConversationId(conversation.id);
@@ -210,13 +249,16 @@ export default function StandaloneMobileApp() {
 
   async function send() {
     const content = draft.trim();
-    if (!content || !selectedCharacter || busy) return;
+    if (!content || !selectedCharacter || busy || sendingRef.current || messageActionRef.current) return;
     if (!settings.baseUrl || !settings.model || !apiKey.trim()) {
       setTab("settings"); setError("请先填写 HTTPS 模型地址、模型名称和 API Key"); return;
     }
+    sendingRef.current = true;
+    preserveScrollRef.current = null;
     setBusy(true); setError("");
     try {
       const conversation = selectedConversation ?? await createConversation();
+      const initialPrompt = initialPromptFor(selectedCharacter, conversation);
       const history = await mobileDb.messages(conversation.id);
       const currentInstructions = await mobileDb.instructions(selectedCharacter.id, conversation.id);
       const now = Date.now();
@@ -225,20 +267,21 @@ export default function StandaloneMobileApp() {
       setDraft("");
       const pendingId = crypto.randomUUID();
       setMessages([...history, userMessage, { id: pendingId, conversationId: conversation.id, role: "assistant", content: "", createdAt: now + 1, pending: true }]);
-      const reply = await streamModelReply({ ...settings, apiKey }, buildMessages(selectedCharacter, history, content, plugins, currentInstructions, queuedTemplate?.content ?? ""), (token) => {
+      const result = await streamModelReply({ ...settings, apiKey }, buildMessages(selectedCharacter, history, content, plugins, currentInstructions, queuedTemplate?.content ?? "", initialPrompt), (token) => {
         setMessages((list) => list.map((item) => item.id === pendingId && item.pending ? { ...item, content: item.content + token } : item));
       });
-      const assistant: MobileMessage = { id: pendingId, conversationId: conversation.id, role: "assistant", content: reply, createdAt: now + 1 };
-      await mobileDb.putMessage(assistant);
-      const updated = { ...conversation, title: conversation.title === "新对话" ? content.slice(0, 28) : conversation.title, updatedAt: Date.now() };
-      await mobileDb.putConversation(updated);
+      if (!result.content.trim()) throw new Error("模型没有返回文字内容");
+      const assistant: MobileMessage = { id: pendingId, conversationId: conversation.id, role: "assistant", content: result.content, createdAt: now + 1 };
+      const updated = { ...conversation, title: conversation.title === "新对话" ? content.slice(0, 28) : conversation.title, updatedAt: Date.now(), initialPromptApplied: result.complete ? true : conversation.initialPromptApplied };
+      await mobileDb.saveReply(assistant, updated);
+      if (!result.complete) setError("回复未完整结束，首轮指令仍保留下一次重试机会");
       setConversations(await mobileDb.conversations(selectedCharacter.id));
       setMessages((list) => list.map((item) => item.id === pendingId ? assistant : item));
       setQueuedTemplate(null);
     } catch (cause) {
       setError((cause as Error).message);
       setMessages((list) => list.filter((item) => !item.pending));
-    } finally { setBusy(false); }
+    } finally { sendingRef.current = false; setBusy(false); }
   }
 
   function updateSettings(next: MobileSettings) {
@@ -346,17 +389,30 @@ export default function StandaloneMobileApp() {
     <header className="mobile-header"><div><span className="mobile-brand">Yu's AI</span><small>独立手机端 · 数据保存在本机</small></div><div className="mobile-header-right"><span className="mobile-current-role" title={selectedCharacter?.name ?? "未选择角色"}>{selectedCharacter?.name ?? "未选角色"}</span><span className={`mobile-status ${ready ? "online" : ""}`}>{ready ? "本地可用" : "初始化中"}</span></div></header>
     <main className="mobile-main">
       {tab === "chat" && <section className="mobile-chat">
-        <div className="mobile-messages" ref={messageScrollRef} aria-live="polite">{!messages.length && <div className="mobile-empty"><span>✦</span><h2>开始一段对话</h2><p>角色与聊天记录只保存在这台设备。首次使用请先创建角色并配置模型。</p></div>}{messages.map((item) => <article key={item.id} className={`mobile-message ${item.role}`}><span className="mobile-speaker">{item.role === "user" ? "你" : selectedCharacter?.name ?? "AI"}</span><div className="mobile-bubble">{item.content ? <MessageContent content={item.content} mode={item.role === "assistant" && plugins.message_display ? displayMode : "raw"} /> : "正在回复…"}</div></article>)}</div>
+        <div className="mobile-messages" ref={messageScrollRef} aria-live="polite">{!messages.length && <div className="mobile-empty"><span>✦</span><h2>开始一段对话</h2><p>角色与聊天记录只保存在这台设备。首次使用请先创建角色并配置模型。</p></div>}{messages.map((item) => <article key={item.id} className={`mobile-message ${item.role}`}><div className="mobile-message-heading"><span className="mobile-speaker">{item.role === "user" ? "你" : selectedCharacter?.name ?? "AI"}{item.editedAt && <small> · 已编辑</small>}</span>{!item.pending && <button type="button" className="mobile-message-more" aria-label="编辑或撤回这条消息" disabled={busy} onClick={() => openMessageActions(item)}>···</button>}</div><MessageBubble disabled={busy || Boolean(item.pending)} onActions={() => openMessageActions(item)}>{item.content ? <MessageContent content={item.content} mode={item.role === "assistant" && plugins.message_display ? displayMode : "raw"} /> : "正在回复…"}</MessageBubble></article>)}</div>
         {queuedTemplate && <div className="mobile-queued-template"><span>下一条使用模板：{queuedTemplate.name}</span><button type="button" onClick={() => setQueuedTemplate(null)} aria-label="取消本轮模板">×</button></div>}
         <div className="mobile-compose"><textarea aria-label="输入消息" placeholder="给角色发消息…" value={draft} onChange={(event) => setDraft(event.target.value)} disabled={!characterId || busy} rows={2} /><div className="mobile-compose-actions"><button type="button" className="mobile-instruction-trigger" disabled={!selectedCharacter} onClick={() => { setInstructionTab("saved"); setDrawer("instructions"); }}>指令{instructions.filter((item) => item.enabled).length > 0 && <span>{instructions.filter((item) => item.enabled).length}</span>}</button><button type="button" disabled={!draft.trim() || !characterId || busy} onClick={send}>{busy ? "回复中" : "发送"}</button></div></div>
       </section>}
       {tab === "recent" && <section className="mobile-list-panel"><div className="mobile-list-heading"><h1>最近对话</h1><button type="button" className="mobile-new" disabled={!characterId || busy} onClick={() => createConversation().catch((cause: Error) => setError(cause.message))}>＋ 新对话</button></div><p>属于当前角色：{selectedCharacter?.name ?? "未选择"}</p>{conversations.length ? conversations.map((item) => <button key={item.id} disabled={busy} className={`mobile-conversation ${item.id === conversationId ? "selected" : ""}`} onClick={() => { if (item.id !== conversationId) setMessages([]); setConversationId(item.id); setTab("chat"); }}>{item.title}<span>›</span></button>) : <div className="mobile-placeholder">还没有对话，点击上方「新对话」开始。</div>}</section>}
-      {tab === "roles" && <section className="mobile-list-panel"><h1>角色</h1><p>点击下方角色切换对话，或创建新角色。</p><div className="standalone-card"><label>角色名称<input value={newCharacterName} onChange={(event) => setNewCharacterName(event.target.value)} maxLength={80} placeholder="例如：蓝雨" /></label><label>角色设定<textarea value={newCharacterPrompt} onChange={(event) => setNewCharacterPrompt(event.target.value)} rows={5} placeholder="性格、说话方式、身份与行为边界…" /></label><button className="standalone-primary" disabled={busy} onClick={createCharacter}>创建角色</button></div>{characters.map((item) => <button key={item.id} disabled={busy} className={`mobile-conversation ${item.id === characterId ? "selected" : ""}`} onClick={() => { setCharacterId(item.id); setTab("chat"); }}>{item.name}<span>{item.id === characterId ? "当前" : "选择"}</span></button>)}</section>}
+      {tab === "roles" && <section className="mobile-list-panel"><h1>角色</h1><p>点击下方角色切换对话，或创建新角色。</p><div className="standalone-card"><label>角色名称<input value={newCharacterName} onChange={(event) => setNewCharacterName(event.target.value)} maxLength={80} placeholder="例如：蓝雨" /></label><label>角色设定<textarea value={newCharacterPrompt} onChange={(event) => setNewCharacterPrompt(event.target.value)} rows={5} placeholder="性格、说话方式、身份与行为边界…" /></label><button className="standalone-primary" disabled={busy} onClick={createCharacter}>创建角色</button></div>{characters.map((item) => <div key={item.id} className="mobile-role-row"><button key={item.id} disabled={busy} className={`mobile-conversation ${item.id === characterId ? "selected" : ""}`} onClick={() => { setCharacterId(item.id); setTab("chat"); }}>{item.name}<span>{item.id === characterId ? "当前" : "选择"}</span></button><button type="button" className="mobile-role-initial-button" disabled={busy} onClick={() => { setInitialRoleId(item.id); setDrawer("initial"); }}>首轮配置{item.initialPromptEnabled ? " · 开启" : ""}</button></div>)}</section>}
       {tab === "plugins" && <section className="mobile-list-panel"><h1>手机端插件</h1><p>这里只列出明确适配状态；桌面端专有能力不会假装可用。</p>{PLUGINS.map((plugin) => <div key={plugin.id} className={`mobile-plugin ${plugin.supported ? "" : "unsupported"}`}><div><strong>{plugin.name}</strong><p>{plugin.description}</p><small>{plugin.supported ? "本机独立运行" : "待 Android 适配"}</small></div><button role="switch" aria-label={`${plugin.name}开关`} aria-checked={plugin.supported && plugins[plugin.id]} className={plugins[plugin.id] && plugin.supported ? "active" : ""} disabled={!plugin.supported} onClick={() => togglePlugin(plugin.id, !plugins[plugin.id])}>{!plugin.supported ? "待适配" : plugins[plugin.id] ? "已开启" : "已关闭"}</button>{plugin.id === "message_display" && plugins.message_display && <button type="button" className="mobile-display-mode" onClick={() => setDrawer("display")}>显示方式 <strong>{displayMode === "markdown" ? "渲染 Markdown" : displayMode === "plain" ? "过滤 Markdown" : "原始文本"}</strong><span>›</span></button>}</div>)}</section>}
       {tab === "settings" && <section className="mobile-list-panel"><h1>模型设置</h1><p>手机直接请求你选择的模型服务，不依赖电脑。模型配置保存在手机本机，密钥单独存入应用私有目录。</p><div className="standalone-card"><button type="button" className="standalone-settings-picker" onClick={() => setDrawer("models")}><span><small>当前模型配置</small><strong>{modelProfiles.find((item) => item.id === settings.activeProfileId)?.name ?? "选择模型"}</strong><small>{settings.model || "尚未设置模型 ID"}</small></span><b>⌄</b></button><label>API 基础地址<input type="url" value={settings.baseUrl} placeholder="https://…/v1" onChange={(event) => updateSettings({ ...settings, baseUrl: event.target.value })} /></label><label>模型名称<input value={settings.model} placeholder="填写服务商提供的模型 ID" onChange={(event) => updateSettings({ ...settings, model: event.target.value })} /></label><label>API Key<input type="password" autoComplete="off" value={apiKey} placeholder="保存在应用私有目录" onChange={(event) => updateApiKey(event.target.value)} /></label><div className="standalone-settings-row"><label>温度<input type="number" min="0" max="2" step="0.1" value={settings.temperature} onChange={(event) => updateSettings({ ...settings, temperature: Number(event.target.value) || 0 })} /></label><label>最大输出 Token<input type="number" min="128" max="16384" step="128" value={settings.maxTokens} onChange={(event) => updateSettings({ ...settings, maxTokens: Number(event.target.value) || 128 })} /></label></div></div><div className="standalone-note">目前仅接受 HTTPS 的 OpenAI 兼容接口。对话和角色保存在手机本机；卸载应用可能清除这些数据，备份与桌面同步尚未实现。</div></section>}
     </main>
     {error && <div className="mobile-error" role="alert">{error}<button aria-label="关闭错误提示" onClick={() => setError("")}>×</button></div>}
     {!keyboardOpen && <nav className="mobile-nav standalone-nav" aria-label="主导航"><button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>◉<span>对话</span></button><button className={tab === "recent" ? "active" : ""} onClick={() => setTab("recent")}>☷<span>最近</span></button><button className={tab === "roles" ? "active" : ""} onClick={() => setTab("roles")}>✦<span>角色</span></button><button className={tab === "plugins" ? "active" : ""} onClick={() => setTab("plugins")}>◇<span>插件</span></button><button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}>⚙<span>模型</span></button></nav>}
+    {actionMessage && <BottomSheet title={messageActionMode === "edit" ? "编辑消息" : messageActionMode === "withdraw" ? "确认撤回" : "消息操作"} subtitle={actionMessage.role === "user" ? "你的消息" : "角色回复"} onClose={() => { if (!busy) setMessageActionId(null); }}>
+      <div className="mobile-message-action-panel">
+        {messageActionMode === "edit" ? <><label>消息内容<textarea aria-label="编辑消息内容" rows={8} value={messageEditDraft} disabled={busy} onChange={(event) => setMessageEditDraft(event.target.value)} /></label><small>保存后，下一轮模型请求将使用修改后的内容，不会自动重写已有回复。</small><div className="mobile-editor-actions"><button type="button" disabled={busy} onClick={() => setMessageActionMode("actions")}>取消</button><button type="button" className="primary" disabled={busy || !messageEditDraft.trim()} onClick={() => void changeMessage(false)}>{busy ? "保存中…" : "保存修改"}</button></div></>
+          : messageActionMode === "withdraw" ? <><p>{actionMessage.role === "user" ? "撤回这条消息及这一轮的 AI 回复，后面其他轮对话保留。输入框为空时会放回你的原文。" : "只撤回这条 AI 回复，其他消息保留。"}</p><small>撤回后不再提交给模型，已保存的指令和首轮执行状态不变。此操作无法直接恢复。</small><div className="mobile-editor-actions"><button type="button" disabled={busy} onClick={() => setMessageActionMode("actions")}>取消</button><button type="button" className="danger" disabled={busy} onClick={() => void changeMessage(true)}>{busy ? "撤回中…" : "确认撤回"}</button></div></>
+          : <><p className="mobile-message-action-preview">{actionMessage.content.slice(0, 300)}{actionMessage.content.length > 300 ? "…" : ""}</p><button type="button" className="mobile-sheet-option" onClick={() => setMessageActionMode("edit")}>编辑内容<span>›</span></button><button type="button" className="mobile-sheet-option danger" onClick={() => setMessageActionMode("withdraw")}>撤回消息<span>›</span></button><small>也可点击消息旁的「···」打开此菜单。</small></>}
+      </div>
+    </BottomSheet>}
+    {drawer === "initial" && characters.find((item) => item.id === initialRoleId) && <BottomSheet title="首轮角色初始化" subtitle={`角色：${characters.find((item) => item.id === initialRoleId)!.name}`} onClose={() => setDrawer(null)}>
+      <InitialPromptPanel key={initialRoleId} character={characters.find((item) => item.id === initialRoleId)!} onSave={async (character) => {
+        await mobileDb.putCharacter(character);
+        setCharacters((items) => items.map((item) => item.id === character.id ? character : item));
+      }} />
+    </BottomSheet>}
     {drawer === "models" && <BottomSheet title="选择模型" subtitle="仅切换配置，不会改变已有对话记录" onClose={() => setDrawer(null)}>
       {modelProfiles.map((item) => <button type="button" key={item.id} className={`mobile-sheet-option ${item.id === settings.activeProfileId ? "selected" : ""}`} onClick={() => { selectModelProfile(item.id); setDrawer(null); }}><span className="mobile-sheet-avatar model">◇</span><span className="mobile-sheet-option-text"><strong>{item.name}</strong><small>{item.model || "尚未设置模型 ID"}</small></span><span className="mobile-sheet-check">{item.id === settings.activeProfileId ? "✓" : "›"}</span></button>)}
       <div className="mobile-sheet-create"><input aria-label="新模型配置名称" placeholder="新配置名称" value={newProfileName} onChange={(event) => setNewProfileName(event.target.value)} maxLength={80} /><button type="button" disabled={!newProfileName.trim()} onClick={() => void createModelProfile()}>新建</button></div>

@@ -635,6 +635,28 @@ fn export_character_card(character_name: String, content: String) -> Result<Stri
   Ok(path.to_string_lossy().into_owned())
 }
 
+  #[tauri::command]
+  fn export_roleplay_json(name: String, content: String, kind: String) -> Result<String, String> {
+    if !matches!(kind.as_str(), "character" | "preset" | "worldbook") || content.len() > 3_000_000 {
+      return Err("导出类型或文件大小无效".to_string());
+    }
+    serde_json::from_str::<serde_json::Value>(&content).map_err(|_| "导出内容不是有效 JSON".to_string())?;
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let install_dir = executable.parent().ok_or("无法确定软件安装目录")?;
+    let export_dir = install_dir.join("data").join("roleplay-exports");
+    std::fs::create_dir_all(&export_dir).map_err(|error| error.to_string())?;
+    let safe_name: String = name.chars().take(80)
+      .map(|character| if r#"<>:"/\|?*"#.contains(character) || character.is_control() { '_' } else { character })
+      .collect();
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|error| error.to_string())?.as_nanos();
+    let path = export_dir.join(format!("{}-{}.{}.json", safe_name.trim(), timestamp, kind));
+    // Never replace a previous user export, even on a clock collision.
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|error| error.to_string())?;
+    file.write_all(content.as_bytes()).map_err(|error| error.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+  }
+
 #[tauri::command]
 fn copy_backup_file(source: String, destination: String) -> Result<String, String> {
   let executable = std::env::current_exe().map_err(|error| error.to_string())?;
@@ -866,7 +888,7 @@ pub fn run() {
       always_on_top: Mutex::new(false),
       mini_mode: Mutex::new(false),
     })
-    .invoke_handler(tauri::generate_handler![fit_pet_chat_window, hide_pet_chat_window, show_pet_chat_window, set_pet_chat_regions, fit_pet_chat_layout, set_main_window_theme, set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, resize_pet_dialog, start_pet_drag, cancel_pet_auto_move, move_pet_by, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, set_pet_interaction_mode, set_pet_keyboard_focus, get_autostart_status, set_autostart, export_character_card, copy_backup_file, export_generated_image, install_update, confirm_update_startup, restart_application, record_window_diagnostic, capture_screen])
+    .invoke_handler(tauri::generate_handler![fit_pet_chat_window, hide_pet_chat_window, show_pet_chat_window, set_pet_chat_regions, fit_pet_chat_layout, set_main_window_theme, set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, resize_pet_dialog, start_pet_drag, cancel_pet_auto_move, move_pet_by, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, set_pet_interaction_mode, set_pet_keyboard_focus, get_autostart_status, set_autostart, export_character_card, export_roleplay_json, copy_backup_file, export_generated_image, install_update, confirm_update_startup, restart_application, record_window_diagnostic, capture_screen])
     .setup(|app| {
       pet_chat_window::start_following(app.handle().clone());
       let legacy_data_dir = app.path().app_data_dir()?;

@@ -147,7 +147,7 @@ export function ImageGenerationDialog({ open, onClose, enabled, onSettings, sour
         <label className="image-prompt">{source ? "指定的对话内容" : "图片描述"}<textarea ref={focusRef} rows={4} maxLength={12000} value={source ? source.excerpt ?? source.content : prompt} readOnly={Boolean(source)} onChange={(event) => setPrompt(event.target.value)} placeholder="例如：一只蓝色雨滴精灵坐在窗边，柔和晨光，水彩插画…" disabled={busy} /></label>
         <label className="image-prompt">额外绘图指令（可选）<textarea rows={2} maxLength={4000} value={extraInstructions} onChange={(event) => setExtraInstructions(event.target.value)} placeholder="例如：日系插画、横向构图、突出人物神态，不要文字…" disabled={busy} /></label>
         <div className="image-studio-actions"><button type="button" onClick={onSettings}>绘图设置</button><button type="button" className="primary" disabled={!enabled || busy || (!source && !prompt.trim())} onClick={() => void generate()}>{busy ? "正在生成…" : "生成并加入对话"}</button></div>
-        {!enabled && <small>请先在插件页面启用“图片生成”。</small>}
+        {!enabled && <small>请先在模型配置页面启用绘图模型。</small>}
         {busy && <small role="status">正在等待绘图服务，可能需要几分钟。关闭窗口不会取消请求；请勿重复生成，以免重复收费。</small>}
         {error && <p className="image-error" role="alert">{error}</p>}
         {saveStatus && <small role="status">{saveStatus}</small>}

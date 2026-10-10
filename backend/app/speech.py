@@ -176,7 +176,7 @@ def patch_settings(payload: SpeechSettingsPatch):
 def connection(kind: str, require_model: bool = True) -> tuple[str, dict, dict]:
     with connect() as db:
         if not is_enabled(db, "speech"):
-            raise HTTPException(403, "请先在插件管理中启用“语音输入与朗读”")
+            raise HTTPException(403, "请先在模型配置中启用语音模型")
     config = settings(False)
     if not config[f"{kind}_base_url"] or (require_model and not config[f"{kind}_model"]):
         raise HTTPException(400, "请先配置语音识别 API" if kind == "stt" else "请先配置语音合成 API")

@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties, FormEvent, ReactNode } from "react";
 import BackgroundSettings, { readWorkspaceBackground } from "./BackgroundSettings";
+import NovelSettingsPanel from "./NovelSettingsPanel";
+import RoleplaySettingsPanel, { RoleCardContext } from "./RoleplaySettingsPanel";
+import RoleInitialization from "./RoleInitialization";
 import CharacterAvatarPicker from "./CharacterAvatarPicker";
 import { ImageSettingsPanel, ImageGenerationDialog, GeneratedImageMessage } from "./ImageGeneration";
 import type { ImageSource } from "./ImageGeneration";
@@ -18,8 +21,16 @@ import "./Desktop.css";
 import "./Themes.css";
 import WorkspaceNavigation, { WorkspaceIcon, WorkspaceRecent } from "./WorkspaceNavigation";
 import "./Workspace.css";
+import "./WorkspacePages.css";
+import "./PluginSettings.css";
 
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:8000/api";
+const pluginCategories: [string, PluginId[]][] = [
+  ["对话呈现", ["message_display", "novel_reply"]],
+  ["对话增强", ["roleplay", "conversation_environment", "instruction_review"]],
+  ["桌宠互动", ["proactive"]],
+  ["效率工具", ["translation"]],
+];
 type Character = {
   id: number;
   name: string;
@@ -27,9 +38,10 @@ type Character = {
   system_prompt: string;
   avatar_data: string; greeting: string; background: string; personality: string;
   speaking_style: string; relationship: string; boundaries: string; example_dialogue: string;
+  initial_prompt_enabled: boolean; initial_prompt: string;
 };
-const emptyCharacter = { name: "", description: "", system_prompt: "", avatar_data: "", greeting: "", background: "", personality: "", speaking_style: "", relationship: "", boundaries: "", example_dialogue: "" };
-type Conversation = { id: number; character_id: number; title: string };
+const emptyCharacter = { name: "", description: "", system_prompt: "", avatar_data: "", greeting: "", background: "", personality: "", speaking_style: "", relationship: "", boundaries: "", example_dialogue: "", initial_prompt_enabled: false, initial_prompt: "" };
+type Conversation = { id: number; character_id: number; title: string; initial_prompt_applied?: boolean | number };
 type Message = { id?: number; conversation_id?: number; clientKey?: string; role: "user" | "assistant"; content: string; image_id?: string | null; origin?: string };
 type ChatPhase = "generating" | "reviewing" | "revising";
 const chatPhaseLabels: Record<ChatPhase, string> = { generating: "正在生成回复…", reviewing: "正在审核指令…", revising: "正在流式修订回复…" };
@@ -105,7 +117,7 @@ export default function App() {
     [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [activeCharacter, setActiveCharacter] = useState<number | null>(null),
     [activeConversation, setActiveConversation] = useState<number | null>(null);
-  const [busy, setBusy] = useState(false),
+  const [textBusy, setBusy] = useState(false),
     [chatPhase, setChatPhase] = useState<ChatPhase | null>(null),
     [error, setError] = useState("");
   const [pinned, setPinned] = useState(false),
@@ -121,11 +133,26 @@ export default function App() {
   const [backendReady, setBackendReady] = useState(false);
   const [workspaceBackground, setWorkspaceBackground] = useState(readWorkspaceBackground);
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
+  const [modelCapabilities, setModelCapabilities] = useState({ speech: false, image_generation: false });
+  const [capabilityBusy, setCapabilityBusy] = useState(false);
+  const [modelCategory, setModelCategory] = useState<"chat" | "speech" | "image_generation">("chat");
   const [pluginBusy, setPluginBusy] = useState<string | null>(null);
   const [selectedPluginId, setSelectedPluginId] = useState<PluginId | null>(null);
+  const [pluginQuery, setPluginQuery] = useState("");
+  const [pluginFilter, setPluginFilter] = useState("全部");
+  const roleEditorRef = useRef<HTMLDivElement>(null);
+  const [roleEditorOpen, setRoleEditorOpen] = useState(false);
+  const [rolePageTab, setRolePageTab] = useState<"library" | "resources">("library");
+  const [headerNearby, setHeaderNearby] = useState(false);
+  const headerNearbyRef = useRef(false);
   const [imageStudioOpen, setImageStudioOpen] = useState(false);
   const [imageSource, setImageSource] = useState<ImageSource | null>(null);
   const [imageInitialPrompt, setImageInitialPrompt] = useState("");
+  const [imageMode, setImageMode] = useState(false);
+  const [imageGenerating, setImageGenerating] = useState(false);
+  const imageSkillActive = imageMode && modelCapabilities.image_generation;
+  const imageSendingRef = useRef(false);
+  const busy = textBusy || imageGenerating;
   const imageConversationRef = useRef(activeConversation);
   imageConversationRef.current = activeConversation;
   const closeImageStudio = useCallback(() => setImageStudioOpen(false), []);
@@ -135,7 +162,7 @@ export default function App() {
   const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null);
   const [maintenanceBusy, setMaintenanceBusy] = useState<"update" | "backup" | "restore" | null>(null);
   const [maintenanceStatus, setMaintenanceStatus] = useState("");
-  const [panel, setPanel] = useState<"chat" | "characters" | "plugins" | "settings">(
+  const [panel, setPanel] = useState<"chat" | "characters" | "plugins" | "settings" | "models">(
     "chat",
   );
   const [settings, setSettings] = useState<Settings>({
@@ -210,7 +237,8 @@ export default function App() {
   const skipMessageLoadRef = useRef<number | null>(null);
   const selectionReadyRef = useRef(false);
   const desktop = "__TAURI_INTERNALS__" in window;
-  const speechEnabled = plugins.some((plugin) => plugin.id === "speech" && plugin.enabled);
+  const speechEnabled = modelCapabilities.speech;
+  const roleplayEnabled = plugins.some((plugin) => plugin.id === "roleplay" && plugin.enabled);
   const voice = useSpeech(speechEnabled, `${panel}:${activeCharacter}:${activeConversation}:${busy}`, (text) => {
     const current = inputRef.current?.value ?? inputDraftRef.current;
     const next = current ? `${current}\n${text}` : text;
@@ -347,7 +375,10 @@ export default function App() {
           ]);
           setCharacters(characterData);
           setSettings(settingsData);
-          setPlugins(await request<PluginInfo[]>("/plugins"));
+          const pluginData = await request<PluginInfo[]>("/plugins");
+          setPlugins(pluginData);
+          setModelCapabilities(await request<typeof modelCapabilities>("/model-capabilities"));
+          const roleMode = pluginData.some((item) => item.id === "roleplay" && item.enabled);
           const [profilesData, proactiveData] = await Promise.all([
             request<ModelProfile[]>("/model-profiles"),
             request<typeof proactivePlugin>("/plugins/proactive"),
@@ -360,7 +391,7 @@ export default function App() {
             const selected = characterData.find((item) => item.id === preferredId) ?? characterData[0];
             setActiveCharacter(selected.id);
             const conversationData = await request<Conversation[]>(
-              `/conversations?character_id=${selected.id}`,
+              roleMode ? `/conversations?character_id=${selected.id}` : "/conversations?plain=true",
             );
             if (!cancelled) {
               setConversations(conversationData);
@@ -371,6 +402,8 @@ export default function App() {
               setActiveConversation(restoredConversation);
             }
           } else {
+            const plainConversations = await request<Conversation[]>("/conversations?plain=true");
+            if (!cancelled) setConversations(plainConversations);
             selectionReadyRef.current = true;
           }
           if (desktop && !cancelled) {
@@ -394,13 +427,20 @@ export default function App() {
     };
   }, []);
   useEffect(() => {
-    if (!activeCharacter) return;
+    if (!backendReady || (roleplayEnabled && !activeCharacter)) return;
     let cancelled = false;
-    request<Conversation[]>(`/conversations?character_id=${activeCharacter}`)
+    request<Conversation[]>(roleplayEnabled ? `/conversations?character_id=${activeCharacter}` : "/conversations?plain=true")
       .then((items) => { if (!cancelled) setConversations(items); })
       .catch((e) => { if (!cancelled) setError(e.message); });
     return () => { cancelled = true; };
-  }, [activeCharacter]);
+  }, [activeCharacter, roleplayEnabled, backendReady]);
+  useEffect(() => {
+    openConversation(null);
+    setInstructionPanelOpen(false);
+    setQueuedTemplate(null);
+    setInstructions([]);
+  // oxlint-disable-next-line react-hooks/exhaustive-deps -- switching chat mode invalidates the current selection
+  }, [roleplayEnabled]);
   useEffect(() => {
     if (activeConversation) {
       if (skipMessageLoadRef.current === activeConversation) {
@@ -427,7 +467,7 @@ export default function App() {
   }, [activeConversation]);
   useEffect(() => {
     setInstructions([]);
-    if (!activeCharacter) return;
+    if (!roleplayEnabled || !activeCharacter) return;
     let cancelled = false;
     const query = new URLSearchParams({ character_id: String(activeCharacter) });
     if (activeConversation) query.set("conversation_id", String(activeConversation));
@@ -435,7 +475,7 @@ export default function App() {
       .then((items) => { if (!cancelled) setInstructions(items); })
       .catch((cause) => { if (!cancelled) setError((cause as Error).message); });
     return () => { cancelled = true; };
-  }, [activeCharacter, activeConversation, instructionPanelOpen]);
+  }, [activeCharacter, activeConversation, instructionPanelOpen, roleplayEnabled]);
   useEffect(() => {
     if (!instructionPanelOpen || instructionTab !== "templates") return;
     let cancelled = false;
@@ -487,13 +527,15 @@ export default function App() {
       if (busyRef.current) return;
       const characterId = Number(localStorage.getItem("yus-ai-character"));
       const conversationId = Number(localStorage.getItem("yus-ai-conversation"));
-      if (!characterId) return;
       try {
+        const currentPlugins = await request<PluginInfo[]>("/plugins");
+        const roleMode = currentPlugins.some((item) => item.id === "roleplay" && item.enabled);
+        if (roleMode && !characterId) return;
         const conversationData = await request<Conversation[]>(
-          `/conversations?character_id=${characterId}`,
+          roleMode ? `/conversations?character_id=${characterId}` : "/conversations?plain=true",
         );
         if (cancelled) return;
-        setActiveCharacter(characterId);
+        if (roleMode) setActiveCharacter(characterId);
         setQueuedTemplate((current) => current?.characterId === characterId ? current : null);
         setConversations(conversationData);
         if (conversationId && conversationData.some((item) => item.id === conversationId)) {
@@ -605,6 +647,7 @@ export default function App() {
       return;
     }
     try {
+      if (draft.initial_prompt_enabled && Array.from(draft.initial_prompt.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)).some((item) => item[1] !== "角色名称")) throw new Error("首轮指令还有未填写的变量，请先填入变量后保存角色");
       const value = await request<Character>(editingCharacter ? `/characters/${editingCharacter}` : "/characters", {
         method: editingCharacter ? "PUT" : "POST",
         body: JSON.stringify(draft),
@@ -613,6 +656,7 @@ export default function App() {
       if (activeCharacter !== value.id) activateCharacter(value.id);
       setDraft(emptyCharacter);
       setEditingCharacter(null);
+      setRoleEditorOpen(false);
       setPanel("chat");
     } catch (e) {
       setError((e as Error).message);
@@ -621,7 +665,10 @@ export default function App() {
   function editCharacter(item: Character) {
     setEditingCharacter(item.id);
     setDraft({ ...emptyCharacter, ...item });
+    setRoleEditorOpen(true);
+    setRolePageTab("library");
     setPanel("characters");
+    window.requestAnimationFrame(() => roleEditorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
   }
   async function deleteCharacter(item: Character) {
     if (!window.confirm(`确定删除角色“${item.name}”吗？该角色的全部对话也会删除。`)) return;
@@ -632,8 +679,8 @@ export default function App() {
   }
   async function exportCharacter(item: Character) {
     try {
-      const { id: _id, ...character } = item;
-      const content = JSON.stringify({ format: "yus-ai-character", version: 1, character }, null, 2);
+      const card = await request(`/plugins/roleplay/characters/${item.id}/export?format=native`);
+      const content = JSON.stringify(card, null, 2);
       if (desktop) {
         const path = await invoke<string>("export_character_card", { characterName: item.name, content });
         window.alert(`角色卡已导出到：\n${path}`);
@@ -645,11 +692,23 @@ export default function App() {
   }
   async function importCharacter(file?: File) {
     if (!file) return;
-    try { const data = JSON.parse(await file.text()); const value = await request<Character>("/characters", { method: "POST", body: JSON.stringify({ ...emptyCharacter, ...(data.character ?? data) }) }); setCharacters((items) => [value, ...items]); activateCharacter(value.id); }
+    try {
+      if (file.size > 5_000_000) throw new Error("角色卡最大 5 MB");
+      const png = file.name.toLowerCase().endsWith(".png");
+      let content: string;
+      if (png) {
+        content = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1]); reader.onerror = () => reject(new Error("读取文件失败")); reader.readAsDataURL(file); });
+      } else content = await file.text();
+      const body = JSON.stringify({ filename: file.name, content, png });
+      const inspect = await request<{ character: Character; warnings: string[]; tavern: boolean }>("/plugins/roleplay/cards/inspect", { method: "POST", body });
+      if (!window.confirm(`导入角色“${inspect.character.name}”？${inspect.tavern ? "\n酒馆卡的预设/世界书需在角色扮演插件中启用。" : ""}${inspect.warnings.length ? "\n\n" + inspect.warnings.join("\n") : ""}`)) return;
+      const result = await request<{ character: Character }>("/plugins/roleplay/cards/import", { method: "POST", body });
+      setCharacters((items) => [result.character, ...items]); activateCharacter(result.character.id);
+    }
     catch (e) { setError(`角色导入失败：${(e as Error).message}`); }
   }
   async function createConversation() {
-    if (!activeCharacter) {
+    if (roleplayEnabled && !activeCharacter) {
       setPanel("characters");
       return;
     }
@@ -657,7 +716,7 @@ export default function App() {
     try {
       const value = await request<Conversation>("/conversations", {
         method: "POST",
-        body: JSON.stringify({ character_id: activeCharacter }),
+        body: JSON.stringify({ character_id: roleplayEnabled ? activeCharacter : null }),
       });
       if (generation !== chatGenerationRef.current) return;
       setConversations((c) => [value, ...c]);
@@ -1025,7 +1084,7 @@ export default function App() {
     }
   }
   async function togglePlugin(plugin: PluginInfo) {
-    if (pluginBusy) return;
+    if (pluginBusy || (plugin.id === "roleplay" && busy)) return;
     setPluginBusy(plugin.id);
     try {
       await request(`/plugins/${plugin.id}/state`, {
@@ -1153,18 +1212,22 @@ export default function App() {
   async function send(event: FormEvent) {
     event.preventDefault();
     const content = (inputRef.current?.value ?? inputDraftRef.current).trim();
-    if (!content || busy || withdrawingMessageRef.current) return;
-    const oneTimeTemplate = queuedTemplate?.characterId === activeCharacter ? queuedTemplate : null;
+    if (!content || busy || imageSendingRef.current || withdrawingMessageRef.current) return;
+    if (imageSkillActive) {
+      await sendImagePrompt(content);
+      return;
+    }
+    const oneTimeTemplate = roleplayEnabled && queuedTemplate?.characterId === activeCharacter ? queuedTemplate : null;
     const chatGeneration = chatGenerationRef.current;
-    let id = conversations.some((item) => item.id === activeConversation && item.character_id === activeCharacter)
+    let id = conversations.some((item) => item.id === activeConversation && (!roleplayEnabled || item.character_id === activeCharacter))
       ? activeConversation
       : null;
     try {
       if (!id) {
-        if (!activeCharacter) throw new Error("请先创建一个角色");
+        if (roleplayEnabled && !activeCharacter) throw new Error("请先创建一个角色");
         const value = await request<Conversation>("/conversations", {
           method: "POST",
-          body: JSON.stringify({ character_id: activeCharacter }),
+          body: JSON.stringify({ character_id: roleplayEnabled ? activeCharacter : null }),
         });
         if (chatGeneration !== chatGenerationRef.current) return;
         id = value.id;
@@ -1195,7 +1258,7 @@ export default function App() {
       const response = await fetch(`${API}/conversations/${id}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content, character_id: activeCharacter,
+        body: JSON.stringify({ content, character_id: roleplayEnabled ? activeCharacter : null,
           one_time_template_id: oneTimeTemplate?.templateId ?? null,
           one_time_template_variables: oneTimeTemplate?.variables ?? {} }),
         signal: controller.signal,
@@ -1254,7 +1317,7 @@ export default function App() {
       }
       const [latestMessages, latestConversations] = await Promise.all([
         request<Message[]>(`/conversations/${id}/messages`),
-        request<Conversation[]>(`/conversations?character_id=${activeCharacter}`),
+        request<Conversation[]>(roleplayEnabled ? `/conversations?character_id=${activeCharacter}` : "/conversations?plain=true"),
       ]);
       if (chatGeneration !== chatGenerationRef.current) return;
       setMessages(latestMessages);
@@ -1280,16 +1343,57 @@ export default function App() {
       }
     }
   }
+  async function sendImagePrompt(content: string) {
+    if (imageSendingRef.current) return;
+    if (content.length > 12000) { setError("绘图描述请控制在 12000 字符以内"); return; }
+    imageSendingRef.current = true;
+    setImageGenerating(true);
+    busyRef.current = true;
+    setError("");
+    const generation = chatGenerationRef.current;
+    let id = conversations.some((item) => item.id === activeConversation && (!roleplayEnabled || item.character_id === activeCharacter)) ? activeConversation : null;
+    try {
+      if (!id) {
+        if (roleplayEnabled && !activeCharacter) throw new Error("请先选择角色，或关闭角色插件使用自由对话");
+        const created = await request<Conversation>("/conversations", { method: "POST", body: JSON.stringify({ character_id: roleplayEnabled ? activeCharacter : null }) });
+        if (generation !== chatGenerationRef.current) return;
+        id = created.id;
+        setConversations((items) => [created, ...items]);
+        setActiveConversation(id);
+      }
+      const result = await request<{ conversation_id: number | null }>("/images/generate", { method: "POST", body: JSON.stringify({ prompt: content, conversation_id: id }) });
+      setImageMode(false);
+      if (generation !== chatGenerationRef.current) return;
+      if (!result.conversation_id) throw new Error("原对话已删除，图片仍保存在本机作品库中，未加入其他对话。");
+      if (inputRef.current) { inputRef.current.value = ""; inputRef.current.style.height = ""; }
+      inputDraftRef.current = "";
+      const [items, latest] = await Promise.all([
+        request<Message[]>(`/conversations/${id}/messages`),
+        request<Conversation[]>(roleplayEnabled ? `/conversations?character_id=${activeCharacter}` : "/conversations?plain=true"),
+      ]);
+      if (generation === chatGenerationRef.current) {
+        requestLatestMessage();
+        setMessages(items);
+        setConversations(latest);
+      }
+    } catch (problem) {
+      if (generation === chatGenerationRef.current) setError((problem as Error).message);
+    } finally {
+      imageSendingRef.current = false;
+      setImageGenerating(false);
+      busyRef.current = false;
+    }
+  }
   async function uploadDocument(file: File) {
-    if (!activeCharacter || documentBusy) return;
+    if ((roleplayEnabled && !activeCharacter) || documentBusy) return;
     setDocumentBusy(true);
     setError("");
     try {
-      let conversationId = conversations.some((item) => item.id === activeConversation && item.character_id === activeCharacter)
+      let conversationId = conversations.some((item) => item.id === activeConversation && (!roleplayEnabled || item.character_id === activeCharacter))
         ? activeConversation
         : null;
       if (!conversationId) {
-        const created = await request<Conversation>("/conversations", { method: "POST", body: JSON.stringify({ character_id: activeCharacter, title: `阅读 ${file.name}` }) });
+        const created = await request<Conversation>("/conversations", { method: "POST", body: JSON.stringify({ character_id: roleplayEnabled ? activeCharacter : null, title: `阅读 ${file.name}` }) });
         conversationId = created.id;
         skipMessageLoadRef.current = created.id;
         setActiveConversation(created.id);
@@ -1331,7 +1435,7 @@ export default function App() {
       setDocuments((items) => items.filter((value) => value.id !== item.id));
     } catch (cause) { setError((cause as Error).message); }
   }
-  const character = characters.find((x) => x.id === activeCharacter),
+  const character = roleplayEnabled ? characters.find((x) => x.id === activeCharacter) : { id: -1, name: "AI", avatar_data: "", description: "直接与当前模型对话，不加载角色设定、世界书或角色记忆。", initial_prompt_enabled: false, initial_prompt: "" },
     conversation = conversations.find((x) => x.id === activeConversation);
   const selectedTemplate = templates.find((item) => item.id === selectedTemplateId);
   const templateFields = selectedTemplate ? [...new Set([...selectedTemplate.content.matchAll(/\{\{([^{}\s]{1,40})\}\}/g)].map((match) => match[1]))] : [];
@@ -1339,48 +1443,71 @@ export default function App() {
   const templateReady = templateFields.every((name) => Boolean(templateVariables[name]?.trim()));
   const selectedPlugin = plugins.find((plugin) => plugin.id === selectedPluginId);
   const pluginSettingsStatus = selectedPluginId === "proactive" ? proactiveSaveStatus : settingsSaveStatus;
+  const visiblePluginGroups = pluginCategories
+    .filter(([category]) => pluginFilter === "全部" || pluginFilter === "已启用" || pluginFilter === category)
+    .map(([category, ids]) => ({ category, items: plugins.filter((plugin) => ids.includes(plugin.id)
+      && (pluginFilter !== "已启用" || plugin.enabled)
+      && `${plugin.name} ${plugin.description}`.toLowerCase().includes(pluginQuery.toLowerCase().trim())) }))
+    .filter((group) => group.items.length > 0);
 
   return (
     <div className={`${mini ? "shell workspace mini" : "shell workspace"}${workspaceBackground ? " has-background" : ""}`} data-theme={theme} style={workspaceBackground ? { "--background-veil": 1 - workspaceBackground.strength } as CSSProperties : undefined}>
       {workspaceBackground && <img className="workspace-wallpaper" src={workspaceBackground.image} alt="" aria-hidden="true" draggable={false} />}
       <WorkspaceNavigation panel={panel} onPanel={setPanel} />
-      <main className={panel === "chat" ? "workspace-chat-canvas" : undefined}>
-        {panel === "chat" && <div className="workspace-header-reveal" aria-hidden="true" />}
-        <header className={panel === "chat" ? "workspace-chat-header" : undefined}>
+      <main className={panel === "chat" ? "workspace-chat-canvas" : undefined}
+        data-header-nearby={panel === "chat" && headerNearby ? "true" : undefined}
+        onPointerMove={(event) => {
+          if (panel !== "chat" || event.pointerType === "touch") return;
+          const canvasTop = event.currentTarget.getBoundingClientRect().top;
+          const header = event.currentTarget.querySelector<HTMLElement>(":scope > header");
+          const nearby = event.clientY - canvasTop <= (header?.offsetHeight ?? 76) + 56;
+          if (nearby !== headerNearbyRef.current) {
+            headerNearbyRef.current = nearby;
+            setHeaderNearby(nearby);
+          }
+        }}
+        onPointerLeave={() => {
+          headerNearbyRef.current = false;
+          setHeaderNearby(false);
+        }}>
+        <header className={panel === "chat" ? "workspace-chat-header" : "workspace-page-header"}>
           {panel === "chat" && <div className="workspace-header-left">
-          {panel === "chat" && <details className="workspace-role-picker" onKeyDown={(event) => { if (event.key === "Escape") event.currentTarget.open = false; }} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) event.currentTarget.open = false; }}>
+          {panel === "chat" && roleplayEnabled && <details className="workspace-role-picker" onKeyDown={(event) => { if (event.key === "Escape") event.currentTarget.open = false; }} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) event.currentTarget.open = false; }}>
             <summary aria-label="选择当前角色"><span className="avatar">{character?.avatar_data ? <img src={character.avatar_data} alt="" /> : <WorkspaceIcon name="role" />}</span><span><strong>{character?.name || "选择角色"}<span className="role-chevron">⌄</span></strong><small>{backendReady ? busy ? "正在回复…" : "准备好与你对话" : "正在连接本地服务"}</small></span></summary>
             <div className="workspace-role-menu">
               {characters.map((item) => <button key={item.id} aria-label={`切换到角色：${item.name}`} className={item.id === activeCharacter ? "active" : ""} onClick={(event) => { const picker = event.currentTarget.closest("details"); if (picker) picker.open = false; void selectCharacter(item.id); }}><span className="avatar">{item.avatar_data ? <img src={item.avatar_data} alt="" /> : item.name[0]}</span><span><strong>{item.name}</strong><small>{item.description || "私人角色"}</small></span></button>)}
               <button onClick={() => setPanel("characters")}>管理与创建角色 →</button>
             </div>
           </details>}
+          {!roleplayEnabled && <span className="plain-chat-label">自由对话</span>}
           {panel === "chat" && <WorkspaceRecent conversations={conversations} activeConversation={activeConversation}
             onOpen={(id) => { requestLatestMessage(); void openConversation(id); }}
             onRename={(id) => { const item = conversations.find((value) => value.id === id); if (item) void renameConversation(item); }}
             onDelete={(id) => { const item = conversations.find((value) => value.id === id); if (item) void deleteConversation(item); }}
-            onNew={() => { void createConversation(); }} canCreate={Boolean(activeCharacter) && !busy && withdrawingMessage === null} />}
+            onNew={() => { void createConversation(); }} canCreate={(!roleplayEnabled || Boolean(activeCharacter)) && !busy && withdrawingMessage === null} />}
           </div>}
           <div className="header-copy">
             <strong>
               {panel === "settings"
                 ? "设置"
+                : panel === "models"
+                  ? "模型配置"
                 : panel === "characters"
-                  ? "角色管理"
+                  ? "角色扮演插件"
                   : panel === "plugins"
                     ? "插件管理"
                     : conversation?.title || character?.name || "开始使用"}
             </strong>
             <small>
               {panel === "chat" && character
-                ? `正在与 ${character.name} 对话`
+                ? `正在与 ${character.name} 对话${character.initial_prompt_enabled && character.initial_prompt.trim() ? conversation?.initial_prompt_applied ? " · 首轮已完成" : " · 首轮待执行" : ""}`
                 : "Yu’s AI Plugin Platform"}
             </small>
           </div>
           <div className="window-tools">
             {panel === "chat" && modelProfiles.length > 0 && (
               <details className="model-switcher" ref={modelSwitcherRef} onKeyDown={(event) => { if (event.key === "Escape") { event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); } }}>
-                <summary aria-label={`当前模型：${modelProfiles.find((item) => item.id === settings.active_model_profile_id)?.name ?? settings.model}，点击切换`} title="切换聊天模型；桌宠与文档分析也会使用所选配置" onClick={(event) => { if (profileBusy || busy) event.preventDefault(); }}>
+                <summary aria-label={`当前模型：${modelProfiles.find((item) => item.id === settings.active_model_profile_id)?.name ?? settings.model}，点击切换`} title={`当前模型：${modelProfiles.find((item) => item.id === settings.active_model_profile_id)?.name ?? settings.model}\n点击切换聊天模型`} onClick={(event) => { if (profileBusy || busy) event.preventDefault(); }}>
                   <span className="model-switcher-icon" aria-hidden="true">✦</span>
                   <span className="model-switcher-copy"><small>当前模型</small><strong>{modelProfiles.find((item) => item.id === settings.active_model_profile_id)?.name ?? settings.model}</strong></span>
                   <span className="model-switcher-chevron" aria-hidden="true">⌄</span>
@@ -1422,11 +1549,11 @@ export default function App() {
           </div>
         )}
         {panel === "settings" && (
-          <section className="form-page">
+          <section className="form-page preferences-page">
             <Heading
-              eyebrow="外观与模型"
+              eyebrow="外观与应用"
               title="定制你的 AI 空间"
-              text="主题与模型设置修改后自动保存。"
+              text="主题与应用设置修改后自动保存；模型连接请前往模型配置页。"
             />
             <div className="theme-panel">
               <div className="form-section-title">
@@ -1438,6 +1565,7 @@ export default function App() {
                   <button
                     key={item.id}
                     className={theme === item.id ? "theme-card selected" : "theme-card"}
+                    aria-pressed={theme === item.id}
                     data-preview={item.id}
                     onClick={() => setTheme(item.id)}
                   >
@@ -1452,7 +1580,7 @@ export default function App() {
                 ))}
               </div>
             </div>
-            <BackgroundSettings value={workspaceBackground} onChange={setWorkspaceBackground} />
+            <details className="settings-drawer page-disclosure"><summary className="drawer-trigger"><span><strong>自定义背景</strong><small>使用自己的图片，让空间更有个性</small></span><span className="drawer-chevron" aria-hidden="true">⌄</span></summary><div className="drawer-content"><BackgroundSettings value={workspaceBackground} onChange={setWorkspaceBackground} /></div></details>
             {desktop && (
               <div className="device-settings">
                 <div className="form-section-title">
@@ -1507,17 +1635,22 @@ export default function App() {
                 <small className="maintenance-warning">备份文件包含 API Key 和聊天内容，请存放在可信位置，不要上传到公开网盘或仓库。</small>
               </div>
             )}
-            <details className="model-drawer settings-drawer">
-              <summary className="drawer-trigger"><span><strong>模型连接</strong><small>当前：{modelProfiles.find((item) => item.id === settings.active_model_profile_id)?.name ?? settings.model} · {modelProfiles.length} 个配置</small></span><span className="drawer-chevron" aria-hidden="true">⌄</span></summary>
+          </section>
+        )}
+        {panel === "models" && <section className="form-page models-page">
+            <div className="model-page-heading"><div><span>连接与偏好</span><h1>连接你的 AI</h1><p>分别配置对话、声音和图像。</p></div><span className="model-save-note">修改后自动保存</span></div>
+            <div className="model-category-nav" role="group" aria-label="模型类别">{(["chat", "speech", "image_generation"] as const).map((kind) => <button type="button" key={kind} aria-pressed={modelCategory === kind} onClick={() => setModelCategory(kind)}><WorkspaceIcon name={kind === "chat" ? "chat" : kind === "speech" ? "mic" : "image"} /><span>{kind === "chat" ? "对话模型" : kind === "speech" ? "语音模型" : "绘图模型"}</span>{kind !== "chat" && <i className={modelCapabilities[kind] ? "connected" : ""} aria-label={modelCapabilities[kind] ? "已启用" : "已停用"} />}</button>)}</div>
+            <div className="model-category-panel" hidden={modelCategory !== "chat"}>
+            <div className="model-config-layout">
+            <aside className="model-library" aria-label="已保存的模型">
+              <div className="model-library-heading"><strong>我的模型</strong><span>{modelProfiles.length}</span></div>
+              <div className="model-library-items">{modelProfiles.map((item) => <button type="button" key={item.id} aria-pressed={item.id === settings.active_model_profile_id} disabled={profileBusy || busy} onClick={() => void switchModelProfile(item.id)} title={`${item.name} · ${item.model}`}><span className="model-library-icon"><WorkspaceIcon name="model" /></span><span className="model-library-copy"><strong>{item.name}</strong><small>{item.model}</small></span>{item.id === settings.active_model_profile_id && <span className="model-library-dot" aria-label="当前使用" />}</button>)}</div>
+              <button className="model-library-add" type="button" disabled={profileBusy || busy || modelProfiles.length >= 20} onClick={() => void addModelProfile()}>＋ 添加模型</button>
+              <p>兼容 OpenAI 格式的接口。<br />聊天与桌宠共用当前选择。</p>
+            </aside>
+            <div className="model-drawer settings-drawer model-connection">
+              <div className="drawer-trigger model-detail-heading"><span><small>当前连接</small><strong title={modelProfiles.find((item) => item.id === settings.active_model_profile_id)?.name ?? settings.model}>{modelProfiles.find((item) => item.id === settings.active_model_profile_id)?.name ?? settings.model}</strong></span><span className="page-status">自动保存</span></div>
               <form className="drawer-content" onSubmit={(event) => event.preventDefault()}>
-                <small>保存多个兼容 OpenAI Chat Completions 的接口；切换后聊天与桌宠使用当前配置。</small>
-              <div className="model-profile-actions">
-                <select value={settings.active_model_profile_id ?? ""} disabled={profileBusy || busy} onChange={(event) => void switchModelProfile(Number(event.target.value))} aria-label="当前模型配置">
-                  {modelProfiles.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.model}</option>)}
-                </select>
-                <button type="button" disabled={profileBusy || busy || modelProfiles.length >= 20} onClick={() => void addModelProfile()}>＋ 添加模型</button>
-                <button type="button" disabled={profileBusy || busy || modelProfiles.length <= 1} onClick={() => void deleteModelProfile()}>删除当前</button>
-              </div>
               <Field label="配置名称">
                 <input value={profileNameDraft} maxLength={80} onChange={(event) => { profileNameRevisionRef.current += 1; setProfileNameSaveStatus("saving"); setProfileNameDraft(event.target.value); }} onBlur={() => void persistProfileName().catch((cause) => setError((cause as Error).message))} placeholder="例如：DeepSeek V4 Flash" />
               </Field>
@@ -1548,8 +1681,9 @@ export default function App() {
                   }
                 />
               </Field>
+              <details className="page-disclosure"><summary><span><strong>回复与上下文</strong><small>调整回复长度、创造性和记忆容量</small></span><span aria-hidden="true">⌄</span></summary><div className="disclosure-content">
               <div className="form-grid">
-                <Field label="温度">
+                <Field label="创造性（温度）">
                   <input
                     type="number"
                     min="0"
@@ -1564,7 +1698,7 @@ export default function App() {
                     }
                   />
                 </Field>
-                <Field label="单轮最大输出（截断时自动续写，最多 3 次）">
+                <Field label="单轮输出上限（Token）">
                   <input
                     type="number"
                     value={settings.max_tokens}
@@ -1589,6 +1723,9 @@ export default function App() {
                   <input type="number" min="0" max="50" value={settings.memory_limit} onChange={(e) => changeSettings({...settings, memory_limit:Number(e.target.value)})} />
                 </Field>
               </div>
+              <small>输出被截断时会自动续写，最多 3 次。记忆仅在角色插件启用时使用。</small>
+              </div></details>
+              <details className="page-disclosure"><summary><span><strong>图片与文档</strong><small>选择视觉模型、分析精度与屏幕读取权限</small></span><span aria-hidden="true">⌄</span></summary><div className="disclosure-content">
               <Field label="视觉模型（文档图片与桌宠看屏幕）">
                 <select value={settings.vision_model_profile_id ?? (settings.vision_model ? "legacy" : "")} onChange={(e) => changeSettings({ ...settings, vision_model_profile_id: e.target.value && e.target.value !== "legacy" ? Number(e.target.value) : null, vision_model: e.target.value === "legacy" ? settings.vision_model : "" })}>
                   <option value="">自动跟随当前连接</option>
@@ -1610,41 +1747,49 @@ export default function App() {
                   <option value="deep">深度分析（整页＋高清切片，细节优先）</option>
                 </select>
               </Field>
+              </div></details>
               <small className="settings-save-status" role="status">{settingsSaveStatus === "error" || proactiveSaveStatus === "error" || profileNameSaveStatus === "error" ? "自动保存失败，请检查上方提示后修改重试" : settingsSaveStatus === "saving" || proactiveSaveStatus === "saving" || profileNameSaveStatus === "saving" ? "正在自动保存…" : "所有设置已自动保存"}</small>
+              <div className="model-detail-footer"><span>密钥仅保存在本机，请勿公开分享。</span><button type="button" disabled={profileBusy || busy || modelProfiles.length <= 1} onClick={() => void deleteModelProfile()}>删除此配置</button></div>
               </form>
-            </details>
+            </div>
+            </div>
+            </div>
+            {(["speech", "image_generation"] as const).map((kind) => <div className="model-category-panel model-capability-panel" key={kind} hidden={modelCategory !== kind}><div className="model-category-content">
+              <div className="setting-toggle-row"><span>{kind === "speech" ? "使用语音输入与朗读" : "使用图片生成"}</span><button type="button" role="switch" aria-label={kind === "speech" ? "启用语音模型" : "启用绘图模型"} aria-checked={modelCapabilities[kind]} disabled={capabilityBusy || busy} className={modelCapabilities[kind] ? "autostart-switch enabled" : "autostart-switch"} onClick={async () => { setCapabilityBusy(true); try { const result = await request<{ enabled: boolean }>(`/model-capabilities/${kind}/state`, { method: "PUT", body: JSON.stringify({ enabled: !modelCapabilities[kind] }) }); setModelCapabilities((value) => ({ ...value, [kind]: result.enabled })); } catch (cause) { setError((cause as Error).message); } finally { setCapabilityBusy(false); } }}><span><i /></span>{modelCapabilities[kind] ? "已启用" : "已停用"}</button></div>
+              {kind === "speech" ? <SpeechSettingsPanel /> : <ImageSettingsPanel />}
+            </div></div>)}
           </section>
-        )}
+        }
         {panel === "plugins" && (
           <section className="form-page plugin-page">
             <Heading eyebrow="插件" title="让 AI 更合你心意" text="按用途管理插件。点击卡片调整属性，修改后自动保存。" />
+            <div className="plugin-browser-tools">
+              <input type="search" aria-label="搜索插件" placeholder="搜索插件或功能…" value={pluginQuery} onChange={(event) => setPluginQuery(event.target.value)} />
+              <span>{plugins.filter((item) => item.enabled).length} / {plugins.length} 个已启用</span>
+            </div>
+            <div className="page-filter" role="group" aria-label="插件分类">{["全部", "已启用", "对话呈现", "对话增强", "桌宠互动", "效率工具"].map((name) => <button type="button" key={name} aria-pressed={pluginFilter === name} onClick={() => setPluginFilter(name)}>{name}</button>)}</div>
             <div className="plugin-manager" id="plugin-manager">
-              {([
-                ["对话呈现", ["message_display", "novel_reply"]],
-                ["对话增强", ["conversation_environment", "instruction_review"]],
-                ["桌宠互动", ["proactive"]],
-                ["效率工具", ["translation", "speech"]],
-                ["创作工具", ["image_generation"]],
-              ] as [string, PluginId[]][]).map(([category, ids]) => (
+              {visiblePluginGroups.map(({ category, items }) => (
                 <div className="plugin-category" key={category}>
                   <h3>{category}</h3>
                   <div className="plugin-manager-grid">
-                    {plugins.filter((plugin) => ids.includes(plugin.id)).map((plugin) => (
+                    {items.map((plugin) => (
                       <article className={plugin.enabled ? "plugin-manager-card active" : "plugin-manager-card"} key={plugin.id}>
-                        <button type="button" className="plugin-card-open" onClick={() => setSelectedPluginId(plugin.id)} aria-label={`打开${plugin.name}设置`}>
+                        <button type="button" className="plugin-card-open" onClick={() => plugin.id === "roleplay" ? setPanel("characters") : setSelectedPluginId(plugin.id)} aria-label={`打开${plugin.name}设置`}>
                           <span className="plugin-card-heading"><strong>{plugin.name}</strong><small>内置 · v{plugin.version}</small></span>
                           <span className="plugin-card-description">{plugin.description}</span>
                           <span className="plugin-card-hint">查看设置 <span aria-hidden="true">↗</span></span>
                         </button>
-                        <button type="button" role="switch" aria-label={`${plugin.name}开关`} aria-checked={plugin.enabled} disabled={pluginBusy !== null} className={plugin.enabled ? "autostart-switch enabled" : "autostart-switch"} onClick={() => void togglePlugin(plugin)}>
+                        <button type="button" role="switch" aria-label={`${plugin.name}开关`} aria-checked={plugin.enabled} disabled={pluginBusy !== null || (plugin.id === "roleplay" && busy)} className={plugin.enabled ? "autostart-switch enabled" : "autostart-switch"} onClick={() => void togglePlugin(plugin)}>
                           <span><i /></span>{pluginBusy === plugin.id ? "正在切换…" : plugin.enabled ? "已启用" : "已停用"}
                         </button>
                       </article>
                     ))}
-                    {plugins.length === 0 && <small>正在读取内置插件…</small>}
                   </div>
                 </div>
               ))}
+              {!plugins.length && <p className="page-empty">正在读取内置插件…</p>}
+              {plugins.length > 0 && !visiblePluginGroups.length && <p className="page-empty">没有找到插件。试试其他关键词，或切换分类。</p>}
               <small>目前仅支持随应用打包的可信内置插件；不会加载外部脚本或第三方安装包。</small>
             </div>
             {selectedPlugin && (
@@ -1655,9 +1800,9 @@ export default function App() {
                     <button type="button" className="plugin-modal-close" onClick={() => setSelectedPluginId(null)} aria-label="关闭插件设置" autoFocus>×</button>
                   </header>
                   <div className="plugin-modal-content">
-                    {selectedPlugin.id === "speech" && <SpeechSettingsPanel />}
-                    {selectedPlugin.id === "image_generation" && <ImageSettingsPanel />}
+                    <div className="plugin-enable-row"><div><strong>启用此插件</strong><small>{selectedPlugin.enabled ? "已开启，按当前设置工作" : "当前关闭，设置仍会保留"}</small></div><button type="button" role="switch" aria-label={`${selectedPlugin.name}开关`} aria-checked={selectedPlugin.enabled} disabled={pluginBusy !== null || busy} className={selectedPlugin.enabled ? "autostart-switch enabled" : "autostart-switch"} onClick={() => void togglePlugin(selectedPlugin)}><span><i /></span>{selectedPlugin.enabled ? "已启用" : "已停用"}</button></div>
                     {selectedPlugin.id === "translation" && <>
+                      <div className="plugin-section-heading"><h3>下载来源</h3><p>本地翻译，不上传原文。语言包在桌宠翻译中下载。</p></div>
                       <Field label="语言包镜像地址（可选）"><input type="url" placeholder="例如：https://mirror.example.com/argospm/v1" value={settings.translation_mirror_url} onChange={(e) => changeSettings({ ...settings, translation_mirror_url: e.target.value })} /></Field>
                       <small>留空使用 Argos 官方源；国内镜像需提供相同的 .argosmodel 文件。语言包下载与进度在桌宠翻译功能中操作。</small>
                     </>}
@@ -1669,22 +1814,22 @@ export default function App() {
                           ["plain", "Markdown 过滤", "移除格式标记，仅保留可读纯文本"],
                           ["raw", "原始文本", "完整保留模型返回的所有标记，适合调试"],
                         ] as [MessageDisplayMode, string, string][]).map(([mode, name, description]) => (
-                          <button type="button" key={mode} className={settings.message_display_mode === mode ? "message-plugin selected" : "message-plugin"} onClick={() => changeSettings({ ...settings, message_display_mode: mode })}>
+                          <button type="button" key={mode} aria-pressed={settings.message_display_mode === mode} className={settings.message_display_mode === mode ? "message-plugin selected" : "message-plugin"} onClick={() => changeSettings({ ...settings, message_display_mode: mode })}>
                             <span>{settings.message_display_mode === mode ? "●" : "○"}</span><strong>{name}</strong><small>{description}</small>
                           </button>
                         ))}
                       </div>
                     </>}
                     {selectedPlugin.id === "conversation_environment" && <>
+                      <div className="plugin-section-heading"><h3>对话中的环境信息</h3><p>只提供你允许的信息，帮助模型理解当前情境。</p></div>
                       <Field label="让模型感知当前日期、星期和时间"><input type="checkbox" checked={settings.include_local_time} onChange={(e) => changeSettings({ ...settings, include_local_time: e.target.checked })} /></Field>
                       <Field label="向模型提供位置/地区"><input type="checkbox" checked={settings.include_location_context} onChange={(e) => changeSettings({ ...settings, include_location_context: e.target.checked })} /></Field>
                       {settings.include_location_context && <Field label="位置或地区"><input maxLength={200} value={settings.location_context} onChange={(e) => changeSettings({ ...settings, location_context: e.target.value })} placeholder="例如：中国上海市浦东新区" /></Field>}
                       <small>时间来自本机时钟；位置仅使用你手动填写的地区，不会读取 GPS。关闭插件会停止向聊天模型提供这两项信息，但不会清除已填写的设置。</small>
                     </>}
                     {selectedPlugin.id === "proactive" && <>
+                      <div className="plugin-section-heading"><h3>发言节奏</h3><p>设置桌宠何时主动找你聊天；手动聊天时会暂停。</p></div>
                       <Field label="启用主动模型调用"><input type="checkbox" checked={proactivePlugin.enabled} onChange={(e) => changeProactive({ ...proactivePlugin, enabled: e.target.checked })} /></Field>
-                      <Field label="主动发言结合当前屏幕"><input type="checkbox" checked={proactivePlugin.screen_context_enabled} disabled={!settings.screen_access_enabled} onChange={(e) => changeProactive({ ...proactivePlugin, screen_context_enabled: e.target.checked })} /></Field>
-                      <small>需先在模型设置中允许桌宠读取屏幕；每次可能额外消耗视觉模型 token。</small>
                       <Field label="随机时间主动发言"><input type="checkbox" checked={proactivePlugin.randomize_interval} onChange={(e) => changeProactive({ ...proactivePlugin, randomize_interval: e.target.checked })} /></Field>
                       {proactivePlugin.randomize_interval ? <div className="proactive-random-range">
                         <Field label="最短等待（分钟）"><input type="number" min="1" max="1440" value={proactivePlugin.random_min_minutes} onChange={(e) => changeProactive({ ...proactivePlugin, random_min_minutes: Number(e.target.value) })} /></Field>
@@ -1694,20 +1839,27 @@ export default function App() {
                         <div className="proactive-frequency-presets">{[1, 5, 15, 30, 60, 120].map((minutes) => <button type="button" key={minutes} className={proactivePlugin.interval_minutes === minutes ? "selected" : ""} onClick={() => changeProactive({ ...proactivePlugin, interval_minutes: minutes })}>{minutes} 分钟</button>)}</div>
                       </>}
                       <small>当前：{proactivePlugin.randomize_interval ? `每次在 ${proactivePlugin.random_min_minutes}–${proactivePlugin.random_max_minutes} 分钟之间重新随机` : `固定每 ${proactivePlugin.interval_minutes} 分钟`}。手动对话时会取消主动发言并重新计时。</small>
+                      <details className="plugin-options"><summary>话题与关心<span aria-hidden="true">⌄</span></summary><div className="plugin-options-body">
                       <Field label={`承接最近聊天的概率（${proactivePlugin.history_weight}%）`}><input type="range" min="0" max="50" step="5" value={proactivePlugin.history_weight} onChange={(e) => changeProactive({ ...proactivePlugin, history_weight: Number(e.target.value) })} /></Field>
                       <small>未抽中时会按人设聊日常、兴趣、轻松话题或可选时事。</small>
                       <Field label="启用时间关心"><input type="checkbox" checked={proactivePlugin.care_enabled} onChange={(e) => changeProactive({ ...proactivePlugin, care_enabled: e.target.checked })} /></Field>
                       {proactivePlugin.care_enabled && <Field label={`关心内容概率（${proactivePlugin.care_weight}%）`}><input type="range" min="0" max="100" step="5" value={proactivePlugin.care_weight} onChange={(e) => changeProactive({ ...proactivePlugin, care_weight: Number(e.target.value) })} /></Field>}
+                      <Field label="启用时事话题"><input type="checkbox" checked={proactivePlugin.news_enabled} onChange={(e) => changeProactive({ ...proactivePlugin, news_enabled: e.target.checked })} /></Field>
+                      <Field label="新闻 RSS（HTTPS）"><input type="url" value={proactivePlugin.rss_url} onChange={(e) => changeProactive({ ...proactivePlugin, rss_url: e.target.value })} /></Field>
+                      </div></details>
+                      <details className="plugin-options"><summary>进阶与调用用量<span aria-hidden="true">⌄</span></summary><div className="plugin-options-body">
+                      <Field label="主动发言结合当前屏幕"><input type="checkbox" checked={proactivePlugin.screen_context_enabled} disabled={!settings.screen_access_enabled} onChange={(e) => changeProactive({ ...proactivePlugin, screen_context_enabled: e.target.checked })} /></Field>
+                      <small>需先在模型配置中允许桌宠读取屏幕；每次可能额外消耗视觉模型 token。</small>
                       <Field label="单次回复 token 上限（64–8192）"><input type="number" min="64" max="8192" value={proactivePlugin.max_tokens} onChange={(e) => changeProactive({ ...proactivePlugin, max_tokens: Number(e.target.value) })} /></Field>
                       <small>建议从 1024 开始；推理模型空回复时可提高至 4096。重试会再次调用模型并可能计费。</small>
                       {proactivePlugin.last_error && <small role="status">最近主动发言失败：{proactivePlugin.last_error}</small>}
-                      <Field label="启用时事话题"><input type="checkbox" checked={proactivePlugin.news_enabled} onChange={(e) => changeProactive({ ...proactivePlugin, news_enabled: e.target.checked })} /></Field>
-                      <Field label="新闻 RSS（HTTPS）"><input type="url" value={proactivePlugin.rss_url} onChange={(e) => changeProactive({ ...proactivePlugin, rss_url: e.target.value })} /></Field>
                       <small>API 已报告累计 token：{proactivePlugin.total_tokens}（未提供 usage 的服务无法统计）。</small>
+                      </div></details>
                     </>}
-                    {selectedPlugin.id === "novel_reply" && <small>此插件目前只有启停开关，没有额外参数。它会把 AI 回复调整为第三人称小说式叙述；当前消息和已保存指令优先。</small>}
-                    {selectedPlugin.id === "instruction_review" && <small>默认关闭，聊天优先快速完成。开启后仅对已保存指令及本轮模板做二次审核；明确的字数限制先在本地检查，必要时最多流式修订一次。审核和修订总计最多等待 30 秒，超时则保留原回复。关闭不会停止生成前的指令注入。</small>}
-                    <div className="plugin-modal-permissions"><strong>使用权限</strong><span>{selectedPlugin.permissions.length ? selectedPlugin.permissions.map((permission) => permissionLabels[permission] ?? permission).join("、") : "无额外权限"}</span></div>
+                    {selectedPlugin.id === "novel_reply" && <NovelSettingsPanel />}
+                    {selectedPlugin.id === "roleplay" && <RoleplaySettingsPanel characters={characters} activeCharacter={activeCharacter} activeConversation={activeConversation} />}
+                    {selectedPlugin.id === "instruction_review" && <div className="plugin-review-guide"><h3>回复后，再核对一次</h3><p>检查已保存指令与本轮模板，必要时修订一次回复。</p><dl><div><dt>检查范围</dt><dd>当前有效指令、本轮模板；字数先在本地检测。</dd></div><div><dt>等待上限</dt><dd>审核与修订总计最多 30 秒，超时保留原回复。</dd></div><div><dt>使用建议</dt><dd>默认关闭以优先保证速度。开启可能增加模型调用费用。</dd></div></dl><small>关闭仅跳过二次审核，不影响发送前的指令注入。</small></div>}
+                    <details className="plugin-options plugin-modal-permissions"><summary>使用权限<span aria-hidden="true">⌄</span></summary><div className="plugin-options-body"><small>{selectedPlugin.permissions.length ? selectedPlugin.permissions.map((permission) => permissionLabels[permission] ?? permission).join("、") : "无额外权限"}</small></div></details>
                   </div>
                   <footer className="plugin-modal-footer"><small role="status">{pluginSettingsStatus === "error" ? "自动保存失败，请检查提示后重试" : pluginSettingsStatus === "saving" ? "正在自动保存…" : "修改后自动保存"}</small><button type="button" onClick={() => setSelectedPluginId(null)}>完成</button></footer>
                 </section>
@@ -1716,17 +1868,21 @@ export default function App() {
           </section>
         )}
         {panel === "characters" && (
-          <section className="form-page">
-            <Heading
-              eyebrow="角色卡"
-              title={editingCharacter ? "编辑角色卡" : "创造一个对话角色"}
-              text="结构化设定会自动组合为模型每次对话使用的系统提示词。"
-            />
-            <div className="character-manager">
-              {characters.map((item) => <div className="character-card" key={item.id}><strong>{item.name}</strong><span>{item.description || "暂无简介"}</span><div><button onClick={() => editCharacter(item)}>编辑</button><button onClick={() => void exportCharacter(item)}>导出</button><button className="danger" onClick={() => void deleteCharacter(item)}>删除</button></div></div>)}
-              <label className="import-character">导入角色卡<input type="file" accept="application/json,.json" onChange={(e) => void importCharacter(e.target.files?.[0])} /></label>
+          <section className="form-page roles-page">
+            <div className="role-page-topline"><button type="button" onClick={() => setPanel("plugins")}>← 插件</button><span>角色卡与角色扮演</span></div>
+            <div className="role-hero">
+              <div><span className="role-eyebrow">属于你的故事</span><h1>让对话，有一个熟悉的面孔。</h1><p>收藏喜欢的角色，赋予性格、故事与声音。</p></div>
+              <div className="role-plugin-status"><span>{roleplayEnabled ? "角色模式已开启" : "正在使用普通聊天"}</span>{plugins.find((item) => item.id === "roleplay") && <button type="button" role="switch" aria-label="角色扮演开关" aria-checked={roleplayEnabled} disabled={busy || pluginBusy !== null} className={roleplayEnabled ? "autostart-switch enabled" : "autostart-switch"} onClick={() => { const item = plugins.find((p) => p.id === "roleplay"); if (item) void togglePlugin(item); }}><span><i /></span>{roleplayEnabled ? "已启用" : "已停用"}</button>}<small>关闭仅切换聊天方式，不删除角色或记录。</small></div>
             </div>
-            <form onSubmit={createCharacter}>
+            <div className="role-page-tabs" role="group" aria-label="角色页面内容"><button aria-pressed={rolePageTab === "library"} onClick={() => setRolePageTab("library")}>我的角色 <span>{characters.length}</span></button><button aria-pressed={rolePageTab === "resources"} onClick={() => setRolePageTab("resources")}>酒馆资源 <small>进阶</small></button></div>
+            {rolePageTab === "library" && <>
+            <div className="role-library-toolbar"><p>{roleplayEnabled ? "选一个角色，开始下一段对话。" : "可以先整理角色，启用角色模式后再开始聊天。"}</p><label className="import-character">导入角色卡<input type="file" accept="application/json,image/png,.json,.png" onChange={(e) => { void importCharacter(e.target.files?.[0]); e.target.value = ""; }} /></label></div>
+            <div className="character-manager role-gallery">
+              {characters.map((item) => <div className={`character-card role-portrait-card${roleplayEnabled && activeCharacter === item.id ? " is-current" : ""}`} key={item.id}><div className="role-portrait-stage"><span className="role-card-avatar">{item.avatar_data ? <img src={item.avatar_data} alt="" /> : <span>{Array.from(item.name)[0]}</span>}</span>{roleplayEnabled && activeCharacter === item.id && <span className="role-current-tag">当前角色</span>}<details className="role-card-more" onKeyDown={(event) => { if (event.key === "Escape") event.currentTarget.open = false; }} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) event.currentTarget.open = false; }}><summary aria-label={`${item.name}更多操作`}>···</summary><div><button onClick={() => void exportCharacter(item)}>导出角色卡</button><button className="danger" onClick={() => void deleteCharacter(item)}>删除角色</button></div></details></div><div className="role-card-copy"><strong>{item.name}</strong><span>{item.description || item.personality || "故事尚未写下，等你慢慢了解。"}</span></div><div className="role-card-actions"><button className="role-chat-action" disabled={!roleplayEnabled || busy} title={roleplayEnabled ? "使用这个角色聊天" : "先启用角色扮演插件"} onClick={() => void selectCharacter(item.id)}>开始对话 <span aria-hidden="true">↗</span></button><button className="role-edit-action" onClick={() => editCharacter(item)}>编辑角色</button></div></div>)}
+              {!characters.length && <p className="page-empty">还没有角色。创建一个，或导入已有角色卡即可开始。</p>}
+              <button className="role-create-tile" type="button" onClick={() => { setDraft(emptyCharacter); setEditingCharacter(null); setRoleEditorOpen(true); window.requestAnimationFrame(() => roleEditorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })); }} disabled={roleEditorOpen}><span aria-hidden="true">＋</span><strong>创造一个新角色</strong><small>从一个名字、一种性格开始</small></button>
+            </div>
+            {roleEditorOpen && <div ref={roleEditorRef} className="settings-drawer role-editor"><div className="drawer-trigger"><span><strong>{editingCharacter ? `编辑 · ${draft.name}` : "一个新角色"}</strong><small>先写下核心设定，其他细节可以慢慢完善。</small></span><button type="button" aria-label="关闭角色编辑" onClick={() => {setEditingCharacter(null);setDraft(emptyCharacter);setRoleEditorOpen(false)}}>×</button></div><form className="drawer-content" onSubmit={createCharacter}>
               <CharacterAvatarPicker value={draft.avatar_data} onChange={(avatar_data) => setDraft((value) => ({ ...value, avatar_data }))} />
               <Field label="角色名称">
                 <input
@@ -1736,7 +1892,13 @@ export default function App() {
                   placeholder="例如：雨"
                 />
               </Field>
+              <Field label="核心角色设定">
+                <textarea rows={5} value={draft.system_prompt} onChange={(e) => setDraft({ ...draft, system_prompt: e.target.value })} placeholder="例如：你是小雨，一个温柔、爱开玩笑的朋友。像日常聊天一样回应，不替用户决定行动。" />
+              </Field>
+              <details className="page-disclosure"><summary><span><strong>补充角色细节（可选）</strong><small>开场白、背景、性格与关系；留空也能使用</small></span><span aria-hidden="true">⌄</span></summary><div className="disclosure-content">
               <Field label="开场白"><textarea rows={3} value={draft.greeting} onChange={(e) => setDraft({...draft,greeting:e.target.value})} placeholder="新对话开始时，角色主动说的第一句话" /></Field>
+              <RoleInitialization key={editingCharacter ?? "new"} enabled={!!draft.initial_prompt_enabled} content={draft.initial_prompt} onChange={(patch) => setDraft((value) => ({ ...value, ...patch }))} />
+              {editingCharacter && <RoleCardContext key={editingCharacter} id={editingCharacter} />}
               <Field label="身份背景"><textarea rows={4} value={draft.background} onChange={(e) => setDraft({...draft,background:e.target.value})} /></Field>
               <div className="form-grid"><Field label="性格"><textarea rows={4} value={draft.personality} onChange={(e) => setDraft({...draft,personality:e.target.value})} /></Field><Field label="说话方式"><textarea rows={4} value={draft.speaking_style} onChange={(e) => setDraft({...draft,speaking_style:e.target.value})} /></Field></div>
               <div className="form-grid"><Field label="与用户的关系"><textarea rows={4} value={draft.relationship} onChange={(e) => setDraft({...draft,relationship:e.target.value})} /></Field><Field label="行为边界"><textarea rows={4} value={draft.boundaries} onChange={(e) => setDraft({...draft,boundaries:e.target.value})} /></Field></div>
@@ -1750,18 +1912,11 @@ export default function App() {
                   placeholder="温柔而敏锐的私人助手"
                 />
               </Field>
-              <Field label="系统提示词">
-                <textarea
-                  rows={8}
-                  value={draft.system_prompt}
-                  onChange={(e) =>
-                    setDraft({ ...draft, system_prompt: e.target.value })
-                  }
-                  placeholder="描述性格、背景、说话方式和边界……"
-                />
-              </Field>
-              <div className="form-actions"><button className="primary">{editingCharacter ? "保存角色" : "创建角色"}</button>{editingCharacter && <button type="button" onClick={() => {setEditingCharacter(null);setDraft(emptyCharacter)}}>取消编辑</button>}</div>
-            </form>
+              </div></details>
+              <div className="form-actions"><button className="primary">{editingCharacter ? "保存角色" : "创建角色"}</button><button type="button" onClick={() => {setEditingCharacter(null);setDraft(emptyCharacter);setRoleEditorOpen(false)}}>取消</button></div>
+            </form></div>}
+            </>}
+            {rolePageTab === "resources" && <div className="role-resources"><div className="role-resource-intro"><h2>给故事补充规则与世界</h2><p>已有酒馆预设或世界书时再使用这里。日常角色对话无需额外配置。</p></div><RoleplaySettingsPanel characters={characters} activeCharacter={activeCharacter} activeConversation={roleplayEnabled ? activeConversation : null} /></div>}
           </section>
         )}
         {panel === "chat" && (
@@ -1782,14 +1937,14 @@ export default function App() {
                   <div className="welcome-orb" aria-hidden="true"><WorkspaceIcon name="drop" /></div>
                   <span>你的私人 AI 空间</span>
                   <h1>
-                    {character
+                    {!roleplayEnabled ? "今天想聊些什么？" : character
                       ? `想和 ${character.name} 聊些什么？`
                       : "先创造一个属于你的角色"}
                   </h1>
-                  <p>
+                  {roleplayEnabled && <p>
                     {character?.description ||
                       "配置自己的模型、角色与对话，一切数据保留在本地。"}
-                  </p>
+                  </p>}
                   {!character && (
                     <button
                       className="primary"
@@ -1814,7 +1969,7 @@ export default function App() {
                       {m.id && !m.image_id && editingMessage !== m.id && (
                         <button className="message-edit" type="button" onClick={() => beginMessageEdit(m)} disabled={busy || withdrawingMessage !== null}>编辑</button>
                       )}
-                      {m.id && !m.image_id && editingMessage !== m.id && plugins.some((plugin) => plugin.id === "image_generation" && plugin.enabled) && (
+                      {m.id && !m.image_id && editingMessage !== m.id && modelCapabilities.image_generation && (
                         <button className="message-edit" type="button" onClick={() => openImageStudio(m)} disabled={busy || withdrawingMessage !== null}>生成图片</button>
                       )}
                       {m.id && editingMessage !== m.id && (
@@ -1915,7 +2070,7 @@ export default function App() {
             )}
             <form className="composer" onSubmit={send}>
               <input ref={documentInputRef} type="file" accept=".txt,.md,.markdown,.pdf,.docx" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadDocument(file); }} />
-              {queuedTemplate?.characterId === activeCharacter && <div className="queued-template"><span>下一条消息使用模板：{queuedTemplate.templateName}</span><button type="button" onClick={() => setQueuedTemplate(null)} aria-label="取消仅本次模板">×</button></div>}
+              {!imageSkillActive && queuedTemplate?.characterId === activeCharacter && <div className="queued-template"><span>下一条消息使用模板：{queuedTemplate.templateName}</span><button type="button" onClick={() => setQueuedTemplate(null)} aria-label="取消仅本次模板">×</button></div>}
               {(documents.length > 0 || documentBusy) && (
                 <div className="composer-attachments">
                   {documents.map((item) => (
@@ -1949,26 +2104,25 @@ export default function App() {
                       e.currentTarget.form?.requestSubmit();
                     }
                   }}
-                  placeholder={documentBusy ? "正在读取文档…" : documents.length ? "针对附件提问…" : character ? "写下你想说的话…" : "请先创建角色"}
+                  placeholder={imageSkillActive ? "描述想画的内容、风格与构图…" : documentBusy ? "正在读取文档…" : documents.length ? "针对附件提问…" : character ? "写下你想说的话…" : "请先创建角色"}
                   disabled={!character || busy || documentBusy}
                 />
                 <div className="composer-toolbar">
                   <div className="composer-tools">
-                    <button className="toolbar-button attach-button" type="button" disabled={!character || documentBusy || busy} onClick={() => documentInputRef.current?.click()} title="上传文档" aria-label="上传文档"><WorkspaceIcon name="attach" /></button>
+                    <button className="toolbar-button attach-button" type="button" disabled={!character || documentBusy || busy || imageSkillActive} onClick={() => documentInputRef.current?.click()} title={imageSkillActive ? "本次绘图仅使用文字描述" : "上传文档"} aria-label="上传文档"><WorkspaceIcon name="attach" /></button>
                     {speechEnabled && <SpeechToolbar voice={voice} disabled={!character || busy || documentBusy} />}
-                    {plugins.some((plugin) => plugin.id === "image_generation" && plugin.enabled) && <button className="toolbar-button" type="button" title="生成图片；输入框内容可作为绘图描述" aria-label="生成图片" disabled={busy || !activeCharacter} onClick={() => openImageStudio()}><WorkspaceIcon name="image" /></button>}
-                    <span className="composer-tool-divider" aria-hidden="true" />
-                    <button className="toolbar-button instruction-button" type="button" disabled={!character} onClick={() => setInstructionPanelOpen((open) => !open)} title={`对话指令库 · 已启用 ${instructions.filter((item) => item.enabled).length} 条`} aria-label="打开对话指令库" aria-expanded={instructionPanelOpen}><WorkspaceIcon name="command" /><span>指令</span></button>
+                    {modelCapabilities.image_generation && <button className="toolbar-button image-skill-button" type="button" title="仅本次生成图片：输入框内容作为绘图描述，可能产生 API 费用" aria-label="本次生成图片" aria-pressed={imageMode} disabled={busy || documentBusy || (roleplayEnabled && !activeCharacter)} onClick={() => { setImageMode((value) => !value); inputRef.current?.focus(); }}><WorkspaceIcon name="image" /></button>}
+                    {roleplayEnabled && <button className="toolbar-button instruction-button" type="button" disabled={!character} onClick={() => setInstructionPanelOpen((open) => !open)} title={`对话指令库 · 已启用 ${instructions.filter((item) => item.enabled).length} 条`} aria-label="打开对话指令库" aria-expanded={instructionPanelOpen}><WorkspaceIcon name="command" /><span>指令</span></button>}
                   </div>
-                  <small className="composer-tip" role={busy ? "status" : undefined}>{busy && chatPhase ? chatPhaseLabels[chatPhase] : "Enter 发送 · Shift + Enter 换行"}</small>
-                  <button className="send-button" disabled={withdrawingMessage !== null} type={busy ? "button" : "submit"} onClick={busy ? () => abortRef.current?.abort() : undefined} aria-label={busy ? "停止生成" : "发送消息"} title={busy ? "停止生成" : "发送消息"}>
-                    <WorkspaceIcon name={busy ? "stop" : "send"} />
+                  <small className="composer-tip" role={busy ? "status" : undefined}>{imageGenerating ? "绘图请求不会自动重试，请勿重复提交" : busy && chatPhase ? chatPhaseLabels[chatPhase] : "Enter 发送 · Shift + Enter 换行"}</small>
+                  <button className="send-button" disabled={withdrawingMessage !== null || imageGenerating} type={busy ? "button" : "submit"} onClick={busy && !imageGenerating ? () => abortRef.current?.abort() : undefined} aria-label={imageGenerating ? "正在生成图片" : busy ? "停止生成" : imageSkillActive ? "生成图片" : "发送消息"} title={imageGenerating ? "正在生成图片" : busy ? "停止生成" : imageSkillActive ? "生成图片" : "发送消息"}>
+                    <WorkspaceIcon name={imageGenerating || (!busy && imageSkillActive) ? "image" : busy ? "stop" : "send"} />
                   </button>
                 </div>
               </div>
               {speechEnabled && <SpeechStatus voice={voice} />}
               </form>
-              <ImageGenerationDialog open={imageStudioOpen} onClose={closeImageStudio} enabled={plugins.some((plugin) => plugin.id === "image_generation" && plugin.enabled)} source={imageSource} initialPrompt={imageInitialPrompt} conversationId={activeConversation} ensureConversation={createConversation} onGenerated={(id) => { void refreshImageConversation(id); }} onSettings={() => { setImageStudioOpen(false); setPanel("plugins"); setSelectedPluginId("image_generation"); }} />
+              <ImageGenerationDialog open={imageStudioOpen} onClose={closeImageStudio} enabled={modelCapabilities.image_generation} source={imageSource} initialPrompt={imageInitialPrompt} conversationId={activeConversation} ensureConversation={createConversation} onGenerated={(id) => { void refreshImageConversation(id); }} onSettings={() => { setImageStudioOpen(false); setModelCategory("image_generation"); setPanel("models"); }} />
           </section>
         )}
       </main>

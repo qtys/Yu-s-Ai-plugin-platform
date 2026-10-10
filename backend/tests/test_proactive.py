@@ -34,6 +34,7 @@ def test_proactive_opt_in_cooldown_and_saved_history(monkeypatch):
         monkeypatch.setattr(database, "DATA_DIR", database.Path(directory))
         monkeypatch.setattr(database, "DB_PATH", database.Path(directory) / "proactive.db")
         with TestClient(app) as client:
+            client.put("/api/plugins/roleplay/state", json={"enabled": True})
             character = client.post("/api/characters", json={"name": "星星", "description": "爱好天文", "personality": "温柔"}).json()
             request = {"character_id": character["id"], "conversation_id": 9999}
             assert client.post("/api/plugins/proactive/generate", json=request).json()["skipped"]
@@ -94,6 +95,7 @@ def test_proactive_can_generate_during_previous_quiet_hours(monkeypatch):
         monkeypatch.setattr(database, "DATA_DIR", database.Path(directory))
         monkeypatch.setattr(database, "DB_PATH", database.Path(directory) / "night-proactive.db")
         with TestClient(app) as client:
+            client.put("/api/plugins/roleplay/state", json={"enabled": True})
             character = client.post("/api/characters", json={"name": "夜间角色"}).json()
             settings = client.get("/api/settings").json()
             settings["api_key"] = "mock"
@@ -116,6 +118,7 @@ def test_frequency_change_reschedules_cooldown(monkeypatch):
         monkeypatch.setattr(database, "DATA_DIR", database.Path(directory))
         monkeypatch.setattr(database, "DB_PATH", database.Path(directory) / "frequency.db")
         with TestClient(app) as client:
+            client.put("/api/plugins/roleplay/state", json={"enabled": True})
             config = client.get("/api/plugins/proactive").json()
             with database.connect() as db:
                 db.execute("UPDATE proactive_plugin SET enabled=1,interval_minutes=30,next_due=1600 WHERE id=1")
@@ -134,6 +137,7 @@ def test_random_range_is_validated_and_used(monkeypatch):
         monkeypatch.setattr(database, "DATA_DIR", database.Path(directory))
         monkeypatch.setattr(database, "DB_PATH", database.Path(directory) / "random-frequency.db")
         with TestClient(app) as client:
+            client.put("/api/plugins/roleplay/state", json={"enabled": True})
             config = client.get("/api/plugins/proactive").json()
             config.update(enabled=True, randomize_interval=True, random_min_minutes=10, random_max_minutes=20)
             monkeypatch.setattr("app.main.time.time", lambda: 1000)
@@ -347,6 +351,7 @@ def test_empty_reply_tracks_tokens_and_backs_off(monkeypatch):
         monkeypatch.setattr(database, "DATA_DIR", database.Path(directory))
         monkeypatch.setattr(database, "DB_PATH", database.Path(directory) / "failure.db")
         with TestClient(app) as client:
+            client.put("/api/plugins/roleplay/state", json={"enabled": True})
             character = client.post("/api/characters", json={"name": "Test"}).json()
             config = client.get("/api/plugins/proactive").json()
             config.update(enabled=True, interval_minutes=1)

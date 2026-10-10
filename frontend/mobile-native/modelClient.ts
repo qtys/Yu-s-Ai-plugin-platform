@@ -2,16 +2,17 @@ import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 
 export type ModelMessage = { role: "system" | "user" | "assistant"; content: string };
 export type ModelConfig = { baseUrl: string; model: string; apiKey: string; temperature: number; maxTokens: number };
+export type ModelReply = { content: string; complete: boolean };
 type ChatEvent = { token: string };
 
-export async function streamModelReply(config: ModelConfig, messages: ModelMessage[], onToken: (token: string) => void): Promise<string> {
+export async function streamModelReply(config: ModelConfig, messages: ModelMessage[], onToken: (token: string) => void): Promise<ModelReply> {
   if (!config.baseUrl.startsWith("https://")) throw new Error("模型地址必须以 https:// 开头，避免泄露 API Key");
   if (!config.model.trim()) throw new Error("请填写模型名称");
   if (!config.apiKey.trim()) throw new Error("请在模型设置中填写或选择有密钥的模型配置。");
   if (isTauri()) {
     const channel = new Channel<ChatEvent>();
     channel.onmessage = (event) => { if (event.token) onToken(event.token); };
-    return invoke<string>("model_chat", {
+    return invoke<ModelReply>("model_chat", {
       baseUrl: config.baseUrl.trim(), apiKey: config.apiKey.trim(), model: config.model.trim(),
       messages, temperature: config.temperature, maxTokens: config.maxTokens, onEvent: channel,
     });
@@ -28,11 +29,18 @@ export async function streamModelReply(config: ModelConfig, messages: ModelMessa
   const decoder = new TextDecoder();
   let buffer = "";
   let reply = "";
+  let complete = false;
+  let truncated = false;
   const parse = (line: string) => {
     if (!line.startsWith("data:")) return;
     const payload = line.slice(5).trim();
-    if (!payload || payload === "[DONE]") return;
+    if (!payload) return;
+    if (payload === "[DONE]") { complete = true; return; }
     const event = JSON.parse(payload);
+    if (event.error) throw new Error("模型返回错误，回复未完成");
+    const finish = event.choices?.[0]?.finish_reason;
+    if (finish === "stop") complete = true;
+    if (finish && finish !== "stop") truncated = true;
     const token = event.choices?.[0]?.delta?.content;
     if (typeof token === "string") { reply += token; onToken(token); }
   };
@@ -46,5 +54,5 @@ export async function streamModelReply(config: ModelConfig, messages: ModelMessa
   }
   buffer += decoder.decode();
   if (buffer.trim()) parse(buffer.trim());
-  return reply;
+  return { content: reply, complete: complete && !truncated };
 }

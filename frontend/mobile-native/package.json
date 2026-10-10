@@ -1,14 +1,17 @@
 {
   "name": "yus-ai-mobile",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.2",
   "type": "module",
   "scripts": {
     "dev": "vite --config ../vite.mobile.config.ts",
     "build": "tsc -p tsconfig.json && vite build --config ../vite.mobile.config.ts",
-    "test": "node --test scripts/promptBuilder.test.mjs",
+    "test": "node --test scripts/promptBuilder.test.mjs scripts/messageOperations.test.mjs",
     "android:init": "tauri android init",
     "android:dev": "tauri android dev",
     "android:build": "tauri android build --apk"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.2.5"
   }
 }

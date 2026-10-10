@@ -40,10 +40,17 @@ class PluginRegistry:
 
 registry = PluginRegistry()
 registry.register(PluginManifest(
+    id="roleplay", name="角色卡与角色扮演", description="统一管理角色卡与回复规则；关闭后切换普通模型聊天，保留原角色与记录",
+    version="1.0.0", surfaces=("chat_reply", "pet_chat", "settings"),
+    permissions=("model_api", "local_storage"), default_enabled=False, platforms=("desktop",),
+))
+registry.register(PluginManifest(
     id="image_generation", name="图片生成", description="手动调用绘图 API，预览并保存生成图片",
     version="1.0.0", surfaces=("chat_message", "settings"),
     permissions=("image_api", "local_storage"), default_enabled=False, platforms=("desktop",),
 ))
+# Speech/image entries below are legacy state aliases, excluded from plugin listings.
+# Model-capability APIs reuse them to retain existing installations' choices.
 registry.register(PluginManifest(
     id="speech", name="语音输入与朗读", description="在线语音识别、转写确认与 AI 语音朗读",
     version="1.0.0", surfaces=("chat_message", "pet_chat", "settings"),
@@ -68,8 +75,8 @@ registry.register(PluginManifest(
     permissions=("model_api", "conversation_write", "network_optional"), platforms=("desktop",),
 ))
 registry.register(PluginManifest(
-    id="novel_reply", name="小说式回复", description="以第三人称网络小说笔法描写角色神态、动作、声音与氛围；仅改变回复文风",
-    version="1.0.0", surfaces=("chat_reply", "pet_chat", "settings"),
+    id="novel_reply", name="小说式回复", description="第三人称小说叙事，自然对白、描写强度、人物动机、情节连贯与可编辑硬性禁词",
+    version="1.1.0", surfaces=("chat_reply", "pet_chat", "settings"),
     permissions=("model_api",), default_enabled=False,
 ))
 registry.register(PluginManifest(
@@ -115,7 +122,7 @@ def list_installed(db: Connection, device_id: str | None = None, platform: str =
         "enabled": is_enabled(db, manifest.id, device_id),
         "platforms": list(manifest.platforms),
         "supported": platform in manifest.platforms,
-    } for manifest in registry.list()]
+    } for manifest in registry.list() if manifest.id not in {"speech", "image_generation"}]
 
 
 def set_enabled(db: Connection, plugin_id: str, enabled: bool, device_id: str | None = None) -> None:

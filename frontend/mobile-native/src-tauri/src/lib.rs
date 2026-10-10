@@ -16,6 +16,9 @@ struct ChatEvent {
     token: String,
 }
 
+#[derive(Serialize)]
+struct ModelReply { content: String, complete: bool }
+
 enum SseLine { Ignore, Done, Token(String) }
 
 fn decode_sse_line(line: &[u8]) -> Result<SseLine, String> {
@@ -34,10 +37,17 @@ fn decode_sse_line(line: &[u8]) -> Result<SseLine, String> {
     Ok(SseLine::Ignore)
 }
 
-fn process_sse_line(line: &[u8], reply: &mut String, on_event: &Channel<ChatEvent>) -> Result<bool, String> {
+fn process_sse_line(line: &[u8], reply: &mut String, on_event: &Channel<ChatEvent>, completed: &mut bool, truncated: &mut bool) -> Result<bool, String> {
+    if let Some(data) = line.strip_prefix(b"data:") {
+        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(data) {
+            if let Some(reason) = value.pointer("/choices/0/finish_reason").and_then(|item| item.as_str()) {
+                if reason == "stop" { *completed = true; } else { *truncated = true; }
+            }
+        }
+    }
     match decode_sse_line(line)? {
         SseLine::Ignore => Ok(false),
-        SseLine::Done => Ok(true),
+        SseLine::Done => { *completed = true; Ok(true) },
         SseLine::Token(token) => {
             reply.push_str(&token);
             on_event.send(ChatEvent { token }).map_err(|_| "界面已关闭".to_string())?;
@@ -91,7 +101,7 @@ async fn model_chat(
     temperature: f64,
     max_tokens: u32,
     on_event: Channel<ChatEvent>,
-) -> Result<String, String> {
+) -> Result<ModelReply, String> {
     let mut url = reqwest::Url::parse(base_url.trim()).map_err(|_| "模型地址无效".to_string())?;
     if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
         return Err("模型地址必须是没有账号、查询参数的 HTTPS 地址".into());
@@ -123,17 +133,22 @@ async fn model_chat(
     let mut chunks = response.bytes_stream();
     let mut pending = Vec::<u8>::new();
     let mut reply = String::new();
+    let mut completed = false;
+    let mut truncated = false;
     while let Some(chunk) = chunks.next().await {
         pending.extend_from_slice(&chunk.map_err(|_| "模型响应中断".to_string())?);
         if pending.len() > 1_000_000 { return Err("单条模型事件过大".into()); }
         while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
             let line: Vec<u8> = pending.drain(..=end).collect();
-            if process_sse_line(&line[..line.len() - 1], &mut reply, &on_event)? { return Ok(reply); }
+            if process_sse_line(&line[..line.len() - 1], &mut reply, &on_event, &mut completed, &mut truncated)? {
+                if reply.trim().is_empty() { return Err("模型没有返回文字内容".into()); }
+                return Ok(ModelReply { content: reply, complete: completed && !truncated });
+            }
         }
     }
-    if !pending.is_empty() { process_sse_line(&pending, &mut reply, &on_event)?; }
+    if !pending.is_empty() { process_sse_line(&pending, &mut reply, &on_event, &mut completed, &mut truncated)?; }
     if reply.is_empty() { return Err("模型没有返回文字内容".into()); }
-    Ok(reply)
+    Ok(ModelReply { content: reply, complete: completed && !truncated })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

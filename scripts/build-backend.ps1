@@ -1,12 +1,14 @@
+param([switch]$Incremental)
+
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $Python = Join-Path $ProjectRoot '.venv\Scripts\python.exe'
 $BundleRoot = Join-Path $ProjectRoot 'build\backend-dist'
 $BinariesRoot = Join-Path $ProjectRoot 'frontend\src-tauri\binaries'
 
-& $Python -m PyInstaller `
+$CacheOptions = if ($Incremental) { @() } else { @('--clean') }
+& $Python -m PyInstaller @CacheOptions `
   --noconfirm `
-  --clean `
   --onedir `
   --contents-directory backend-runtime `
   --name yus-ai-backend-x86_64-pc-windows-msvc `

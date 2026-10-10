@@ -78,6 +78,33 @@ def init_db() -> None:
                 enabled INTEGER NOT NULL CHECK (enabled IN (0, 1))
             );
 
+            CREATE TABLE IF NOT EXISTS novel_settings (
+                scope TEXT PRIMARY KEY,
+                config TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS roleplay_presets (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                data TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS roleplay_characters (
+                character_id INTEGER PRIMARY KEY REFERENCES characters(id) ON DELETE CASCADE,
+                card TEXT NOT NULL DEFAULT '{}',
+                config TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE TABLE IF NOT EXISTS roleplay_requests (
+                conversation_id INTEGER PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+                data TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS role_initialization_templates (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                content TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS speech_settings (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 stt_base_url TEXT NOT NULL DEFAULT '',
@@ -139,9 +166,16 @@ def init_db() -> None:
         if "source_template_name" not in instruction_columns:
             db.execute("ALTER TABLE saved_instructions ADD COLUMN source_template_name TEXT NOT NULL DEFAULT ''")
         existing = {row[1] for row in db.execute("PRAGMA table_info(characters)")}
+        if "is_plain" not in existing:
+            db.execute("ALTER TABLE characters ADD COLUMN is_plain INTEGER NOT NULL DEFAULT 0")
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_plain_character ON characters(is_plain) WHERE is_plain=1")
         for name in ("avatar_data", "greeting", "background", "personality", "speaking_style", "relationship", "boundaries", "example_dialogue"):
             if name not in existing:
                 db.execute(f"ALTER TABLE characters ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+        if "initial_prompt" not in existing:
+            db.execute("ALTER TABLE characters ADD COLUMN initial_prompt TEXT NOT NULL DEFAULT ''")
+        if "initial_prompt_enabled" not in existing:
+            db.execute("ALTER TABLE characters ADD COLUMN initial_prompt_enabled INTEGER NOT NULL DEFAULT 0")
         setting_columns = {row[1] for row in db.execute("PRAGMA table_info(settings)")}
         speech_columns = {row[1] for row in db.execute("PRAGMA table_info(speech_settings)")}
         if "proxy_mode" not in speech_columns:
@@ -192,6 +226,10 @@ def init_db() -> None:
             db.execute("""UPDATE settings SET active_model_profile_id=?,base_url=?,api_key=?,model=?,vision_model=? WHERE id=1""",
                        (profile["id"], profile["base_url"], profile["api_key"], profile["model"], profile["vision_model"]))
         conversation_columns = {row[1] for row in db.execute("PRAGMA table_info(conversations)")}
+        if "initial_prompt_applied" not in conversation_columns:
+            # All pre-upgrade conversations are past initialization; new inserts
+            # explicitly opt into the pending state (including greeting-only chats).
+            db.execute("ALTER TABLE conversations ADD COLUMN initial_prompt_applied INTEGER NOT NULL DEFAULT 1")
         if "summary" not in conversation_columns:
             db.execute("ALTER TABLE conversations ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
         message_columns = {row[1] for row in db.execute("PRAGMA table_info(messages)")}

@@ -19,7 +19,7 @@ import websocket
 
 
 PACKAGE = "com.qtys.yusai.mobile"
-STORES = ("characters", "conversations", "messages", "settings", "modelProfiles", "instructions", "promptTemplates")
+STORES = ("characters", "conversations", "messages", "settings", "modelProfiles", "instructions", "promptTemplates", "initialTemplates")
 
 
 def timestamp(value: str | None, fallback: int = 0) -> int:
@@ -51,11 +51,14 @@ def desktop_bundle(path: Path) -> tuple[dict, dict[str, str]]:
         characters.append({
             "id": f"desktop-character-{row['id']}", "name": row["name"], "prompt": prompt,
             "createdAt": timestamp(row["created_at"], row["id"]),
+            "initialPromptEnabled": bool(row["initial_prompt_enabled"]) if "initial_prompt_enabled" in row.keys() else False,
+            "initialPrompt": row["initial_prompt"] if "initial_prompt" in row.keys() else "",
             "desktopCard": dict(row),
         })
     conversations = [
         {"id": f"desktop-conversation-{row['id']}", "characterId": f"desktop-character-{row['character_id']}",
-         "title": row["title"], "updatedAt": timestamp(row["updated_at"], row["id"])}
+         "title": row["title"], "updatedAt": timestamp(row["updated_at"], row["id"]),
+         "initialPromptApplied": bool(row["initial_prompt_applied"]) if "initial_prompt_applied" in row.keys() else True}
         for row in snapshot.execute("SELECT * FROM conversations ORDER BY id")
     ]
     messages = [
@@ -96,10 +99,16 @@ def desktop_bundle(path: Path) -> tuple[dict, dict[str, str]]:
          "content": row["content"], "createdAt": timestamp(row["created_at"], row["id"])}
         for row in snapshot.execute("SELECT * FROM prompt_templates ORDER BY id")
     ]
+    initial_templates = []
+    if snapshot.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='role_initialization_templates'").fetchone():
+        initial_templates = [
+            {"id": f"custom-desktop-{row['id']}", "name": row["name"], "content": row["content"], "source": "custom"}
+            for row in snapshot.execute("SELECT * FROM role_initialization_templates ORDER BY id")
+        ]
     snapshot.close()
     return {"characters": characters, "conversations": conversations, "messages": messages,
             "modelProfiles": profiles, "settings": mobile_settings,
-            "instructions": instructions, "promptTemplates": prompt_templates}, keys
+            "instructions": instructions, "promptTemplates": prompt_templates, "initialTemplates": initial_templates}, keys
 
 
 class Devtools:
@@ -122,7 +131,7 @@ class Devtools:
         self.port = int(self.command("forward", "tcp:0", f"localabstract:webview_devtools_remote_{pid}"))
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/json", timeout=5) as response:
             pages = json.load(response)
-        page = next((item for item in pages if item.get("url") == "http://tauri.localhost/"), None)
+        page = next((item for item in pages if item.get("url") in ("http://tauri.localhost/", "https://tauri.localhost/")), None)
         if not page:
             raise RuntimeError("未找到 Yu's AI Mobile 调试页面")
         self.socket = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=20, suppress_origin=True)
@@ -152,12 +161,18 @@ def backup_mobile(devtools: Devtools, target: Path) -> dict:
       const request=indexedDB.open('yus-ai-mobile');
       const db=await new Promise((resolve,reject)=>{request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error)});
       const result={};
-      for(const name of ['characters','conversations','messages','settings','modelProfiles','instructions','promptTemplates']){
+      for(const name of ['characters','conversations','messages','settings','modelProfiles','instructions','promptTemplates','initialTemplates']){
         if(!db.objectStoreNames.contains(name)){result[name]=[];continue;}
         const tx=db.transaction(name,'readonly');const item=tx.objectStore(name).getAll();
         result[name]=await new Promise((resolve,reject)=>{item.onsuccess=()=>resolve(item.result);item.onerror=()=>reject(item.error)});
       }
-      db.close();return result;
+      db.close();
+      result._localStorage=Object.fromEntries(Object.entries(localStorage));
+      result._modelKeys={};
+      const ids=new Set(result.modelProfiles.map(item=>item.id));
+      for(const item of result.settings){if(item.activeProfileId)ids.add(item.activeProfileId)}
+      for(const id of ids){result._modelKeys[id]=await window.__TAURI_INTERNALS__.invoke('load_model_key',{profileId:id})}
+      return result;
     })()"""
     data = devtools.evaluate(expression)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -170,15 +185,15 @@ def import_mobile(devtools: Devtools, bundle: dict, keys: dict[str, str], instru
     # The desktop payload stays inside this process and the loopback DevTools session.
     payload = {name: bundle[name] for name in ("instructions", "promptTemplates")} if instructions_only else bundle
     literal = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
-    names = ["instructions", "promptTemplates"] if instructions_only else ["characters", "conversations", "messages", "modelProfiles", "instructions", "promptTemplates"]
+    names = ["instructions", "promptTemplates"] if instructions_only else ["characters", "conversations", "messages", "modelProfiles", "instructions", "promptTemplates", "initialTemplates"]
     names_literal = json.dumps(names)
     expression = f"""(async()=>{{
-      const bundle={literal};const names={names_literal};const request=indexedDB.open('yus-ai-mobile',3);
+      const bundle={literal};const names={names_literal};const request=indexedDB.open('yus-ai-mobile');
       const db=await new Promise((resolve,reject)=>{{request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error)}});
       const existing={{}};
       for(const name of names){{const tx=db.transaction(name,'readonly');const request=tx.objectStore(name).getAllKeys();
         existing[name]=new Set(await new Promise((resolve,reject)=>{{request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error)}}));}}
-      const tx=db.transaction({"['instructions','promptTemplates']" if instructions_only else "['characters','conversations','messages','settings','modelProfiles','instructions','promptTemplates']"},'readwrite');
+      const tx=db.transaction({"['instructions','promptTemplates']" if instructions_only else "['characters','conversations','messages','settings','modelProfiles','instructions','promptTemplates','initialTemplates']"},'readwrite');
       for(const name of names){{for(const item of bundle[name]){{if(!existing[name].has(item.id))tx.objectStore(name).add(item)}}}}
       if(bundle.settings)tx.objectStore('settings').put(bundle.settings);
       await new Promise((resolve,reject)=>{{tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error)}});
@@ -195,10 +210,10 @@ def import_mobile(devtools: Devtools, bundle: dict, keys: dict[str, str], instru
 
 def inspect_mobile(devtools: Devtools) -> dict:
     expression = """(async()=>{
-      const request=indexedDB.open('yus-ai-mobile',3);
+      const request=indexedDB.open('yus-ai-mobile');
       const db=await new Promise((resolve,reject)=>{request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error)});
       const result={};
-      for(const name of ['characters','conversations','messages','modelProfiles','instructions','promptTemplates']){
+      for(const name of ['characters','conversations','messages','modelProfiles','instructions','promptTemplates','initialTemplates']){
         const tx=db.transaction(name,'readonly');const item=tx.objectStore(name).count();
         result[name]=await new Promise((resolve,reject)=>{item.onsuccess=()=>resolve(item.result);item.onerror=()=>reject(item.error)});
       }
@@ -209,6 +224,45 @@ def inspect_mobile(devtools: Devtools) -> dict:
       result.activeKeyConfigured=Boolean(key);return result;
     })()"""
     return devtools.evaluate(expression)
+
+
+def verify_bundle(devtools: Devtools, bundle: dict, keys: dict[str, str]) -> dict:
+    """Compare imported values without returning any private content to logs."""
+    payload = {name: items for name, items in bundle.items() if isinstance(items, list)}
+    literal = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+    result = devtools.evaluate(f"""(async()=>{{
+      const bundle={literal};const request=indexedDB.open('yus-ai-mobile');
+      const db=await new Promise((resolve,reject)=>{{request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error)}});
+      const result={{}};let localRoleOverrides=0;
+      for(const [name,items] of Object.entries(bundle)){{
+        const tx=db.transaction(name,'readonly');
+        const checks=items.map(item=>new Promise((resolve,reject)=>{{
+          const request=tx.objectStore(name).get(item.id);
+          request.onsuccess=()=>{{
+            const actual=request.result;
+            if(!actual){{resolve(false);return;}}
+            const differing=Object.keys(item).filter(key=>JSON.stringify(actual[key])!==JSON.stringify(item[key]));
+            const localRoleEdit=name==='characters'&&differing.length>0&&differing.every(key=>['initialPromptEnabled','initialPrompt'].includes(key));
+            if(localRoleEdit)localRoleOverrides++;
+            resolve(differing.length===0||localRoleEdit);
+          }};
+          request.onerror=()=>reject(request.error);
+        }}));
+        result[name]=(await Promise.all(checks)).filter(Boolean).length;
+      }}
+      db.close();return {{...result,localRoleOverrides}};
+    }})()""")
+    if any(result.get(name) != len(items) for name, items in payload.items()):
+        raise RuntimeError(f"导入内容校验不一致：匹配数={result}；期望数={dict((name, len(items)) for name, items in payload.items())}；备份保留，未输出私人内容")
+    verified_keys = 0
+    for profile_id, key in keys.items():
+        args = json.dumps({"profileId": profile_id}, ensure_ascii=True)
+        expected = json.dumps(key, ensure_ascii=True)
+        matched = devtools.evaluate(f"(async()=>await window.__TAURI_INTERNALS__.invoke('load_model_key',{args})==={expected})()")
+        if not matched:
+            raise RuntimeError("模型密钥校验失败；未输出密钥")
+        verified_keys += 1
+    return {**result, "verifiedModelKeys": verified_keys}
 
 
 def main():
@@ -225,6 +279,8 @@ def main():
     if args.verify_only:
         with Devtools(args.adb, args.serial) as devtools:
             print("手机端迁移校验：", inspect_mobile(devtools))
+            bundle, keys = desktop_bundle(args.db)
+            print("逐条内容与密钥校验：", verify_bundle(devtools, bundle, keys))
         return
     bundle, keys = desktop_bundle(args.db)
     backup_path = args.backup_dir / f"mobile-before-import-{dt.datetime.now():%Y%m%d-%H%M%S}.json"

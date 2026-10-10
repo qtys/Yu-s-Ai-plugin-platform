@@ -5,6 +5,8 @@ import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import MessageContent from "./MessageContent";
 import { usePetBubbles } from "./usePetBubbles";
+import SlimeDetails from "./SlimeDetails";
+import type { SlimeTouch } from "./SlimeDetails";
 import { fitPetBubbleCount } from "./petBubbleLayout";
 import { setPetLayoutAnchor, clearPetLayoutAnchor } from "./petLayoutLock";
 import type { PetChatEvent, PetChatLayout, PetChatSnapshot } from "./petChatBridge";
@@ -42,7 +44,6 @@ type MotionSource = "idle" | "proactive" | "chat" | "model" | "feedback" | "user
 type PetMotion = { action: DirectedAction; expression: PetExpression; gazeMode: GazeMode; lookX: number; lookY: number; offsetX: number; offsetY: number; intensity: number; duration: number; movement: PetMovement; moveDistance: number; emotionLabel?: string; eyes?: PetEyePose; mouth?: PetMouthPose; blush?: number; effect?: PetEffect; easing?: string; repeat?: number; keyframes?: MotionKeyframe[]; faceKeyframes?: MotionKeyframe[]; crestKeyframes?: MotionKeyframe[]; generatedLayers?: string[]; motionQuality?: number };
 type MotionDebug = { source: MotionSource; priority: number; startedAt: number; expiresAt: number | null; raw: string };
 type DayPeriod = "morning" | "daytime" | "evening" | "night";
-const PERIOD_LABELS: Record<DayPeriod, string> = { morning: "早晨", daytime: "白天", evening: "傍晚", night: "深夜" };
 const MOTION_PRIORITY: Record<MotionSource, number> = { idle: 10, proactive: 30, chat: 50, model: 70, feedback: 75, user: 85, drag: 100 };
 const MOTION_SOURCE_LABEL: Record<MotionSource, string> = { idle: "随机待机", proactive: "主动发言", chat: "回复生成", model: "模型指令", feedback: "操作反馈", user: "用户点击", drag: "桌宠拖动" };
 const EFFECT_GLYPH: Record<PetEffect, string> = { none: "", heart: "♥", sparkle: "✦", question: "?", sweat: "●", star: "★", music: "♪" };
@@ -480,7 +481,6 @@ export default function Pet() {
   const [pendingProactive, setPendingProactive] = useState<{characterId: number; conversationId: number; content: string; messageId: number; sources: {title: string; url: string}[]; motion: PetMotion | null} | null>(null);
   const pendingProactiveRef = useRef(pendingProactive);
   pendingProactiveRef.current = pendingProactive;
-  const proactiveBubbleRef = useRef<HTMLElement | null>(null);
   const [proactiveEnabled, setProactiveEnabled] = useState(
     () => localStorage.getItem("yus-ai-proactive-enabled") !== "false",
   );
@@ -493,12 +493,22 @@ export default function Pet() {
   const [dayPeriod, setDayPeriod] = useState<DayPeriod>(() => getDayPeriod());
   const [placement, setPlacement] = useState("above-right");
   const [busy, setBusy] = useState(false);
+  const sendPreparingRef = useRef(false);
   const [chatPhase, setChatPhase] = useState<ChatPhase | null>(null);
   const [input, setInput] = useState("");
   const [, setReply] = useState(READY_MESSAGE);
   const [bubbleText, setBubbleText] = useState("");
   const [chatError, setChatError] = useState("");
   const bubbleChat = usePetBubbles(bubbleText, busy, open);
+  const proactiveVisible = !!proactiveMessage && !open && !translationOpen && !settingsOpen && !menuOpen;
+  const proactiveBubbleChat = usePetBubbles(proactiveMessage, false, proactiveVisible);
+  const activeBubbles = proactiveVisible ? proactiveBubbleChat : bubbleChat;
+  const satelliteVisible = open || proactiveVisible;
+  const satelliteVisibleRef = useRef(satelliteVisible);
+  satelliteVisibleRef.current = satelliteVisible;
+  const proactiveVisibleRef = useRef(proactiveVisible);
+  proactiveVisibleRef.current = proactiveVisible;
+  const replyProactiveFromSatelliteRef = useRef<() => void>(() => {});
   const [translationPackages, setTranslationPackages] = useState<TranslationPackage[]>([]);
   const [translationSource, setTranslationSource] = useState<"zh" | "en">("zh");
   const [translationInput, setTranslationInput] = useState("");
@@ -546,7 +556,6 @@ export default function Pet() {
   const startupShownRef = useRef(false);
   const continuousTranslationRef = useRef(false);
   const translationSequenceRef = useRef(0);
-  const menuClickTimerRef = useRef<number | undefined>(undefined);
   const expanded = (!desktop && open) || translationOpen || settingsOpen;
   const openRef = useRef(expanded);
   const placementRef = useRef(placement);
@@ -557,6 +566,7 @@ export default function Pet() {
   const frameTimerRef = useRef<number | undefined>(undefined);
   const motionTimerRef = useRef<number | undefined>(undefined);
   const slimeRigRef = useRef<HTMLSpanElement | null>(null);
+  const slimeTouchRef = useRef<SlimeTouch | null>(null);
   const petButtonRef = useRef<HTMLButtonElement | null>(null);
   const slimeFaceRef = useRef<HTMLSpanElement | null>(null);
   const aliceFaceRef = useRef<SVGGElement | null>(null);
@@ -600,14 +610,14 @@ export default function Pet() {
   useEffect(() => { dialogHeightRef.current = dialogHeight; }, [dialogHeight]);
 
   useEffect(() => {
-    if (!open || !bubbleMeasurerRef.current) return;
+    if (!satelliteVisible || !bubbleMeasurerRef.current) return;
     if (desktop) void invoke("record_window_diagnostic", { event: "pet_chat_measure", details: "measurer_ready=true" });
     let cancelled = false;
     const measure = () => {
       const heights = Array.from(bubbleMeasurerRef.current?.children ?? []).map(element => element.getBoundingClientRect().height / (petSize / 100));
       const neededHeight = Math.max(520, heights.reduce((sum, height) => sum + height + 7, 0) + 236);
       chatLayoutQueueRef.current = chatLayoutQueueRef.current.catch(() => {}).then(async () => {
-        if (cancelled || !chatOpenRef.current) return;
+        if (cancelled || !satelliteVisibleRef.current) return;
         const result: PetChatLayout = desktop
           ? await invoke<PetChatLayout>("fit_pet_chat_window", {
               scale: petSize / 100,
@@ -635,17 +645,18 @@ export default function Pet() {
     const observer = new ResizeObserver(measure);
     Array.from(bubbleMeasurerRef.current.children).forEach(element => observer.observe(element));
     return () => { cancelled = true; observer.disconnect(); };
-  }, [open, desktop, petSize, dialogWidth, chatWindowWidth, chatBubbleWidth, dialogFontSize, bubbleChat.bubbles, satelliteRevision]);
+  }, [satelliteVisible, desktop, petSize, dialogWidth, chatWindowWidth, chatBubbleWidth, dialogFontSize, activeBubbles.bubbles, satelliteRevision]);
   useEffect(() => {
     if (!desktop) return;
     const snapshot: PetChatSnapshot = {
-      open, ready: chatLayoutReady, bubbles: bubbleChat.bubbles.slice(-Math.max(1, visibleBubbleCount)), fading: bubbleChat.fading,
+      open: satelliteVisible, showInput: open, proactive: proactiveVisible,
+      ready: chatLayoutReady, bubbles: activeBubbles.bubbles.slice(-Math.max(1, visibleBubbleCount)), fading: activeBubbles.fading,
       busy, status: chatError || (busy && chatPhase ? chatPhaseLabels[chatPhase] : ""), enabled: !!character,
       model: petModel, scale: petSize / 100, fontScale: dialogFontSize / 100,
       mode: isPluginEnabled(plugins, "message_display") ? messageDisplayMode : "raw", layout: chatLayout, bubbleWidth: chatBubbleWidth,
     };
     void emitTo("pet-chat", "pet-chat-state", snapshot).catch(console.error);
-  }, [desktop, open, chatLayoutReady, chatLayout, visibleBubbleCount, bubbleChat.bubbles, bubbleChat.fading, busy, chatError, chatPhase, character, petModel, petSize, dialogFontSize, plugins, messageDisplayMode, chatBubbleWidth, satelliteRevision]);
+  }, [desktop, open, satelliteVisible, proactiveVisible, chatLayoutReady, chatLayout, visibleBubbleCount, activeBubbles.bubbles, activeBubbles.fading, busy, chatError, chatPhase, character, petModel, petSize, dialogFontSize, plugins, messageDisplayMode, chatBubbleWidth, satelliteRevision]);
   useEffect(() => {
     if (!desktop) return;
     let disposed = false;
@@ -653,20 +664,23 @@ export default function Pet() {
     void listen<PetChatEvent>("pet-chat-event", event => {
       if (event.payload.type === "ready") setSatelliteRevision(value => value + 1);
       if (event.payload.type === "send") sendFromSatelliteRef.current(event.payload.content);
-      if (event.payload.type === "hover") bubbleChat.setHovered(event.payload.hovered);
+      if (event.payload.type === "hover") {
+        (proactiveVisibleRef.current ? proactiveBubbleChat.setHovered : bubbleChat.setHovered)(event.payload.hovered);
+      }
+      if (event.payload.type === "reply-proactive") replyProactiveFromSatelliteRef.current();
     }).then(stop => { if (disposed) stop(); else stops.push(stop); });
     void listen<PetChatLayout>("pet-chat-followed", event => {
-      if (chatOpenRef.current) { setChatLayout(event.payload); setSatelliteRevision(value => value + 1); }
+      if (satelliteVisibleRef.current) { setChatLayout(event.payload); setSatelliteRevision(value => value + 1); }
     }).then(stop => { if (disposed) stop(); else stops.push(stop); });
     return () => { disposed = true; stops.forEach(stop => stop()); void invoke("hide_pet_chat_window"); };
-  }, [desktop, bubbleChat.setHovered]);
+  }, [desktop, bubbleChat.setHovered, proactiveBubbleChat.setHovered]);
   useEffect(() => {
-    if (!desktop || open) return;
+    if (!desktop || satelliteVisible) return;
     void invoke("hide_pet_chat_window");
     void chatLayoutQueueRef.current.catch(() => {}).then(() => {
-      if (!chatOpenRef.current) void invoke("hide_pet_chat_window");
+      if (!satelliteVisibleRef.current) void invoke("hide_pet_chat_window");
     });
-  }, [desktop, open]);
+  }, [desktop, satelliteVisible]);
   useEffect(() => { continuousTranslationRef.current = continuousTranslation; }, [continuousTranslation]);
   useEffect(() => { gazeRef.current = gaze; }, [gaze]);
   useEffect(() => {
@@ -698,9 +712,9 @@ export default function Pet() {
   useEffect(() => {
     if (!desktop) return;
     const syncRegions = () => void invoke("set_pet_interaction_mode", {
-      mode: open && !desktop ? 4 : expanded ? 2 : menuOpen ? 1 : proactiveMessage && !open ? 3 : 0,
+      mode: open && !desktop ? 4 : expanded ? 2 : menuOpen ? 1 : 0,
       alignLeft: placement.endsWith("left"),
-      proactiveHeight: Math.ceil((proactiveBubbleRef.current?.getBoundingClientRect().height ?? 0) / (petSize / 100)),
+      proactiveHeight: 0,
       model: petModel,
       interactiveRegions: open && !desktop ? Array.from(document.querySelectorAll(".pet-chat-input, .pet-sentence:not(.measure-only), .pet-character")).map(element => {
         const rect = element.getBoundingClientRect();
@@ -716,7 +730,6 @@ export default function Pet() {
   }, [desktop, open, expanded, menuOpen, placement, proactiveMessage, petSize, proactiveSources, petModel, bubbleChat.bubbles, chatError, chatLayout, visibleBubbleCount, chatBubbleWidth]);
   useEffect(() => () => {
     releaseLayoutAnchorRef.current?.();
-    window.clearTimeout(menuClickTimerRef.current);
     window.clearTimeout(dialogResizeTimerRef.current);
     window.clearTimeout(frameTimerRef.current);
     window.clearTimeout(motionTimerRef.current);
@@ -736,10 +749,8 @@ export default function Pet() {
     return () => window.clearInterval(timer);
   }, [settingsOpen]);
   useEffect(() => {
-    if (!proactiveMessage) return;
-    const timer = window.setTimeout(() => { setProactiveMessage(""); setProactiveMessageId(null); setProactiveConversationId(null); }, 30000);
-    return () => window.clearTimeout(timer);
-  }, [proactiveMessage]);
+    if (proactiveVisible && proactiveBubbleChat.completed) clearProactive();
+  }, [proactiveVisible, proactiveBubbleChat.completed]);
   useEffect(() => {
     const timer = window.setInterval(() => setDayPeriod(getDayPeriod()), 60000);
     return () => window.clearInterval(timer);
@@ -795,15 +806,15 @@ export default function Pet() {
   }, [expanded, dragging, busy]);
 
   useEffect(() => {
-    if (!isPluginEnabled(plugins, "proactive") || !proactiveEnabled || aiProactiveEnabled !== false || expanded) return;
+    if (!isPluginEnabled(plugins, "proactive") || !proactiveEnabled || aiProactiveEnabled !== false || expanded || open || menuOpen || busy) return;
     const showGreeting = () => {
+      if (proactiveVisibleRef.current) return;
       const greeting = roleAwareGreeting(roleAwareEnabled ? character : null, timeAwareEnabled ? dayPeriod : "daytime");
       setProactiveSources([]);
       setProactiveMessage(greeting);
       setProactiveMessageId(null);
       setProactiveConversationId(null);
       schedulePetMotion(replyDrivenMotion(greeting), "proactive", "local greeting", true);
-      window.setTimeout(() => setProactiveMessage(""), 9000);
     };
     const today = new Date().toISOString().slice(0, 10);
     const greetingKey = `${today}-${dayPeriod}-${character?.id ?? 0}`;
@@ -815,7 +826,7 @@ export default function Pet() {
     const recurring = window.setInterval(showGreeting, 30 * 60 * 1000);
     return () => { window.clearTimeout(first); window.clearInterval(recurring); };
   // oxlint-disable-next-line react-hooks/exhaustive-deps -- greeting scheduling intentionally changes only with its user-facing inputs
-  }, [proactiveEnabled, aiProactiveEnabled, timeAwareEnabled, roleAwareEnabled, dayPeriod, character, expanded, plugins]);
+  }, [proactiveEnabled, aiProactiveEnabled, timeAwareEnabled, roleAwareEnabled, dayPeriod, character, expanded, open, menuOpen, busy, plugins]);
 
   useEffect(() => {
     let disposed = false;
@@ -827,7 +838,7 @@ export default function Pet() {
         if (disposed) return false;
         setAiProactiveEnabled(config.enabled && config.plugin_enabled);
         const { character, expanded, menuOpen, busy, dragging } = proactiveContextRef.current;
-        if (!config.enabled || !config.plugin_enabled || !character || expanded || menuOpen || busy || dragging || (!desktop && document.hidden) || (desktop && !(await getCurrentWindow().isVisible()))) return false;
+        if (!config.enabled || !config.plugin_enabled || !character || character.id < 0 || expanded || menuOpen || busy || dragging || (!desktop && document.hidden) || (desktop && !(await getCurrentWindow().isVisible()))) return false;
         if (config.next_due > Date.now() / 1000) return true;
         let screenImage: string | undefined;
         if (desktop && config.screen_access_enabled && config.screen_context_enabled) {
@@ -866,7 +877,7 @@ export default function Pet() {
   }, [desktop, motionEnabled, petModel]);
 
   useEffect(() => {
-    if (!pendingProactive || expanded || menuOpen || busy || dragging) return;
+    if (!pendingProactive || open || expanded || menuOpen || busy || dragging || proactiveMessage) return;
     if (pendingProactive.characterId === character?.id) {
       setProactiveSources(pendingProactive.sources);
       setProactiveMessage(pendingProactive.content);
@@ -876,7 +887,7 @@ export default function Pet() {
     }
     setPendingProactive(null);
   // oxlint-disable-next-line react-hooks/exhaustive-deps -- the scheduler reads the current priority from refs
-  }, [pendingProactive, character?.id, expanded, menuOpen, busy, dragging, motionEnabled]);
+  }, [pendingProactive, character?.id, open, expanded, menuOpen, busy, dragging, motionEnabled, proactiveMessage]);
 
   useEffect(() => {
     let disposed = false;
@@ -916,10 +927,11 @@ export default function Pet() {
         }
         setReply((value) => value === WAITING_MESSAGE ? READY_MESSAGE : value);
         const preferred = Number(localStorage.getItem("yus-ai-character"));
-        const selected = characters.find((item) => item.id === preferred) ?? characters[0] ?? null;
+        const roleMode = isPluginEnabled(installedPlugins, "roleplay");
+        const selected = roleMode ? characters.find((item) => item.id === preferred) ?? characters[0] ?? null : { id: -1, name: "AI" };
         setCharacter(selected);
         if (!selected) return;
-        const conversations = await request<Conversation[]>(`/conversations?character_id=${selected.id}`);
+        const conversations = await request<Conversation[]>(roleMode ? `/conversations?character_id=${selected.id}` : "/conversations?plain=true");
         const preferredConversation = Number(localStorage.getItem("yus-ai-conversation"));
         conversationRef.current = conversations.find((item) => item.id === preferredConversation)?.id ?? conversations[0]?.id ?? null;
       } catch {
@@ -1261,8 +1273,29 @@ export default function Pet() {
     return true;
   }
 
+  function clearProactive() {
+    setProactiveMessage("");
+    setProactiveMessageId(null);
+    setProactiveConversationId(null);
+    setProactiveSources([]);
+  }
+
+  function replyToProactive() {
+    if (!proactiveMessage || busy) return;
+    replyToProactiveRef.current = proactiveMessageId && proactiveConversationId
+      ? { messageId: proactiveMessageId, conversationId: proactiveConversationId } : null;
+    if (proactiveConversationId) {
+      conversationRef.current = proactiveConversationId;
+      localStorage.setItem("yus-ai-conversation", String(proactiveConversationId));
+    }
+    setBubbleText("");
+    clearProactive();
+    if (!open) void toggleBubble();
+  }
+
   async function toggleBubble() {
     const nextOpen = !open;
+    if (nextOpen) clearProactive();
     if (desktop) void invoke("record_window_diagnostic", { event: "pet_chat_toggle", details: `open=${nextOpen} pet_host_expanded=${expanded}` });
     setChatError("");
     setChatBubbleWidth(300);
@@ -1350,14 +1383,21 @@ export default function Pet() {
 
   function beginDrag(event: React.PointerEvent<HTMLButtonElement>) {
     if (event.button !== 0) return;
+    if (petModel === "slime") {
+      const bounds = event.currentTarget.getBoundingClientRect();
+      slimeTouchRef.current?.press((event.clientX - bounds.left) / bounds.width * 140,
+        (event.clientY - bounds.top) / bounds.height * 150);
+    }
     cancelAutoMovement();
     dragStartRef.current = { x: event.screenX, y: event.screenY };
     draggingRef.current = false;
     didDragRef.current = false;
-    showMood("tap", 500);
-    schedulePetMotion({ ...EMPTY_MOTION, action: "tap", expression: "happy", intensity: .75, duration: 520 }, "user", "pointer tap");
     interactionCountRef.current += 1;
-    showPetFrame(interactionCountRef.current % 4 === 0 ? "surprised" : "wink", 620);
+    if (petModel !== "slime") {
+      showMood("tap", 500);
+      schedulePetMotion({ ...EMPTY_MOTION, action: "tap", expression: "happy", intensity: .75, duration: 520 }, "user", "pointer tap");
+      showPetFrame(interactionCountRef.current % 4 === 0 ? "surprised" : "wink", 620);
+    }
   }
 
   async function continueDrag(event: React.PointerEvent<HTMLButtonElement>) {
@@ -1385,7 +1425,8 @@ export default function Pet() {
     }
   }
 
-  function finishDrag() {
+  function finishDrag(event: React.PointerEvent<HTMLButtonElement>) {
+    slimeTouchRef.current?.release(event.type === "pointercancel");
     dragStartRef.current = null;
   }
 
@@ -1408,16 +1449,13 @@ export default function Pet() {
       didDragRef.current = false;
       return;
     }
-    window.clearTimeout(menuClickTimerRef.current);
-    menuClickTimerRef.current = window.setTimeout(() => {
-      if (menuOpen) setMenuOpen(false);
-      else void toggleBubble();
-    }, 300);
+    if (petModel === "slime") slimeTouchRef.current?.tap();
+    if (menuOpen) setMenuOpen(false);
+    else void toggleBubble();
   }
 
   async function toggleFunctionMenu() {
     if (didDragRef.current) return;
-    window.clearTimeout(menuClickTimerRef.current);
     if (open) await toggleBubble();
     else if (translationOpen) await toggleTranslation();
     else if (settingsOpen) await toggleSettings();
@@ -1617,8 +1655,24 @@ export default function Pet() {
   async function send(event?: FormEvent, suppliedContent?: string) {
     event?.preventDefault();
     const content = (suppliedContent ?? input).trim();
-    if (!content || busy) return;
-    if (!character) {
+    if (!content || busy || sendPreparingRef.current) return;
+    sendPreparingRef.current = true;
+    let roleMode = false;
+    let chatCharacter = character;
+    try {
+      const currentPlugins = await request<PluginInfo[]>("/plugins");
+      roleMode = isPluginEnabled(currentPlugins, "roleplay");
+      if (roleMode && (!chatCharacter || chatCharacter.id < 0)) {
+        const roles = await request<Character[]>("/characters");
+        chatCharacter = roles.find((item) => item.id === Number(localStorage.getItem("yus-ai-character"))) ?? roles[0] ?? null;
+      }
+    } catch (error) {
+      setChatError(`读取对话模式失败：${String(error)}`);
+      return;
+    } finally {
+      sendPreparingRef.current = false;
+    }
+    if (roleMode && !chatCharacter) {
       setReply("请先在主界面创建一个角色。");
       return;
     }
@@ -1631,22 +1685,26 @@ export default function Pet() {
     schedulePetMotion({ ...EMPTY_MOTION, action: "bounce", duration: 120000, intensity: .35 }, "chat", "waiting for model");
     try {
       let id = conversationRef.current;
+      const available = await request<Conversation[]>(roleMode ? `/conversations?character_id=${chatCharacter!.id}` : "/conversations?plain=true");
+      if (!available.some((item) => item.id === id)) id = available[0]?.id ?? null;
       if (!id) {
         const conversation = await request<Conversation>("/conversations", {
           method: "POST",
-          body: JSON.stringify({ character_id: character.id }),
+          body: JSON.stringify({ character_id: roleMode ? chatCharacter!.id : null }),
         });
         id = conversation.id;
         conversationRef.current = id;
         localStorage.setItem("yus-ai-conversation", String(id));
       }
+      conversationRef.current = id;
+      localStorage.setItem("yus-ai-conversation", String(id));
       const followUp = replyToProactiveRef.current;
       const replyToProactiveId = followUp?.conversationId === id ? followUp.messageId : undefined;
       if (followUp && !replyToProactiveId) replyToProactiveRef.current = null;
       const response = await fetch(`${API}/conversations/${id}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content, character_id: character.id, reply_to_proactive_id: replyToProactiveId, pet_chat_mode: true, pet_motion_enabled: motionEnabled, pet_model: petModel, recent_pet_motions: recentMotionLabelsRef.current, screen_context: screenContextRef.current && Date.now() - screenContextRef.current.capturedAt < 5 * 60_000 ? screenContextRef.current.description : null }),
+        body: JSON.stringify({ content, character_id: roleMode ? chatCharacter!.id : null, reply_to_proactive_id: roleMode ? replyToProactiveId : undefined, pet_chat_mode: true, pet_motion_enabled: motionEnabled, pet_model: petModel, recent_pet_motions: recentMotionLabelsRef.current, screen_context: screenContextRef.current && Date.now() - screenContextRef.current.capturedAt < 5 * 60_000 ? screenContextRef.current.description : null }),
       });
       if (!response.ok) {
         if (response.status === 409 && replyToProactiveId) replyToProactiveRef.current = null;
@@ -1729,6 +1787,7 @@ export default function Pet() {
   }
 
   sendFromSatelliteRef.current = content => { void send(undefined, content); };
+  replyProactiveFromSatelliteRef.current = replyToProactive;
   const motionRemaining = activeMotion.expiresAt ? Math.max(0, activeMotion.expiresAt - motionDebugNow) : 0;
 
   return (
@@ -1737,20 +1796,20 @@ export default function Pet() {
         className={`pet-canvas ${expanded ? "open" : ""}`}
         style={{ transform: `scale(${petSize / 100})`, "--dialog-font-scale": dialogFontSize / 100, "--dialog-width": `${open ? chatLayout.width : dialogWidth}px`, "--dialog-height": `${open ? chatLayout.height : dialogHeight}px`, "--chat-bubble-width": `${chatBubbleWidth}px` } as React.CSSProperties}
       >
-      {open && desktop && <div ref={bubbleMeasurerRef} className="pet-bubble-measurer" aria-hidden="true">{bubbleChat.bubbles.map(sentence => <div className="pet-sentence measure-only" key={sentence.id}><MessageContent content={sentence.text} mode={isPluginEnabled(plugins, "message_display") ? messageDisplayMode : "raw"} /></div>)}</div>}
-      {open && !desktop && (
+      {satelliteVisible && desktop && <div ref={bubbleMeasurerRef} className="pet-bubble-measurer" aria-hidden="true">{activeBubbles.bubbles.map((sentence, index) => <div className="pet-sentence measure-only" key={sentence.id}><MessageContent content={sentence.text} mode={isPluginEnabled(plugins, "message_display") ? messageDisplayMode : "raw"} />{proactiveVisible && index === activeBubbles.bubbles.length - 1 && <button className="pet-proactive-reply" type="button">聊聊这个话题</button>}</div>)}</div>}
+      {satelliteVisible && !desktop && (
         <>
-          <div className={`pet-sentence-stack ${bubbleChat.fading ? "fading" : ""}`} aria-live="polite" aria-label="本次回复" onPointerEnter={() => bubbleChat.setHovered(true)} onPointerLeave={() => bubbleChat.setHovered(false)}>
-            {bubbleChat.bubbles.slice(-Math.max(1, visibleBubbleCount)).map(sentence => <div className="pet-sentence" key={sentence.id}><MessageContent content={sentence.text} mode={isPluginEnabled(plugins, "message_display") ? messageDisplayMode : "raw"} /></div>)}
+          <div className={`pet-sentence-stack ${activeBubbles.fading ? "fading" : ""}`} aria-live="polite" aria-label={proactiveVisible ? "主动发言" : "本次回复"} onPointerEnter={() => activeBubbles.setHovered(true)} onPointerLeave={() => activeBubbles.setHovered(false)}>
+            {activeBubbles.bubbles.slice(-Math.max(1, visibleBubbleCount)).map((sentence, index, bubbles) => <div className="pet-sentence" key={sentence.id}><MessageContent content={sentence.text} mode={isPluginEnabled(plugins, "message_display") ? messageDisplayMode : "raw"} />{proactiveVisible && index === bubbles.length - 1 && <button type="button" className="pet-proactive-reply" onClick={replyToProactive}>聊聊这个话题</button>}</div>)}
           </div>
-          <div ref={bubbleMeasurerRef} className="pet-bubble-measurer" aria-hidden="true">{bubbleChat.bubbles.map(sentence => <div className="pet-sentence measure-only" key={sentence.id}><MessageContent content={sentence.text} mode={isPluginEnabled(plugins, "message_display") ? messageDisplayMode : "raw"} /></div>)}</div>
-        <section className="pet-chat-input">
+          <div ref={bubbleMeasurerRef} className="pet-bubble-measurer" aria-hidden="true">{activeBubbles.bubbles.map((sentence,index) => <div className="pet-sentence measure-only" key={sentence.id}><MessageContent content={sentence.text} mode={isPluginEnabled(plugins, "message_display") ? messageDisplayMode : "raw"} />{proactiveVisible && index === activeBubbles.bubbles.length-1 && <button className="pet-proactive-reply" type="button">聊聊这个话题</button>}</div>)}</div>
+        {open && <section className="pet-chat-input">
           <form onSubmit={send}>
             <input value={input} onChange={(event) => setInput(event.target.value)} placeholder={!character ? "请先在展开界面创建角色" : "和我说点什么……"} disabled={!character} onPointerDown={activateTextInput} onBlur={releaseTextInput} title="点击输入框启用键盘输入；独占全屏游戏可能因此失焦" />
             <button disabled={busy || !input.trim() || !character} aria-label="发送">{busy ? "· ·" : "↑"}</button>
           </form>
           {(chatError || (busy && chatPhase)) && <small className="pet-input-status" role="status">{chatError || (chatPhase ? chatPhaseLabels[chatPhase] : "")}</small>}
-        </section>
+        </section>}
         </>
       )}
       {translationOpen && (
@@ -1842,27 +1901,6 @@ export default function Pet() {
           </div>
         </section>
       )}
-      {proactiveMessage && !expanded && !open && !menuOpen && (
-        <aside ref={proactiveBubbleRef} className="proactive-bubble" aria-live="polite">
-          <button onClick={() => { setProactiveMessage(""); setProactiveMessageId(null); setProactiveConversationId(null); }} aria-label="关闭主动提醒">×</button>
-          <small>{PERIOD_LABELS[dayPeriod]} · {character?.name ?? "蓝雨"}</small>
-          {proactiveMessage}
-          {proactiveSources.length > 0 && <small>回复这个话题后，参考来源会一起进入对话记录</small>}
-          <a href="#" onClick={(event) => {
-            event.preventDefault();
-            replyToProactiveRef.current = proactiveMessageId && proactiveConversationId ? { messageId: proactiveMessageId, conversationId: proactiveConversationId } : null;
-            if (proactiveConversationId) {
-              conversationRef.current = proactiveConversationId;
-              localStorage.setItem("yus-ai-conversation", String(proactiveConversationId));
-            }
-            setReply(proactiveMessage);
-            setProactiveMessage("");
-            setProactiveMessageId(null);
-            setProactiveConversationId(null);
-            void toggleBubble();
-          }}>聊聊这个话题</a>
-        </aside>
-      )}
       <button
         ref={petButtonRef}
         className={`pet-character model-${petModel} ${busy ? "thinking" : ""} mood-${mood} direct-${directedMotion.action} expression-${directedMotion.expression} eyes-${directedMotion.eyes ?? "normal"} mouth-${directedMotion.mouth ?? "neutral"} frame-${petFrame} gaze-${directedMotion.gazeMode} travel-${travelDirection} ${dragging ? "dragging" : ""}`}
@@ -1880,8 +1918,8 @@ export default function Pet() {
         onPointerUp={finishDrag}
         onPointerCancel={finishDrag}
         onClick={toggleMenu}
-        onDoubleClick={() => void toggleFunctionMenu()}
-        aria-label={`${PET_MODEL_LABEL[petModel]}，拖动移动，单击聊天，双击打开功能菜单`}
+        onContextMenu={event => { event.preventDefault(); void toggleFunctionMenu(); }}
+        aria-label={`${PET_MODEL_LABEL[petModel]}，拖动移动，单击聊天，右键打开功能菜单`}
       >
         <span className="slime-ground-shadow" aria-hidden="true" />
         <span ref={slimeRigRef} className="slime-rig" aria-hidden="true">
@@ -1892,18 +1930,10 @@ export default function Pet() {
                   <AliceHeadRig faceRef={aliceFaceRef} />
                 </span>
               </span>
-            </> : <>
-              <img className="slime-body-layer" src="/assets/blue-slime-pet-body-v2.png" alt="" draggable={false} />
-              <span ref={slimeCrestRef} className="slime-crest-layer" />
-              <span className="slime-highlight-layer"><i /><b /></span>
-              <span ref={slimeFaceRef} className="slime-face-layer">
-                <span className="slime-eye slime-eye-left"><span className="slime-pupil"><i /></span><b /></span>
-                <span className="slime-eye slime-eye-right"><span className="slime-pupil"><i /></span><b /></span>
-                <span className="slime-blush slime-blush-left" />
-                <span className="slime-blush slime-blush-right" />
-                <span className="slime-mouth"><i /></span>
-              </span>
-            </>}
+            </> : <SlimeDetails ref={slimeTouchRef} gaze={gaze} enabled={motionEnabled}
+              dragging={dragging} expression={directedMotion.expression}
+              protectedExpression={busy || activeMotion.priority >= 30}
+              faceRef={slimeFaceRef} crestRef={slimeCrestRef} />}
           </span>
         </span>
         <span className="pet-ripple" />

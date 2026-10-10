@@ -1,0 +1,61 @@
+/* Desktop plugin settings share a calm, theme-aware editing surface. */
+.shell.workspace .plugin-modal-backdrop { background:color-mix(in srgb,var(--bg) 72%,transparent); backdrop-filter:blur(9px); }
+.shell.workspace .plugin-modal { width:min(680px,calc(100vw - 32px)); border-radius:18px; box-shadow:0 20px 70px #00000024; }
+.shell.workspace .plugin-modal > .plugin-modal-header { padding:26px 28px 22px; background:var(--panel); border-bottom:1px solid var(--line); height:auto; }
+.shell.workspace .plugin-modal-header h2 { font-size:22px; font-weight:500; letter-spacing:-.03em; margin:8px 0; }
+.shell.workspace .plugin-modal-header small { font-size:10px; color:var(--muted); }
+.shell.workspace .plugin-modal-header p { max-width:520px; font-size:12px; line-height:1.75; }
+.shell.workspace .plugin-modal-close { border:0; border-radius:50%; background:var(--surface); width:28px; height:28px; font-size:19px; flex:none; }
+.shell.workspace .plugin-modal-content { display:grid; gap:20px; padding:24px 28px 28px; }
+.plugin-enable-row { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:0 0 20px; border-bottom:1px solid var(--line); }
+.plugin-enable-row strong { display:block; font-size:13px; font-weight:500; }
+.plugin-enable-row small { display:block; font-size:11px; color:var(--muted); margin-top:5px; }
+.plugin-section-heading h3, .plugin-review-guide h3 { margin:0 0 7px; font-size:14px; font-weight:500; }
+.plugin-section-heading p, .plugin-review-guide p { margin:0; color:var(--muted); font-size:12px; line-height:1.8; }
+.shell.workspace .plugin-modal-content label { display:grid; gap:8px; margin:0; font-size:12px; font-weight:400; }
+.shell.workspace .plugin-modal-content input:not([type="checkbox"]):not([type="range"]), .shell.workspace .plugin-modal-content select, .shell.workspace .plugin-modal-content textarea { width:100%; box-sizing:border-box; background:var(--input); color:var(--text); font:inherit; font-size:13px; padding:10px 12px; border:1px solid var(--line); border-radius:9px; }
+.shell.workspace .plugin-modal-content textarea { min-height:120px; resize:vertical; line-height:1.75; }
+.shell.workspace .plugin-modal-content small { font-size:11px; line-height:1.8; color:var(--muted); overflow-wrap:anywhere; }
+.shell.workspace :is(.plugin-modal-content,.roleplay-settings,.role-initialization) label:has(> input[type="checkbox"]) { display:flex; flex-direction:row; justify-content:space-between; align-items:center; gap:20px; padding:10px 0; min-height:24px; font-size:12px; font-weight:400; }
+.shell.workspace :is(.plugin-modal-content,.roleplay-settings,.role-initialization) input[type="checkbox"] { appearance:none; -webkit-appearance:none; order:1; width:32px; height:18px; min-width:32px; flex:none; margin:0; border:0; border-radius:20px; background-color:var(--line); background-image:radial-gradient(circle,white 0 5px,transparent 5.5px); background-size:14px 14px; background-position:2px center; background-repeat:no-repeat; cursor:pointer; transition:background-position .16s ease,background-color .16s ease; }
+.shell.workspace :is(.plugin-modal-content,.roleplay-settings,.role-initialization) input[type="checkbox"]:checked { background-color:var(--accent); background-position:16px center; }
+.shell.workspace :is(.plugin-modal-content,.roleplay-settings,.role-initialization) input[type="checkbox"]:disabled { opacity:.4; cursor:not-allowed; }
+.shell.workspace .plugin-modal-content input[type="range"] { width:100%; margin:8px 0; accent-color:var(--accent); }
+.shell.workspace .plugin-options { display:block; border:0; border-top:1px solid var(--line); border-radius:0; padding:0; background:transparent; }
+.shell.workspace .plugin-options > summary { display:flex; justify-content:space-between; align-items:center; list-style:none; padding:18px 0; font-size:13px; font-weight:500; cursor:pointer; }
+.plugin-options[open] > summary > span { transform:rotate(180deg); }
+.plugin-options-body { display:grid; gap:16px; padding:2px 0 16px; }
+.shell.workspace .plugin-modal-permissions { margin:0; color:var(--muted); }
+.shell.workspace .plugin-modal-permissions summary { font-size:11px; }
+.shell.workspace .plugin-modal-footer { padding:16px 28px; background:var(--panel); }
+.shell.workspace .plugin-modal-footer small { font-size:10px; }
+.shell.workspace .plugin-modal-footer button { padding:8px 18px; border-radius:8px; font-size:12px; }
+.shell.workspace .message-plugin-grid { gap:10px; }
+.shell.workspace .message-plugin { border:1px solid var(--line); border-radius:12px; background:var(--input); padding:17px 18px; text-align:left; }
+.shell.workspace .message-plugin.selected { border-color:var(--muted); background:var(--surface); box-shadow:none; }
+.shell.workspace .message-plugin strong { font-size:13px; font-weight:500; }
+.shell.workspace .message-plugin > span { color:var(--muted); font-size:12px; }
+.shell.workspace .proactive-frequency-presets { display:flex; flex-wrap:wrap; gap:7px; }
+.shell.workspace .proactive-frequency-presets button { border:1px solid var(--line); border-radius:8px; background:transparent; color:var(--muted); padding:7px 11px; font-size:11px; }
+.shell.workspace .proactive-frequency-presets button.selected { color:var(--text); background:var(--surface); }
+.plugin-review-guide dl { display:grid; gap:0; margin:20px 0; }
+.plugin-review-guide dl > div { display:grid; grid-template-columns:80px 1fr; gap:18px; padding:14px 0; border-bottom:1px solid var(--line); font-size:12px; line-height:1.8; }
+.plugin-review-guide dt { color:var(--text); }
+.plugin-review-guide dd { margin:0; color:var(--muted); }
+.shell.workspace .roleplay-settings { gap:20px; }
+.shell.workspace .roleplay-settings > p { font-size:13px; }
+.shell.workspace .roleplay-settings details { background:transparent; padding:16px 18px; border-radius:12px; }
+.shell.workspace .roleplay-settings fieldset, .shell.workspace .role-initialization { border-color:var(--line); border-radius:12px; background:var(--panel); padding:20px; gap:16px; }
+.shell.workspace .roleplay-preset-row { padding:16px 0; border-bottom:1px solid var(--line); gap:10px; }
+.shell.workspace .roleplay-settings button { font-size:11px; padding:7px 10px; }
+.shell.workspace .roleplay-settings input[type="file"]::file-selector-button { border:0; border-radius:7px; padding:7px 11px; margin-right:12px; background:var(--surface); color:var(--text); font:inherit; font-size:11px; cursor:pointer; }
+@media(max-width:600px) {
+  .shell.workspace .plugin-modal-backdrop { padding:12px; }
+  .shell.workspace .plugin-modal { width:100%; max-height:calc(100dvh - 24px); }
+  .shell.workspace .plugin-modal > .plugin-modal-header, .shell.workspace .plugin-modal-content { padding:20px; }
+  .shell.workspace .plugin-modal-footer { padding:14px 20px; }
+  .plugin-review-guide dl > div { grid-template-columns:1fr; gap:4px; }
+}
+@media(prefers-reduced-motion:reduce) {
+  .shell.workspace .plugin-modal-content input[type="checkbox"] { transition:none; }
+}

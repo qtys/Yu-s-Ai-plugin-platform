@@ -1,6 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resumePetBubbles } from './petBubblePlayback.ts';
+import { isFreshPetReply, resumePetBubbles } from './petBubblePlayback.ts';
+
+test('first proactive utterance starts new playback rather than reopening all sentences', () => {
+  assert.equal(isFreshPetReply('第一句。第二句。', ''), true);
+  assert.equal(isFreshPetReply('下一轮。', '上一轮。'), true);
+  assert.equal(isFreshPetReply('', '上一轮。'), true);
+});
+
+test('stream continuation and reopening retain the playback cursor', () => {
+  assert.equal(isFreshPetReply('第一句。第二句。', '第一句。'), false);
+  assert.equal(isFreshPetReply('第一句。', '第一句。'), false);
+});
 
 test('reopening skips received sentences rather than replaying from the first', () => {
   const received = ['第一句。', '第二句。', '第三句。', '第四句。', '第五句。'];

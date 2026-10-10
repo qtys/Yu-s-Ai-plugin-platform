@@ -37,15 +37,15 @@ fn plan_layout(center: f64, top: f64, origin: LogicalPosition<f64>, size: Logica
   let y = (top - (height - 214.0) * factor).clamp(origin.y, (origin.y + size.height - height * factor).max(origin.y));
   let pet_x = (center - x) / factor;
   let pet_y = (top - y) / factor;
-  let left_room = (pet_x - 82.0).max(0.0);
-  let right_room = (width - pet_x - 82.0).max(0.0);
-  let bubble_width_limit = if side { left_room.max(right_room).min(600.0) } else { (2.0 * pet_x.min(width - pet_x) - 24.0).max(1.0) };
-  let bubble_x = if !side { pet_x } else if left_room >= right_room { pet_x - 82.0 - bubble_width_limit / 2.0 } else { pet_x + 82.0 + bubble_width_limit / 2.0 };
+  // Reserve a canvas, not a group-wide side placement. Each bubble decides locally
+  // whether it can remain above the pet; only overflowing bubbles move sideways.
+  let bubble_width_limit = (width - 24.0).max(1.0).min(600.0);
+  let bubble_x = pet_x;
   (LogicalPosition::new(x, y), Layout { width, height, pet_x, pet_y,
     input_x: (pet_x - 100.0).clamp(0.0, (width - 200.0).max(0.0)),
     input_y: (pet_y + 156.0).min(height - 58.0).max(0.0),
-    available: if side { height - 24.0 } else { (pet_y - 12.0).max(0.0) },
-    bubble_x, bubble_top: if side { Some(12.0) } else { None }, bubble_width_limit })
+    available: height - 24.0,
+    bubble_x, bubble_top: None, bubble_width_limit })
 }
 
 #[cfg(test)]
@@ -60,12 +60,12 @@ mod tests {
     assert_eq!(layout.input_y, layout.pet_y + 156.0);
   }
   #[test]
-  fn top_edge_moves_only_bubbles_to_the_side() {
+  fn top_edge_reserves_space_without_moving_the_entire_stack_sideways() {
     let (pos, layout) = plan_layout(1500.0, 100.0, LogicalPosition::new(0.0,0.0), LogicalSize::new(1920.0,1080.0), 430.0,700.0,1.0);
     assert_eq!(pos.x + layout.pet_x, 1500.0);
     assert_eq!(pos.y + layout.pet_y, 100.0);
-    assert_eq!(layout.bubble_top, Some(12.0));
-    assert!(layout.bubble_x + layout.bubble_width_limit / 2.0 <= layout.pet_x - 82.0);
+    assert!(layout.bubble_top.is_none());
+    assert_eq!(layout.bubble_x, layout.pet_x);
     assert!(pos.x >= 0.0 && pos.x + layout.width <= 1920.0);
   }
   #[test]

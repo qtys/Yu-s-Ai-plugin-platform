@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 
-export function WorkspaceIcon({ name }: { name: "chat" | "role" | "recent" | "plugin" | "settings" | "attach" | "pin" | "drop" | "mic" | "command" | "send" | "stop" | "image" }) {
+export function WorkspaceIcon({ name }: { name: "chat" | "role" | "recent" | "plugin" | "settings" | "model" | "attach" | "pin" | "drop" | "mic" | "command" | "send" | "stop" | "image" }) {
   const paths = {
     chat: "M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-2 2v-9.5A8.5 8.5 0 0 1 10.5 4h2A8.5 8.5 0 0 1 21 11.5Z",
     role: "M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0ZM4 21v-2a8 8 0 0 1 16 0v2H4Z",
     recent: "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM12 7v5l3 2",
     plugin: "M9 3H4v6H3a3 3 0 0 0 0 6h1v6h6v-1a3 3 0 0 1 6 0v1h5v-6h-1a3 3 0 0 1 0-6h1V3h-6V2a3 3 0 0 0-6 0v1Z",
     settings: "m9 3 1-1h4l1 1 1 2 2 1 2 1 1 3v4l-1 1-2 1-1 2-1 2-3 1h-4l-1-1-1-2-2-1-2-1-1-3v-4l1-1 2-1 1-2 1-2ZM16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z",
+    model: "M7 7h10v10H7V7ZM10 10h4v4h-4v-4M9 3v4M15 3v4M9 17v4M15 17v4M3 9h4M3 15h4M17 9h4M17 15h4",
     attach: "m21 11-9 9a6 6 0 0 1-8.5-8.5l9-9a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5",
     pin: "m8 3 10 5-3 2-2 5-3-1-5 7 3-8-2-2 4-4-2-4Z",
     drop: "M12 2.5C9.4 6.2 5.5 10.4 5.5 14.2a6.5 6.5 0 0 0 13 0C18.5 10.4 14.6 6.2 12 2.5ZM8.5 14.3a3.5 3.5 0 0 0 3.5 3.4",
@@ -30,7 +31,7 @@ type RecentProps = {
 };
 
 type NavigationProps = {
-  panel: "chat" | "characters" | "plugins" | "settings";
+  panel: "chat" | "characters" | "plugins" | "settings" | "models";
   onPanel: (panel: NavigationProps["panel"]) => void;
 };
 
@@ -39,9 +40,9 @@ export default function WorkspaceNavigation({ panel, onPanel }: NavigationProps)
     <button className="workspace-brand" onClick={() => onPanel("chat")} aria-label="Yu's AI，返回对话"><span className="workspace-logo"><WorkspaceIcon name="drop" /></span><strong>Yu’s AI</strong></button>
     <nav className="workspace-navigation" aria-label="主导航">
       <button className={panel === "chat" ? "active" : ""} aria-current={panel === "chat" ? "page" : undefined} onClick={() => onPanel("chat")}><WorkspaceIcon name="chat" />对话</button>
-      <button className={panel === "characters" ? "active" : ""} aria-current={panel === "characters" ? "page" : undefined} onClick={() => onPanel("characters")}><WorkspaceIcon name="role" />角色</button>
-      <button className={panel === "plugins" ? "active" : ""} aria-current={panel === "plugins" ? "page" : undefined} onClick={() => onPanel("plugins")}><WorkspaceIcon name="plugin" />插件</button>
-      <button className={panel === "settings" ? "active workspace-settings" : "workspace-settings"} onClick={() => onPanel("settings")} aria-label="设置" title="设置"><WorkspaceIcon name="settings" /></button>
+      <button className={panel === "models" ? "active" : ""} aria-current={panel === "models" ? "page" : undefined} onClick={() => onPanel("models")}><WorkspaceIcon name="model" />模型配置</button>
+      <button className={panel === "plugins" || panel === "characters" ? "active" : ""} aria-current={panel === "plugins" || panel === "characters" ? "page" : undefined} onClick={() => onPanel("plugins")}><WorkspaceIcon name="plugin" />插件</button>
+      <button className={panel === "settings" ? "active workspace-settings" : "workspace-settings"} aria-current={panel === "settings" ? "page" : undefined} onClick={() => onPanel("settings")} aria-label="设置" title="设置"><WorkspaceIcon name="settings" />设置</button>
     </nav>
   </div>;
 }

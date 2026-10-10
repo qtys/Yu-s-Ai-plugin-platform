@@ -192,7 +192,7 @@ async def generate(payload: GenerateRequest):
         if payload.extra_instructions.strip():
             prompt += "\n\n【额外绘图指令】\n" + payload.extra_instructions.strip()
         if not is_enabled(db, "image_generation"):
-            raise HTTPException(403, "请先启用图片生成插件")
+            raise HTTPException(403, "请先在模型配置中启用绘图模型")
         config = settings(False)
         if config["model_profile_id"]:
             profile = db.execute("SELECT base_url,api_key FROM model_profiles WHERE id=?", (config["model_profile_id"],)).fetchone()
@@ -201,7 +201,7 @@ async def generate(payload: GenerateRequest):
             config.update(dict(profile))
     base = normalize_url(config["base_url"])
     if not base or not config["model"]:
-        raise HTTPException(400, "请在图片生成插件中填写 API 地址和绘图模型名称")
+        raise HTTPException(400, "请在模型配置的绘图模型中填写 API 地址和模型名称")
     if GENERATION_LOCK.locked():
         raise HTTPException(409, "已有图片正在生成，请勿重复提交")
     async with GENERATION_LOCK:

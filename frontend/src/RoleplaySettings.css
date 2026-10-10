@@ -1,0 +1,28 @@
+.roleplay-settings { display:grid; gap:16px; min-width:0; color:var(--text); }
+.roleplay-settings p { margin:0; line-height:1.65; }
+.roleplay-settings label { display:flex; flex-direction:column; gap:8px; font-size:13px; }
+.roleplay-settings input:not([type="checkbox"]), .roleplay-settings select, .roleplay-settings textarea { width:100%; min-width:0; box-sizing:border-box; padding:10px 12px; border:1px solid var(--line); border-radius:10px; color:var(--text); background:var(--input,var(--panel)); font:inherit; }
+.roleplay-settings textarea { resize:vertical; line-height:1.6; }
+.roleplay-settings input[type="checkbox"] { accent-color:var(--accent); }
+.roleplay-settings button { padding:7px 12px; border:1px solid var(--line); border-radius:9px; background:var(--panel); color:var(--text); cursor:pointer; }
+.roleplay-settings button:disabled { opacity:.45; cursor:default; }
+.roleplay-settings small { color:var(--muted); line-height:1.6; }
+.roleplay-settings details { border:1px solid var(--line); border-radius:12px; padding:14px; }
+.roleplay-settings summary { cursor:pointer; font-size:14px; }
+.roleplay-settings details[open] > :not(summary) { margin-top:14px; }
+.roleplay-settings fieldset { min-width:0; border:1px solid var(--line); border-radius:10px; padding:12px; display:grid; gap:12px; }
+.roleplay-two { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.roleplay-preset-row, .roleplay-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.roleplay-preset-row strong { flex:1; min-width:100px; font-size:13px; }
+.roleplay-block { display:grid; gap:8px; border-bottom:1px solid var(--line); padding-bottom:12px; }
+.roleplay-block label { flex-direction:row; align-items:center; flex:1; }
+.roleplay-preview { white-space:pre-wrap; overflow-wrap:anywhere; max-height:400px; overflow:auto; padding:14px; background:var(--panel); border:1px solid var(--line); border-radius:10px; font-size:12px; line-height:1.6; }
+.roleplay-settings [role="alert"] { color:var(--danger,#bd4848); overflow-wrap:anywhere; }
+.roleplay-term { display:flex; align-items:center; flex-wrap:wrap; gap:6px; min-width:0; }
+.roleplay-settings .roleplay-term-help { display:inline-flex; align-items:center; justify-content:center; padding:0; width:22px; height:22px; border-radius:50%; font-size:12px; color:var(--muted); flex:none; }
+.roleplay-settings .roleplay-term-help[aria-expanded="true"] { color:var(--text); border-color:var(--accent); }
+.roleplay-term-help:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.roleplay-term-explanation { flex-basis:100%; padding:10px 12px; border-left:2px solid var(--accent); border-radius:6px; background:var(--input,var(--panel)); color:var(--muted); font-size:12px; line-height:1.7; overflow-wrap:anywhere; }
+.roleplay-glossary dl { display:grid; gap:14px; margin:0; }
+.roleplay-glossary dt { font-weight:600; font-size:13px; }
+.roleplay-glossary dd { margin:4px 0 0; font-size:12px; line-height:1.7; color:var(--muted); overflow-wrap:anywhere; }

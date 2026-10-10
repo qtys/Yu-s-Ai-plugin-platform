@@ -84,6 +84,7 @@ def test_proactive_screen_context_is_opt_in_and_ephemeral(monkeypatch):
         monkeypatch.setattr("app.main.describe_screen", fake_describe)
         monkeypatch.setattr("app.main.generate_proactive", fake_generate)
         with TestClient(app) as client:
+            client.put("/api/plugins/roleplay/state", json={"enabled": True})
             character = client.post("/api/characters", json={"name": "测试"}).json()
             setting = client.get("/api/settings").json()
             setting.update(screen_access_enabled=True, api_key="test-key", vision_model="vision-test")

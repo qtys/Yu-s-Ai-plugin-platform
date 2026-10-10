@@ -83,7 +83,7 @@ export function useSpeech(enabled: boolean, scope: string | number | null, onTra
       }
       // Validate configuration before requesting permission or uploading audio.
       const config: SpeechSettings = await (await checkResponse(await fetch(`${API}/speech/settings`))).json();
-      if (!config.stt_base_url || !config.stt_model) throw new Error("请先在语音插件中配置识别 API 地址和模型");
+      if (!config.stt_base_url || !config.stt_model) throw new Error("请先在模型配置的语音模型中配置识别 API 地址和模型");
       if (sequence !== recordingSequence.current) return;
       const captured = await navigator.mediaDevices.getUserMedia({ audio: true });
       if (sequence !== recordingSequence.current) { captured.getTracks().forEach((track) => track.stop()); return; }
@@ -312,7 +312,7 @@ export function SpeechSettingsPanel() {
           {preview.error && <small role="alert">{preview.error}</small>}
         </>}
       </fieldset>)}
-      <small>第一阶段仅点击录音、手动朗读，不持续监听、不自动发送、不自动朗读主动发言。请先启用插件再测试。</small>
+      <small>仅点击录音、手动朗读，不持续监听、不自动发送、不自动朗读主动发言。请先启用语音模型再测试。</small>
       {networkStatus && <small role="status">{networkStatus}</small>}
     </>}
     <small role="status">{status}</small>
