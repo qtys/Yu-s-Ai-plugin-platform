@@ -26,3 +26,9 @@
 .roleplay-glossary dl { display:grid; gap:14px; margin:0; }
 .roleplay-glossary dt { font-weight:600; font-size:13px; }
 .roleplay-glossary dd { margin:4px 0 0; font-size:12px; line-height:1.7; color:var(--muted); overflow-wrap:anywhere; }
+.unified-role-settings { padding:24px; border-top:1px solid var(--line); }
+.unified-role-settings h3 { margin:0 0 6px; font-size:16px; }
+.unified-role-settings > small { display:block; margin-bottom:16px; }
+.unified-lore-entry summary { display:flex; justify-content:space-between; gap:12px; }
+.unified-lore-entry summary small { flex-shrink:0; color:var(--muted); font-size:11px; }
+.unified-lore-entry fieldset { margin:12px 0; }

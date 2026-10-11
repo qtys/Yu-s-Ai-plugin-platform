@@ -817,12 +817,12 @@ async def lifespan(_: FastAPI):
     UPDATE_RELEASE_CACHE = None
     configure_logging()
     init_db()
-    logger.info("backend_started version=0.16.4")
+    logger.info("backend_started version=0.16.6")
     yield
     logger.info("backend_stopped")
 
 
-app = FastAPI(title="Yu's AI API", version="0.16.4", lifespan=lifespan)
+app = FastAPI(title="Yu's AI API", version="0.16.6", lifespan=lifespan)
 # Keep shelved motion experiments available for development, never in the installer.
 if not getattr(sys, "frozen", False):
     app.include_router(pixel_motion_router)

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { CSSProperties, FormEvent, ReactNode } from "react";
 import BackgroundSettings, { readWorkspaceBackground } from "./BackgroundSettings";
 import NovelSettingsPanel from "./NovelSettingsPanel";
-import RoleplaySettingsPanel, { RoleCardContext } from "./RoleplaySettingsPanel";
+import RoleplaySettingsPanel, { UnifiedRoleSettings } from "./RoleplaySettingsPanel";
 import RoleInitialization from "./RoleInitialization";
 import CharacterAvatarPicker from "./CharacterAvatarPicker";
 import { ImageSettingsPanel, ImageGenerationDialog, GeneratedImageMessage } from "./ImageGeneration";
@@ -22,7 +22,9 @@ import "./Themes.css";
 import WorkspaceNavigation, { WorkspaceIcon, WorkspaceRecent } from "./WorkspaceNavigation";
 import "./Workspace.css";
 import "./WorkspacePages.css";
+import WorkspaceAtmosphere, { WorkspaceBackdrop, WorkspaceTideBackdrop, type AtmosphereMotion } from "./WorkspaceAtmosphere";
 import "./PluginSettings.css";
+import "./WorkspaceMotion.css";
 
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:8000/api";
 const pluginCategories: [string, PluginId[]][] = [
@@ -69,11 +71,13 @@ type Settings = {
   location_context: string;
   screen_access_enabled: boolean;
 };
-type Theme = "graphite" | "monochrome" | "paper" | "midnight" | "blossom" | "jade";
+type Theme = "graphite" | "monochrome" | "paper" | "midnight" | "blossom" | "jade" | "grape" | "tide";
 type UpdateInfo = { current_version: string; version: string; name: string; notes: string; published_at: string; release_url: string; available: boolean; asset: { name: string; size: number; digest: string } };
 type UpdateProgress = { stage: "downloading" | "retrying" | "complete"; percent: number; downloaded?: number; total?: number; resumed?: boolean; attempt?: number; max_attempts?: number; reason?: string; path?: string; sha256?: string; version?: string };
 type BackupInfo = { path: string; filename: string; size: number; sha256: string; created_at: string; counts: { characters: number; conversations: number; messages: number; documents: number } };
 const themes: { id: Theme; name: string; description: string }[] = [
+  { id: "grape", name: "葡萄夜游", description: "葡萄紫 · 奶油纸面 · 星光与小伙伴" },
+  { id: "tide", name: "晴光共鸣", description: "珍珠白 · 浅蓝水面 · 琉璃雨滴" },
   { id: "graphite", name: "雾白", description: "雾白画布 · 石墨黑细节" },
   { id: "monochrome", name: "黑曜", description: "极夜黑 · 冷白轮廓 · 黑白反差" },
   { id: "paper", name: "纸墨", description: "暖白纸张 · 高对比墨色" },
@@ -131,6 +135,16 @@ export default function App() {
     },
   );
   const [backendReady, setBackendReady] = useState(false);
+  const [atmosphereMotion, setAtmosphereMotion] = useState<AtmosphereMotion>(() => {
+    const saved = localStorage.getItem("yus-ai-atmosphere-motion");
+    return saved === "off" || saved === "full" ? saved : "light";
+  });
+  const [atmospherePreview, setAtmospherePreview] = useState(false);
+  useEffect(() => {
+    if (!atmospherePreview) return;
+    const timer = window.setTimeout(() => setAtmospherePreview(false), 1800);
+    return () => window.clearTimeout(timer);
+  }, [atmospherePreview]);
   const [workspaceBackground, setWorkspaceBackground] = useState(readWorkspaceBackground);
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [modelCapabilities, setModelCapabilities] = useState({ speech: false, image_generation: false });
@@ -162,9 +176,20 @@ export default function App() {
   const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null);
   const [maintenanceBusy, setMaintenanceBusy] = useState<"update" | "backup" | "restore" | null>(null);
   const [maintenanceStatus, setMaintenanceStatus] = useState("");
-  const [panel, setPanel] = useState<"chat" | "characters" | "plugins" | "settings" | "models">(
+  const [panel, commitPanel] = useState<"chat" | "characters" | "plugins" | "settings" | "models">(
     "chat",
   );
+  const pageMotionRef = useRef<HTMLElement>(null);
+  const setPanel = useCallback((next: typeof panel) => commitPanel(next), []);
+  useLayoutEffect(() => {
+    const page = pageMotionRef.current;
+    if (!page || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const animation = page.animate([
+      { opacity:.65, transform:"translateY(6px)" },
+      { opacity:1, transform:"translateY(0)" },
+    ], { duration:220, easing:"cubic-bezier(.2,.8,.2,1)" });
+    return () => animation.cancel();
+  }, [panel]);
   const [settings, setSettings] = useState<Settings>({
     active_model_profile_id: null,
     base_url: "https://api.openai.com/v1",
@@ -1453,8 +1478,13 @@ export default function App() {
   return (
     <div className={`${mini ? "shell workspace mini" : "shell workspace"}${workspaceBackground ? " has-background" : ""}`} data-theme={theme} style={workspaceBackground ? { "--background-veil": 1 - workspaceBackground.strength } as CSSProperties : undefined}>
       {workspaceBackground && <img className="workspace-wallpaper" src={workspaceBackground.image} alt="" aria-hidden="true" draggable={false} />}
-      <WorkspaceNavigation panel={panel} onPanel={setPanel} />
+      <WorkspaceNavigation panel={panel} onPanel={setPanel} windowActions={desktop ? <>
+        <button type="button" className={pinned ? "active" : ""} aria-pressed={pinned} onClick={togglePin} title="切换始终置顶"><WorkspaceIcon name="pin" /><span>置顶</span></button>
+        <button type="button" onClick={toggleMini} title="进入桌面宠物模式"><WorkspaceIcon name="drop" /><span>桌宠</span></button>
+      </> : undefined} />
       <main className={panel === "chat" ? "workspace-chat-canvas" : undefined}
+        ref={pageMotionRef}
+        data-page={panel}
         data-header-nearby={panel === "chat" && headerNearby ? "true" : undefined}
         onPointerMove={(event) => {
           if (panel !== "chat" || event.pointerType === "touch") return;
@@ -1470,6 +1500,8 @@ export default function App() {
           headerNearbyRef.current = false;
           setHeaderNearby(false);
         }}>
+        {panel === "chat" && theme === "grape" && !workspaceBackground && <WorkspaceBackdrop motion={atmosphereMotion} />}
+        {panel === "chat" && theme === "tide" && !workspaceBackground && <WorkspaceTideBackdrop motion={atmosphereMotion} chatting={messages.length > 0} />}
         <header className={panel === "chat" ? "workspace-chat-header" : "workspace-page-header"}>
           {panel === "chat" && <div className="workspace-header-left">
           {panel === "chat" && roleplayEnabled && <details className="workspace-role-picker" onKeyDown={(event) => { if (event.key === "Escape") event.currentTarget.open = false; }} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) event.currentTarget.open = false; }}>
@@ -1523,23 +1555,6 @@ export default function App() {
                 </div>
               </details>
             )}
-            {desktop && (
-              <>
-                <button
-                  className={pinned ? "active" : ""}
-                  onClick={togglePin}
-                  title="切换始终置顶"
-                >
-                  <WorkspaceIcon name="pin" /> 置顶
-                </button>
-                <button
-                  onClick={toggleMini}
-                  title="进入桌面宠物模式"
-                >
-                  桌宠
-                </button>
-              </>
-            )}
           </div>
         </header>
         {error && (
@@ -1581,6 +1596,11 @@ export default function App() {
               </div>
             </div>
             <details className="settings-drawer page-disclosure"><summary className="drawer-trigger"><span><strong>自定义背景</strong><small>使用自己的图片，让空间更有个性</small></span><span className="drawer-chevron" aria-hidden="true">⌄</span></summary><div className="drawer-content"><BackgroundSettings value={workspaceBackground} onChange={setWorkspaceBackground} /></div></details>
+            <div className="theme-panel">
+              <div className="form-section-title"><strong>主题动态效果</strong><small>葡萄夜游与晴光共鸣专属；轻量保留操作反馈，完整增加场景动态。输入时暂停环境动态，尊重系统减少动画设置。</small></div>
+              <div className="atmosphere-controls" role="group" aria-label="主题动态效果">{([ ["off", "关闭"], ["light", "轻量"], ["full", "完整"] ] as const).map(([value, label]) => <button type="button" key={value} aria-pressed={atmosphereMotion === value} onClick={() => { setAtmosphereMotion(value); localStorage.setItem("yus-ai-atmosphere-motion", value); }}>{label}</button>)}</div>
+              {(theme === "grape" || theme === "tide") && <div className="atmosphere-controls"><button type="button" disabled={atmosphereMotion === "off" || busy} onClick={() => { setAtmospherePreview(true); setPanel("chat"); }}>试播效果</button><small>仅播放动画，不发送消息，不消耗 token。</small></div>}
+            </div>
             {desktop && (
               <div className="device-settings">
                 <div className="form-section-title">
@@ -1874,7 +1894,7 @@ export default function App() {
               <div><span className="role-eyebrow">属于你的故事</span><h1>让对话，有一个熟悉的面孔。</h1><p>收藏喜欢的角色，赋予性格、故事与声音。</p></div>
               <div className="role-plugin-status"><span>{roleplayEnabled ? "角色模式已开启" : "正在使用普通聊天"}</span>{plugins.find((item) => item.id === "roleplay") && <button type="button" role="switch" aria-label="角色扮演开关" aria-checked={roleplayEnabled} disabled={busy || pluginBusy !== null} className={roleplayEnabled ? "autostart-switch enabled" : "autostart-switch"} onClick={() => { const item = plugins.find((p) => p.id === "roleplay"); if (item) void togglePlugin(item); }}><span><i /></span>{roleplayEnabled ? "已启用" : "已停用"}</button>}<small>关闭仅切换聊天方式，不删除角色或记录。</small></div>
             </div>
-            <div className="role-page-tabs" role="group" aria-label="角色页面内容"><button aria-pressed={rolePageTab === "library"} onClick={() => setRolePageTab("library")}>我的角色 <span>{characters.length}</span></button><button aria-pressed={rolePageTab === "resources"} onClick={() => setRolePageTab("resources")}>酒馆资源 <small>进阶</small></button></div>
+            <div className="role-page-tabs" role="group" aria-label="角色页面内容"><button aria-pressed={rolePageTab === "library"} onClick={() => setRolePageTab("library")}>我的角色 <span>{characters.length}</span></button><button aria-pressed={rolePageTab === "resources"} onClick={() => setRolePageTab("resources")}>预设库</button></div>
             {rolePageTab === "library" && <>
             <div className="role-library-toolbar"><p>{roleplayEnabled ? "选一个角色，开始下一段对话。" : "可以先整理角色，启用角色模式后再开始聊天。"}</p><label className="import-character">导入角色卡<input type="file" accept="application/json,image/png,.json,.png" onChange={(e) => { void importCharacter(e.target.files?.[0]); e.target.value = ""; }} /></label></div>
             <div className="character-manager role-gallery">
@@ -1892,14 +1912,13 @@ export default function App() {
                   placeholder="例如：雨"
                 />
               </Field>
-              <Field label="核心角色设定">
+              <Field label="角色描述"><textarea rows={5} value={draft.background} onChange={(e) => setDraft({...draft,background:e.target.value})} placeholder="身份、经历与背景" /></Field>
+              <Field label="开场白"><textarea rows={3} value={draft.greeting} onChange={(e) => setDraft({...draft,greeting:e.target.value})} placeholder="新对话的第一句话" /></Field>
+              <Field label="回复要求">
                 <textarea rows={5} value={draft.system_prompt} onChange={(e) => setDraft({ ...draft, system_prompt: e.target.value })} placeholder="例如：你是小雨，一个温柔、爱开玩笑的朋友。像日常聊天一样回应，不替用户决定行动。" />
               </Field>
-              <details className="page-disclosure"><summary><span><strong>补充角色细节（可选）</strong><small>开场白、背景、性格与关系；留空也能使用</small></span><span aria-hidden="true">⌄</span></summary><div className="disclosure-content">
-              <Field label="开场白"><textarea rows={3} value={draft.greeting} onChange={(e) => setDraft({...draft,greeting:e.target.value})} placeholder="新对话开始时，角色主动说的第一句话" /></Field>
+              <details className="page-disclosure"><summary><span><strong>更多细节</strong></span><span aria-hidden="true">⌄</span></summary><div className="disclosure-content">
               <RoleInitialization key={editingCharacter ?? "new"} enabled={!!draft.initial_prompt_enabled} content={draft.initial_prompt} onChange={(patch) => setDraft((value) => ({ ...value, ...patch }))} />
-              {editingCharacter && <RoleCardContext key={editingCharacter} id={editingCharacter} />}
-              <Field label="身份背景"><textarea rows={4} value={draft.background} onChange={(e) => setDraft({...draft,background:e.target.value})} /></Field>
               <div className="form-grid"><Field label="性格"><textarea rows={4} value={draft.personality} onChange={(e) => setDraft({...draft,personality:e.target.value})} /></Field><Field label="说话方式"><textarea rows={4} value={draft.speaking_style} onChange={(e) => setDraft({...draft,speaking_style:e.target.value})} /></Field></div>
               <div className="form-grid"><Field label="与用户的关系"><textarea rows={4} value={draft.relationship} onChange={(e) => setDraft({...draft,relationship:e.target.value})} /></Field><Field label="行为边界"><textarea rows={4} value={draft.boundaries} onChange={(e) => setDraft({...draft,boundaries:e.target.value})} /></Field></div>
               <Field label="示例对话"><textarea rows={5} value={draft.example_dialogue} onChange={(e) => setDraft({...draft,example_dialogue:e.target.value})} placeholder={'用户：你好\n角色：……'} /></Field>
@@ -1914,9 +1933,9 @@ export default function App() {
               </Field>
               </div></details>
               <div className="form-actions"><button className="primary">{editingCharacter ? "保存角色" : "创建角色"}</button><button type="button" onClick={() => {setEditingCharacter(null);setDraft(emptyCharacter);setRoleEditorOpen(false)}}>取消</button></div>
-            </form></div>}
+            </form>{editingCharacter && <UnifiedRoleSettings key={editingCharacter} id={editingCharacter} conversationId={editingCharacter === activeCharacter ? activeConversation : null} />}</div>}
             </>}
-            {rolePageTab === "resources" && <div className="role-resources"><div className="role-resource-intro"><h2>给故事补充规则与世界</h2><p>已有酒馆预设或世界书时再使用这里。日常角色对话无需额外配置。</p></div><RoleplaySettingsPanel characters={characters} activeCharacter={activeCharacter} activeConversation={roleplayEnabled ? activeConversation : null} /></div>}
+            {rolePageTab === "resources" && <div className="role-resources"><div className="role-resource-intro"><h2>预设库</h2><p>角色卡决定“是谁”，预设决定“怎么回复”。同一套回复规则可供多个角色使用。</p></div><RoleplaySettingsPanel presetsOnly characters={characters} activeCharacter={activeCharacter} activeConversation={roleplayEnabled ? activeConversation : null} /></div>}
           </section>
         )}
         {panel === "chat" && (
@@ -2069,6 +2088,7 @@ export default function App() {
               </section>
             )}
             <form className="composer" onSubmit={send}>
+              {(theme === "grape" || theme === "tide") && <WorkspaceAtmosphere scene={theme} busy={busy || atmospherePreview} motion={atmosphereMotion} />}
               <input ref={documentInputRef} type="file" accept=".txt,.md,.markdown,.pdf,.docx" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadDocument(file); }} />
               {!imageSkillActive && queuedTemplate?.characterId === activeCharacter && <div className="queued-template"><span>下一条消息使用模板：{queuedTemplate.templateName}</span><button type="button" onClick={() => setQueuedTemplate(null)} aria-label="取消仅本次模板">×</button></div>}
               {(documents.length > 0 || documentBusy) && (

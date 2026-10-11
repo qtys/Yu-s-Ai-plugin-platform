@@ -88,7 +88,7 @@ function useAutoSave(save: (value: unknown) => Promise<unknown>) {
   return { schedule, status, flush };
 }
 
-export default function RoleplaySettingsPanel({ characters, activeCharacter, activeConversation }: { characters: Character[]; activeCharacter: number | null; activeConversation: number | null }) {
+export default function RoleplaySettingsPanel({ characters, activeCharacter, activeConversation, presetsOnly = false }: { characters: Character[]; activeCharacter: number | null; activeConversation: number | null; presetsOnly?: boolean }) {
   const [role, setRole] = useState<number | null>(activeCharacter ?? characters[0]?.id ?? null);
   const [presets, setPresets] = useState<Preset[]>([]), [error, setError] = useState("");
   const [editing, setEditing] = useState<string | null>(null);
@@ -127,10 +127,8 @@ export default function RoleplaySettingsPanel({ characters, activeCharacter, act
   }
   const preset = presets.find((p) => p.id === editing);
   return <div className="roleplay-settings">
-    <p>选择角色与预设，按需补充世界书。术语旁的「?」可查看解释。</p>
-    <details className="roleplay-glossary"><summary>术语说明 · 看不懂时再展开</summary><dl>{Object.entries(terms).map(([key, value]) => <div key={key}><dt>{value.name}</dt><dd>{value.explanation}</dd></div>)}</dl></details>
-    <label>配置角色<select value={role ?? ""} onChange={(e) => setRole(Number(e.target.value) || null)}><option value="">选择角色</option>{characters.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
-    {role && presets.length > 0 && <RoleSettings key={role} id={role} presets={presets} conversationId={role === activeCharacter ? activeConversation : null} />}
+    {!presetsOnly && <><label>角色<select value={role ?? ""} onChange={(e) => setRole(Number(e.target.value) || null)}><option value="">选择角色</option>{characters.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
+    {role && presets.length > 0 && <RoleSettings key={role} id={role} presets={presets} conversationId={role === activeCharacter ? activeConversation : null} />}</>}
     <details><summary>预设库 · {presets.length} 个</summary>
       <Term term="preset" text="什么是预设？" />
       <Term term="diagnostic" />
@@ -141,7 +139,7 @@ export default function RoleplaySettingsPanel({ characters, activeCharacter, act
       {preset && <PresetEditor key={preset.id} preset={preset} onSaved={() => void reload()} />}
     </details>
     {error && <p role="alert">{error}</p>}
-    <small>兼容范围：V2 PNG / JSON 角色卡、Chat Completion 提示词顺序、关键词 / 常驻世界书。未知字段保留，脚本、正则、深度注入与递归扫描不执行。角色卡从本页「我的角色」中的导入入口添加。</small>
+    <small>角色与世界书在「编辑角色」中管理。脚本和第三方扩展不执行。</small>
   </div>;
 }
 
@@ -168,18 +166,20 @@ function RoleSettings({ id, presets, conversationId }: { id: number; presets: Pr
   if (!settings) return <small>{error || "正在读取角色配置…"}</small>;
   const config = settings.config;
   return <>
+    <details><summary>回复规则</summary>
     <label><Term term="preset" text="绑定预设" /><select value={config.preset_id} onChange={(e) => change({}, { preset_id: e.target.value })}>{presets.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+    <small>角色卡决定“是谁”，预设决定“怎么回复”。不确定时用默认预设即可。</small>
     <div className="roleplay-two"><label>用户称呼<input maxLength={80} value={config.user_name} onChange={(e) => change({}, { user_name: e.target.value })} /></label><label><Term term="scan" /><input type="number" min={1} max={100} value={config.scan_depth} onChange={(e) => change({}, { scan_depth: Number(e.target.value) })} /></label></div>
     <label><Term term="persona" /><textarea rows={2} value={config.user_persona} onChange={(e) => change({}, { user_persona: e.target.value })} /></label>
     {settings.alternate_greetings.length > 0 && <label>新会话开场白<select value={config.greeting_index} onChange={(e) => change({}, { greeting_index: Number(e.target.value) })}><option value={-1}>默认开场白</option>{settings.alternate_greetings.map((text, index) => <option key={index} value={index}>{index + 1}. {text.slice(0, 45)}</option>)}</select></label>}
-    <small>角色的场景与后置规则请在角色卡中编辑，这里不重复填写。</small>
-    <details><summary>世界书 · {settings.book.entries.length} 条</summary>
-      <Term term="lore" text="世界书是什么？" />
+    </details>
+    <details className="unified-worldbook"><summary>设定资料（世界书） · {settings.book.entries.length} 条</summary>
+      <small>按关键词或常驻规则加入对话。</small>
       <details><summary>世界书设置说明</summary><Term term="constant" /><Term term="keywords" /><Term term="secondary" /><Term term="priority" /><Term term="order" /></details>
       <label>关键词世界书<input type="checkbox" checked={config.lore_enabled} onChange={(e) => change({}, { lore_enabled: e.target.checked })} /></label>
       <label><Term term="budget" text="预算（估算 token）" /><input type="number" min={0} max={16000} value={config.lore_budget} onChange={(e) => change({}, { lore_budget: Number(e.target.value) })} /></label>
-      <small>预算是本地字符估算，不是服务商精确 tokenizer。只扫描当前角色的当前会话。条目顺序决定排列，导入的 priority 决定预算优先级。</small>
-      {settings.book.entries.map((entry, index) => <fieldset key={index}><legend>条目 {index + 1}</legend>
+      <small>预算为估算值，超出时优先保留重要条目。</small>
+      {settings.book.entries.map((entry, index) => <details className="unified-lore-entry" key={index}><summary>{String(entry.name || entry.comment || entry.keys?.join("、") || `条目 ${index + 1}`)}<small>{entry.enabled === false ? "停用" : entry.constant ? "常驻" : "关键词"}</small></summary><fieldset><legend>条目 {index + 1}</legend>
         <div className="roleplay-two"><label>启用<input type="checkbox" checked={entry.enabled !== false} onChange={(e) => bookChange(settings.book.entries.map((x, i) => i === index ? { ...x, enabled: e.target.checked } : x))} /></label><label>常驻<input type="checkbox" checked={!!entry.constant} onChange={(e) => bookChange(settings.book.entries.map((x, i) => i === index ? { ...x, constant: e.target.checked } : x))} /></label></div>
         <label>关键词（逗号分隔）<input value={(entry.keys ?? []).join(", ")} onChange={(e) => bookChange(settings.book.entries.map((x, i) => i === index ? { ...x, keys: e.target.value.split(/[,，]/).map((s) => s.trim()) } : x))} /></label>
         <div className="roleplay-two"><label>同时匹配辅助关键词<input type="checkbox" checked={!!entry.selective} onChange={(e) => bookChange(settings.book.entries.map((x, i) => i === index ? { ...x, selective: e.target.checked } : x))} /></label><label>区分大小写<input type="checkbox" checked={!!entry.case_sensitive} onChange={(e) => bookChange(settings.book.entries.map((x, i) => i === index ? { ...x, case_sensitive: e.target.checked } : x))} /></label></div>
@@ -188,7 +188,7 @@ function RoleSettings({ id, presets, conversationId }: { id: number; presets: Pr
         <label>内容<textarea rows={3} value={entry.content} onChange={(e) => bookChange(settings.book.entries.map((x, i) => i === index ? { ...x, content: e.target.value } : x))} /></label>
         <label>位置<select value={String(entry.position ?? "before_char")} onChange={(e) => bookChange(settings.book.entries.map((x, i) => i === index ? { ...x, position: e.target.value } : x))}><option value="before_char">角色设定之前</option><option value="after_char">角色设定之后</option><option value="0">导入：之前</option><option value="1">导入：之后</option></select></label>
         <button onClick={() => bookChange(settings.book.entries.filter((_, i) => i !== index))}>删除条目</button>
-      </fieldset>)}
+      </fieldset></details>)}
       <button onClick={() => bookChange([...settings.book.entries, { keys: [], content: "", enabled: true, insertion_order: settings.book.entries.length, position: "before_char" }])}>添加条目</button>
       <button onClick={() => void download("worldbook.json", settings.book, "worldbook")}>导出世界书</button>
       <label className="roleplay-upload">导入世界书 JSON<input type="file" accept=".json" onChange={(e) => {
@@ -202,12 +202,19 @@ function RoleSettings({ id, presets, conversationId }: { id: number; presets: Pr
     <details><summary>请求检查（仅本机可见）</summary><label>测试消息<input value={testText} onChange={(e) => setTestText(e.target.value)} /></label>
       <Term term="request" text="这里能查看什么？" />
       <div className="roleplay-actions"><button onClick={() => void inspect(false)}>预览角色扮演层</button><button disabled={!conversationId} onClick={() => void inspect(true)}>最近实际主请求</button></div>
-      <small>先等待「已自动保存」再预览。实际快照可能包含私人聊天，导出角色卡不包含快照，请勿公开。</small>
+      <small>保存完成后检查。实际请求可能包含私人聊天，请勿公开。</small>
       {preview !== null && <><RequestDiagnostic value={preview} /><details><summary>完整请求 JSON</summary><pre className="roleplay-preview">{JSON.stringify(preview, null, 2)}</pre></details></>}
     </details>
     {error && <p role="alert">{error}</p>}
     {settings.source.creator && <small>作者：{settings.source.creator}</small>}
   </>;
+}
+
+export function UnifiedRoleSettings({ id, conversationId }: { id: number; conversationId: number | null }) {
+  const [presets, setPresets] = useState<Preset[]>([]);
+  const [error, setError] = useState("");
+  useEffect(() => { let live = true; void call<Preset[]>("/presets").then(value => { if (live) setPresets(value); }).catch((e: Error) => { if (live) setError(e.message); }); return () => { live = false; }; }, [id]);
+  return <section className="roleplay-settings unified-role-settings" aria-label="角色设定与世界书"><h3>场景与资料</h3><small>以下修改自动保存。</small><RoleCardContext id={id} />{presets.length > 0 && <RoleSettings id={id} presets={presets} conversationId={conversationId} />}{error && <p role="alert">{error}</p>}</section>;
 }
 
 export function RoleCardContext({ id }: { id: number }) {
@@ -219,7 +226,7 @@ export function RoleCardContext({ id }: { id: number }) {
   function change(key: "scenario" | "post_history_instructions", value: string) {
     const next = { ...fields!, [key]: value }; setFields(next); schedule(next);
   }
-  return <details className="roleplay-settings"><summary>角色场景与补充规则（可选）</summary><label><Term term="scene" /><textarea rows={3} value={fields.scenario} onChange={(event) => change("scenario", event.target.value)} /></label><label><Term term="post" /><textarea rows={3} value={fields.post_history_instructions} onChange={(event) => change("post_history_instructions", event.target.value)} /></label><small role="status">此处修改独立自动保存 · {status}</small>{status.startsWith("保存失败") && <button type="button" onClick={flush}>重试保存</button>}</details>;
+  return <details className="roleplay-settings"><summary>场景与补充要求</summary><label>场景<textarea rows={3} value={fields.scenario} onChange={(event) => change("scenario", event.target.value)} /></label><label>补充要求<textarea rows={3} value={fields.post_history_instructions} onChange={(event) => change("post_history_instructions", event.target.value)} /></label><small role="status">{status}</small>{status.startsWith("保存失败") && <button type="button" onClick={flush}>重试保存</button>}</details>;
 }
 
 function RequestDiagnostic({ value }: { value: unknown }) {

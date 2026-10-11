@@ -253,3 +253,26 @@
 @media(prefers-reduced-motion:reduce) {
   .shell.workspace .workspace-navigation > button { transition:none; }
 }
+
+/* Equal side tracks keep titles on the window centre, not between unequal controls. */
+.shell.workspace main > .workspace-page-header { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,40%) minmax(0,1fr); }
+.shell.workspace main > header > .header-copy { grid-column:2; align-items:center; justify-self:stretch; text-align:center; width:100%; min-width:0; }
+.shell.workspace main > header > .header-copy > strong { display:block; max-width:100%; }
+.shell.workspace .workspace-navigation { flex:0 1 auto; }
+.shell.workspace .workspace-window-actions { display:flex; flex:0 0 auto; align-items:center; gap:4px; margin-left:auto; }
+.shell.workspace .workspace-window-actions > button { display:inline-flex; align-items:center; justify-content:center; gap:6px; height:34px; padding:0 10px; border:0; border-radius:9px; color:var(--muted); background:transparent; font:inherit; font-size:12px; white-space:nowrap; }
+.shell.workspace .workspace-window-actions > button:hover,
+.shell.workspace .workspace-window-actions > button.active { color:var(--text); background:var(--surface); }
+.shell.workspace .workspace-window-actions > button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+@media(max-width:720px) {
+  .shell.workspace .workspace-window-actions > button { width:32px; padding:0; }
+  .shell.workspace .workspace-window-actions > button > span { display:none; }
+  .shell.workspace main > .workspace-chat-header > .header-copy { grid-column:1 / -1; grid-row:1; width:60%; justify-self:center; text-align:center; }
+  .shell.workspace main > .workspace-chat-header > .workspace-header-left { grid-column:1; grid-row:2; }
+  .shell.workspace main > .workspace-chat-header > .window-tools { grid-column:2; grid-row:2; width:auto; max-width:100%; }
+  .shell.workspace .workspace-chat-header .model-switcher { margin-right:0; }
+}
+@media(max-width:600px) {
+  .shell.workspace .workspace-navigation { flex:1 1 auto; overflow-x:auto; scrollbar-width:none; }
+  .shell.workspace .workspace-window-actions { gap:0; }
+}

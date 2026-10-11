@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 export function WorkspaceIcon({ name }: { name: "chat" | "role" | "recent" | "plugin" | "settings" | "model" | "attach" | "pin" | "drop" | "mic" | "command" | "send" | "stop" | "image" }) {
   const paths = {
@@ -33,17 +33,31 @@ type RecentProps = {
 type NavigationProps = {
   panel: "chat" | "characters" | "plugins" | "settings" | "models";
   onPanel: (panel: NavigationProps["panel"]) => void;
+  windowActions?: ReactNode;
 };
 
-export default function WorkspaceNavigation({ panel, onPanel }: NavigationProps) {
+export default function WorkspaceNavigation({ panel, onPanel, windowActions }: NavigationProps) {
+  const navRef = useRef<HTMLElement>(null);
+  const [indicator, setIndicator] = useState({ left:0, width:0 });
+  useLayoutEffect(() => {
+    const nav = navRef.current;
+    if (!nav) return;
+    const update = () => { const active = nav.querySelector<HTMLButtonElement>("button.active"); if (active) setIndicator({ left:active.offsetLeft, width:active.offsetWidth }); };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(nav);
+    return () => observer.disconnect();
+  }, [panel]);
   return <div className="workspace-topbar">
     <button className="workspace-brand" onClick={() => onPanel("chat")} aria-label="Yu's AI，返回对话"><span className="workspace-logo"><WorkspaceIcon name="drop" /></span><strong>Yu’s AI</strong></button>
-    <nav className="workspace-navigation" aria-label="主导航">
+    <nav className="workspace-navigation" aria-label="主导航" ref={navRef}>
+      <span className="workspace-nav-glider" aria-hidden="true" style={{ width:indicator.width, transform:`translateX(${indicator.left}px)` }} />
       <button className={panel === "chat" ? "active" : ""} aria-current={panel === "chat" ? "page" : undefined} onClick={() => onPanel("chat")}><WorkspaceIcon name="chat" />对话</button>
       <button className={panel === "models" ? "active" : ""} aria-current={panel === "models" ? "page" : undefined} onClick={() => onPanel("models")}><WorkspaceIcon name="model" />模型配置</button>
       <button className={panel === "plugins" || panel === "characters" ? "active" : ""} aria-current={panel === "plugins" || panel === "characters" ? "page" : undefined} onClick={() => onPanel("plugins")}><WorkspaceIcon name="plugin" />插件</button>
       <button className={panel === "settings" ? "active workspace-settings" : "workspace-settings"} aria-current={panel === "settings" ? "page" : undefined} onClick={() => onPanel("settings")} aria-label="设置" title="设置"><WorkspaceIcon name="settings" />设置</button>
     </nav>
+    {windowActions && <div className="workspace-window-actions" aria-label="窗口操作">{windowActions}</div>}
   </div>;
 }
 

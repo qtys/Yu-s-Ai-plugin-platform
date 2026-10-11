@@ -4,11 +4,11 @@
 
 Yu's AI 是一款本地优先的 Windows 私人 AI 聊天软件。它将角色扮演、多模型 API、长期记忆、文档阅读、离线翻译和桌面宠物整合在同一个应用中，并为后续插件能力预留扩展空间。
 
-最新公开安装版：**Windows 0.16.4**（x64）和 **Android 0.1.0 测试版**（ARM64）。两端数据独立保存，不会自动同步。
+最新公开安装版：**Windows 0.16.6**（x64）和 **Android 0.1.0 测试版**（ARM64）。两端数据独立保存，不会自动同步。
 
 > ### ⬇ 下载 Windows 安装版
 >
-> [**下载 Windows 安装程序（x64）**](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/download/v0.16.4/Yus-AI-0.16.4-x64-setup.exe) · [**下载 Android APK（ARM64 测试版）**](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/download/v0.15.27/Yus-AI-Mobile-0.1.0-arm64.apk)
+> [**下载 Windows 安装程序（x64）**](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/download/v0.16.6/Yus-AI-0.16.6-x64-setup.exe) · [**下载 Android APK（ARM64 测试版）**](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases/download/v0.15.27/Yus-AI-Mobile-0.1.0-arm64.apk)
 
 无需配置开发环境，下载安装后即可运行。Android 测试版目前仅支持 ARM64 手机；安装前请阅读[手机端数据与调试版升级说明](docs/ANDROID.md)。其他版本、安装包校验值和发布说明可在 [GitHub Releases](https://github.com/qtys/Yu-s-Ai-plugin-platform/releases) 查看。
 
@@ -429,6 +429,15 @@ cd ..\backend
 - 长按对话消息，或点击消息旁的「···」，可编辑或撤回。编辑后下一轮模型请求使用修改后的内容；已有回复不会自动重新生成。
 - 撤回用户消息会删除该轮 AI 回复，其他轮次保留；撤回 AI 回复仅删除该条。确认后生效，空输入框会放回撤回的用户原文。
 - 模型正在回复时不可修改消息；失败发送留下的记录也可处理。不删除长期指令，不重置首轮状态，不影响其他对话。覆盖安装保留手机数据。
+
+### 0.16.6（2026-10-12，Windows x64）
+
+- 角色编辑统一管理描述、开场白、回复要求、场景及世界书；长条目与进阶选项折叠，简化提示文案并补充预设解释。
+- 包含 0.16.5 的新主题、动态切换与顶栏布局优化。
+
+### 0.16.5（2026-10-11，Windows x64）
+
+- 新增葡萄夜游、浅色晴光共鸣主题与动态强度设置，统一页面、导航、弹窗及抽屉动画，优化对话标题和顶栏操作。
 
 ### 0.16.4（2026-10-11，Windows x64）
 

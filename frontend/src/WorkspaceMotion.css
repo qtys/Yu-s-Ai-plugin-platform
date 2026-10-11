@@ -1,0 +1,15 @@
+/* One compositor animation per page; no full-window snapshots or nested entrances. */
+.shell.workspace .workspace-navigation { position:relative; isolation:isolate; }
+.workspace-nav-glider { position:absolute; left:0; bottom:0; height:2px; background:var(--accent); border-radius:3px; pointer-events:none; transition:transform 220ms cubic-bezier(.2,.8,.2,1),width 220ms cubic-bezier(.2,.8,.2,1); }
+.shell.workspace .workspace-navigation > button { transition:color 250ms ease,background 250ms ease,transform 250ms ease; }
+.shell.workspace .workspace-navigation > button:active { transform:scale(.96); }
+@keyframes workspace-content-in { from { opacity:0; transform:translateY(12px); } to { opacity:1; transform:none; } }
+.shell.workspace details[open]::details-content { animation:workspace-drawer-in 180ms ease-out; }
+@keyframes workspace-drawer-in { from { opacity:.5; } to { opacity:1; } }
+.shell.workspace .plugin-modal,.shell.workspace .workspace-history { animation:workspace-content-in 280ms cubic-bezier(.2,.8,.2,1) both; }
+.shell.workspace[data-theme="tide"] .welcome-orb,.workspace-tide-scene .violet-sculpture,.workspace-tide-scene .violet-water { display:none; }
+.shell.workspace[data-theme="tide"] .welcome { gap:20px; }
+@media(prefers-reduced-motion:reduce) {
+  .workspace-nav-glider,.shell.workspace details::details-content { transition:none !important; }
+  .shell.workspace details::details-content,.shell.workspace > main > section,.shell.workspace .plugin-modal,.shell.workspace .workspace-history { animation:none !important; }
+}
