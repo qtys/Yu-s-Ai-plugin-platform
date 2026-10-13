@@ -14,6 +14,7 @@ use serde::Serialize;
 mod window_appearance;
 mod window_bounds;
 mod pet_chat_window;
+mod ui_update;
 use pet_chat_window::{fit_pet_chat_window, hide_pet_chat_window, show_pet_chat_window, set_pet_chat_regions};
 
 #[tauri::command]
@@ -135,6 +136,13 @@ fn stop_backend(app: &AppHandle) {
 }
 
 fn prepare_install_data_dir(app: &AppHandle) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+  if cfg!(debug_assertions) {
+    if let Some(path) = std::env::var_os("YUS_AI_DEV_DATA_DIR") {
+      let data_dir = std::path::PathBuf::from(path);
+      std::fs::create_dir_all(&data_dir)?;
+      return Ok(data_dir);
+    }
+  }
   let legacy_data_dir = app.path().app_data_dir()?;
   let executable = std::env::current_exe()?;
   let install_dir = executable.parent().ok_or("无法确定软件安装目录")?;
@@ -459,11 +467,13 @@ fn set_pet_interaction_mode(window: WebviewWindow, mode: u8, align_left: bool, p
 
 #[tauri::command]
 fn get_autostart_status(app: AppHandle) -> Result<bool, String> {
+  if cfg!(debug_assertions) { return Ok(false); }
   app.autolaunch().is_enabled().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 fn set_autostart(app: AppHandle, enabled: bool) -> Result<bool, String> {
+  if cfg!(debug_assertions) { return Err("开发测试版不设置开机自启".into()); }
   let manager = app.autolaunch();
   if enabled {
     manager.enable().map_err(|error| error.to_string())?;
@@ -838,6 +848,11 @@ fn install_update(app: AppHandle, installer_path: String) -> Result<(), String> 
 
 #[tauri::command]
 fn restart_application(app: AppHandle) -> Result<(), String> {
+  if cfg!(debug_assertions) {
+    // Keep the development CLI and its external reloader alive after data restore.
+    for window in app.webview_windows().values() { window.eval("window.location.reload()").map_err(|error| error.to_string())?; }
+    return Ok(());
+  }
   let executable = std::env::current_exe().map_err(|error| error.to_string())?;
   stop_backend(&app);
   spawn_after_exit(&executable)?;
@@ -862,6 +877,7 @@ fn show_main_window(app: AppHandle) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let application = tauri::Builder::default()
+    .register_uri_scheme_protocol("tauri", |context, request| ui_update::response(context.app_handle(), request.uri().path()))
     .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
       if let Some(main) = app.get_webview_window("main") {
         if main.is_visible().unwrap_or(false) {
@@ -880,7 +896,7 @@ pub fn run() {
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_log::Builder::default().level(log::LevelFilter::Info).build())
-    .plugin(tauri_plugin_autostart::Builder::new().app_name("Yus AI").build())
+    .plugin(tauri_plugin_autostart::Builder::new().app_name(if cfg!(debug_assertions) { "Yus AI Dev" } else { "Yus AI" }).build())
     .manage(DesktopState {
       backend: Mutex::new(None),
       backend_exited: Arc::new(AtomicBool::new(true)),
@@ -888,7 +904,7 @@ pub fn run() {
       always_on_top: Mutex::new(false),
       mini_mode: Mutex::new(false),
     })
-    .invoke_handler(tauri::generate_handler![fit_pet_chat_window, hide_pet_chat_window, show_pet_chat_window, set_pet_chat_regions, fit_pet_chat_layout, set_main_window_theme, set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, resize_pet_dialog, start_pet_drag, cancel_pet_auto_move, move_pet_by, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, set_pet_interaction_mode, set_pet_keyboard_focus, get_autostart_status, set_autostart, export_character_card, export_roleplay_json, copy_backup_file, export_generated_image, install_update, confirm_update_startup, restart_application, record_window_diagnostic, capture_screen])
+    .invoke_handler(tauri::generate_handler![ui_update::ui_update_status, ui_update::check_ui_update, ui_update::stage_ui_update, ui_update::confirm_ui_update, ui_update::rollback_ui_update, fit_pet_chat_window, hide_pet_chat_window, show_pet_chat_window, set_pet_chat_regions, fit_pet_chat_layout, set_main_window_theme, set_always_on_top, set_mini_mode, enter_pet_mode, show_main_window, set_pet_layout, resize_pet_dialog, start_pet_drag, cancel_pet_auto_move, move_pet_by, snap_pet_to_edge, get_pet_position, set_pet_position, hide_pet_window, show_pet_window, set_continuous_translation, set_pet_interaction_mode, set_pet_keyboard_focus, get_autostart_status, set_autostart, export_character_card, export_roleplay_json, copy_backup_file, export_generated_image, install_update, confirm_update_startup, restart_application, record_window_diagnostic, capture_screen])
     .setup(|app| {
       pet_chat_window::start_following(app.handle().clone());
       let legacy_data_dir = app.path().app_data_dir()?;
@@ -900,6 +916,7 @@ pub fn run() {
         fallback_logs
       };
       let sidecar_log = log_dir.join("sidecar.log");
+      if !(cfg!(debug_assertions) && std::env::var("YUS_AI_EXTERNAL_BACKEND").as_deref() == Ok("1")) {
       let translation_runtime_dir = data_dir.join("translation-runtime");
       std::fs::create_dir_all(data_dir.join("temp"))?;
       let shutdown_file = data_dir.join("backend.shutdown");
@@ -921,8 +938,6 @@ pub fn run() {
         .env("YUS_AI_PARENT_PID", std::process::id().to_string())
         .spawn()?;
       *app.state::<DesktopState>().backend.lock().unwrap() = Some(child);
-      #[cfg(target_os = "windows")]
-      start_selection_monitor(app.handle().clone());
       tauri::async_runtime::spawn(async move {
         while let Some(event) = output.recv().await {
           if matches!(&event, CommandEvent::Terminated(_)) { backend_exited.store(true, Ordering::Release); }
@@ -941,19 +956,26 @@ pub fn run() {
         }
         backend_exited.store(true, Ordering::Release);
       });
+      }
+      #[cfg(target_os = "windows")]
+      start_selection_monitor(app.handle().clone());
 
       let show = MenuItem::with_id(app, "show", "显示主界面", true, None::<&str>)?;
       let pet_toggle = MenuItem::with_id(app, "pet_toggle", "显示/隐藏桌宠", true, None::<&str>)?;
       let autostart_enabled = app.handle().autolaunch().is_enabled().unwrap_or(false);
-      let autostart = MenuItem::with_id(app, "autostart", if autostart_enabled { "关闭开机自启" } else { "开启开机自启" }, true, None::<&str>)?;
+      let autostart = MenuItem::with_id(app, "autostart", if autostart_enabled { "关闭开机自启" } else { "开启开机自启" }, !cfg!(debug_assertions), None::<&str>)?;
       let pin = MenuItem::with_id(app, "pin", "切换窗口置顶", true, None::<&str>)?;
       let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-      let menu = Menu::with_items(app, &[&show, &pet_toggle, &autostart, &pin, &quit])?;
+      let ui_recovery = MenuItem::with_id(app, "ui_recovery", "回退界面并重启", !cfg!(debug_assertions), None::<&str>)?;
+      let menu = Menu::with_items(app, &[&show, &pet_toggle, &autostart, &pin, &ui_recovery, &quit])?;
       let autostart_menu = autostart.clone();
       TrayIconBuilder::new()
         .icon(app.default_window_icon().unwrap().clone())
         .menu(&menu)
         .on_menu_event(move |app, event| match event.id.as_ref() {
+          "ui_recovery" => {
+            if ui_update::rollback_ui_update().is_ok() { let _ = restart_application(app.clone()); }
+          },
           "show" => {
             let _ = app.emit_to("pet", "pet-reset", ());
             if let Some(pet) = app.get_webview_window("pet") {

@@ -6,7 +6,7 @@ $Python = Join-Path $ProjectRoot '.venv\Scripts\python.exe'
 $BundleRoot = Join-Path $ProjectRoot 'build\backend-dist'
 $BinariesRoot = Join-Path $ProjectRoot 'frontend\src-tauri\binaries'
 
-$CacheOptions = if ($Incremental) { @() } else { @('--clean') }
+$CacheOptions = @(if (-not $Incremental) { '--clean' })
 & $Python -m PyInstaller @CacheOptions `
   --noconfirm `
   --onedir `

@@ -84,6 +84,22 @@ registry.register(PluginManifest(
     version="1.0.0", surfaces=("chat_reply", "pet_chat", "settings"),
     permissions=("model_api",), default_enabled=False,
 ))
+registry.register(PluginManifest(
+    id="story_options", name="剧情选项", description="普通剧情回复末尾生成 2–4 个分支，点击填入输入框，确认后发送",
+    version="1.0.0", surfaces=("chat_reply", "chat_message", "settings"),
+    permissions=("model_api",), default_enabled=False, platforms=("desktop",),
+))
+
+STORY_OPTIONS_PROMPT = (
+    "【剧情选项插件】仅当本轮是在进行普通、安全的虚构剧情互动时，"
+    "在正文及角色状态栏全部结束之后、回复最末尾提供2–4个不同的普通剧情分支。"
+    "事实问答、技术咨询、规则解释及无法满足的请求不生成剧情选项。"
+    "每个分支应简短、具体、贴合当前场景，是供用户选择的后续行动，不代表用户已经行动；"
+    "不要代替用户选择，不要重复已经完成的情节。只提供非色情、非性化的普通分支。"
+    "格式严格如下，标题及每个选项独占一行，不使用代码块、HTML、XML或额外分类：\n"
+    "『剧情发展』\n1.[正常]第一个普通剧情行动\n2.[正常]第二个普通剧情行动\n"
+    "可以继续添加3和4，但总数必须为2–4个。用户明确要求不提供选项时，本轮不添加。"
+)
 
 
 NOVEL_REPLY_PROMPT = (

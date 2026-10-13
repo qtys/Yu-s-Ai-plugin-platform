@@ -1,0 +1,56 @@
+/* Quiet workspace: content first, no persistent diagnostic chrome. */
+.shell.workspace[data-theme] .models-page .model-connection {
+  background:var(--panel); border:1px solid var(--line); border-radius:20px;
+  margin:0; box-shadow:0 5px 20px #00000004;
+}
+.shell.workspace[data-theme] .models-page .model-connection > .model-detail-heading {
+  padding:22px 26px; background:transparent; border-bottom:1px solid var(--line);
+  border-radius:20px 20px 0 0;
+}
+.shell.workspace[data-theme] .models-page .model-connection > form.drawer-content {
+  padding:24px 26px; margin:0; border:0; border-radius:0 0 20px 20px;
+  background:transparent; gap:20px;
+}
+.shell.workspace[data-theme] .models-page .model-connection > form > label > input {
+  background:var(--input); border-color:var(--line);
+}
+@media(max-width:600px) {
+  .shell.workspace[data-theme] .models-page .model-connection > .model-detail-heading,
+  .shell.workspace[data-theme] .models-page .model-connection > form.drawer-content { padding:18px; }
+}
+.shell.workspace[data-theme] { grid-template-rows:54px minmax(0,1fr); }
+.shell.workspace[data-theme="tide"] { grid-template-rows:64px minmax(0,1fr); }
+:root[data-theme="graphite"], .shell[data-theme="graphite"] {
+  color-scheme:light;
+  --bg:#f5f6f4; --panel:#fcfcfa; --surface:#eceeeb; --surface-strong:#e1e5df;
+  --line:#dce0da; --text:#292f2c; --muted:#68716b;
+  --accent:#364c41; --accent2:#293d33; --accent-text:#ffffff; --input:#ffffff;
+  --icon-from:#edf1eb; --icon-to:#dce5da; --icon-text:#364c41;
+}
+.shell.workspace[data-theme="graphite"] .workspace-topbar { background:var(--panel); border-bottom:1px solid var(--line); }
+.shell.workspace[data-theme="graphite"] .workspace-navigation { gap:6px; }
+.shell.workspace[data-theme="graphite"] .workspace-navigation > button { border-radius:12px; transition:background 160ms ease,color 160ms ease; }
+.shell.workspace[data-theme="graphite"] .workspace-navigation > button.active { background:var(--surface); color:var(--text); }
+.shell.workspace[data-theme="graphite"] .workspace-nav-glider { display:none; }
+.shell.workspace[data-theme="graphite"] .workspace-chat-header { background:#fcfcfaf0; border-color:var(--line); box-shadow:none; }
+.shell.workspace[data-theme="graphite"] .welcome { gap:18px; }
+.shell.workspace[data-theme="graphite"] .welcome h1 { font-weight:550; letter-spacing:-.035em; }
+.shell.workspace[data-theme="graphite"] .welcome > span { display:none; }
+.shell.workspace[data-theme="graphite"] .composer { width:min(900px,calc(100% - 48px)); border:1px solid var(--line); border-radius:24px; background:var(--input); box-shadow:0 6px 24px #263b2b08; margin-bottom:24px; transition:border-color 160ms ease,box-shadow 160ms ease; }
+.shell.workspace[data-theme="graphite"] .composer:focus-within { border-color:#94a59a; box-shadow:0 6px 24px #263b2b08,0 0 0 3px #364c4108; }
+.shell.workspace[data-theme="graphite"] .send-button { border-radius:16px; background:var(--accent); color:var(--accent-text); }
+.shell.workspace[data-theme="graphite"] .messages { padding-inline:max(24px,calc((100% - 900px)/2)); }
+.shell.workspace[data-theme="graphite"] article.user .message-body > p { background:#e7ede5; color:var(--text); border-radius:18px; }
+.shell.workspace[data-theme="graphite"] .settings-drawer,
+.shell.workspace[data-theme="graphite"] .plugin-manager-card,
+.shell.workspace[data-theme="graphite"] .plugin-modal { background:var(--panel); border-color:var(--line); border-radius:20px; box-shadow:none; }
+.shell.workspace[data-theme="graphite"] .form-page { background:transparent; }
+.shell.workspace[data-theme="graphite"] .theme-card[data-preview="graphite"] { --preview-bg:#f5f6f4; --preview-panel:#fcfcfa; --preview-ink:#292f2c; --preview-accent:#364c41; }
+@media(max-width:600px) {
+  .shell.workspace[data-theme="graphite"] .composer { width:calc(100% - 24px); margin-bottom:12px; border-radius:20px; }
+  .shell.workspace[data-theme="graphite"] .messages { padding-inline:16px; }
+}
+@media(prefers-reduced-motion:reduce) {
+  .shell.workspace[data-theme="graphite"] .composer,
+  .shell.workspace[data-theme="graphite"] .workspace-navigation > button { transition:none; }
+}

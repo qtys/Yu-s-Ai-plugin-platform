@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties, FormEvent, ReactNode } from "react";
 import BackgroundSettings, { readWorkspaceBackground } from "./BackgroundSettings";
+import UiUpdatePanel from "./UiUpdatePanel";
 import NovelSettingsPanel from "./NovelSettingsPanel";
 import RoleplaySettingsPanel, { UnifiedRoleSettings } from "./RoleplaySettingsPanel";
 import RoleInitialization from "./RoleInitialization";
@@ -14,6 +15,7 @@ import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import MessageContent from "./MessageContent";
 import { SpeechSettingsPanel, useSpeech, SpeechToolbar, SpeechStatus } from "./Speech";
 import type { MessageDisplayMode } from "./MessageContent";
+import type { StoryOption } from "./storyOptions";
 import { isPluginEnabled, permissionLabels } from "./plugins";
 import type { PluginId, PluginInfo } from "./plugins";
 import "./App.css";
@@ -25,10 +27,11 @@ import "./WorkspacePages.css";
 import WorkspaceAtmosphere, { WorkspaceBackdrop, WorkspaceTideBackdrop, type AtmosphereMotion } from "./WorkspaceAtmosphere";
 import "./PluginSettings.css";
 import "./WorkspaceMotion.css";
+import "./WorkspaceQuiet.css";
 
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:8000/api";
 const pluginCategories: [string, PluginId[]][] = [
-  ["对话呈现", ["message_display", "novel_reply"]],
+  ["对话呈现", ["message_display", "novel_reply", "story_options"]],
   ["对话增强", ["roleplay", "conversation_environment", "instruction_review"]],
   ["桌宠互动", ["proactive"]],
   ["效率工具", ["translation"]],
@@ -44,9 +47,9 @@ type Character = {
 };
 const emptyCharacter = { name: "", description: "", system_prompt: "", avatar_data: "", greeting: "", background: "", personality: "", speaking_style: "", relationship: "", boundaries: "", example_dialogue: "", initial_prompt_enabled: false, initial_prompt: "" };
 type Conversation = { id: number; character_id: number; title: string; initial_prompt_applied?: boolean | number };
-type Message = { id?: number; conversation_id?: number; clientKey?: string; role: "user" | "assistant"; content: string; image_id?: string | null; origin?: string };
-type ChatPhase = "generating" | "reviewing" | "revising";
-const chatPhaseLabels: Record<ChatPhase, string> = { generating: "正在生成回复…", reviewing: "正在审核指令…", revising: "正在流式修订回复…" };
+type Message = { id?: number; conversation_id?: number; clientKey?: string; role: "user" | "assistant"; content: string; image_id?: string | null; origin?: string; story_options?: StoryOption[] };
+type ChatPhase = "generating" | "reviewing" | "revising" | "story_options";
+const chatPhaseLabels: Record<ChatPhase, string> = { generating: "正在生成回复…", reviewing: "正在审核指令…", revising: "正在流式修订回复…", story_options: "正在补全剧情选项…" };
 type SavedInstruction = { id: number; character_id: number; conversation_id: number | null; content: string; enabled: boolean; source_template_name: string; created_at: string };
 type PromptTemplate = { id: number; name: string; category: string; content: string; created_at: string };
 type QueuedTemplate = { templateId: number; templateName: string; characterId: number; variables: Record<string, string> };
@@ -77,8 +80,8 @@ type UpdateProgress = { stage: "downloading" | "retrying" | "complete"; percent:
 type BackupInfo = { path: string; filename: string; size: number; sha256: string; created_at: string; counts: { characters: number; conversations: number; messages: number; documents: number } };
 const themes: { id: Theme; name: string; description: string }[] = [
   { id: "grape", name: "葡萄夜游", description: "葡萄紫 · 奶油纸面 · 星光与小伙伴" },
-  { id: "tide", name: "晴光共鸣", description: "珍珠白 · 浅蓝水面 · 琉璃雨滴" },
-  { id: "graphite", name: "雾白", description: "雾白画布 · 石墨黑细节" },
+  { id: "tide", name: "晴光共鸣", description: "暖白纸面 · 鼠尾草绿 · 窗边晴光" },
+  { id: "graphite", name: "雾白", description: "柔白留白 · 石墨文字 · 专注对话" },
   { id: "monochrome", name: "黑曜", description: "极夜黑 · 冷白轮廓 · 黑白反差" },
   { id: "paper", name: "纸墨", description: "暖白纸张 · 高对比墨色" },
   { id: "midnight", name: "深海", description: "深蓝夜色 · 冰蓝高光" },
@@ -135,6 +138,14 @@ export default function App() {
     },
   );
   const [backendReady, setBackendReady] = useState(false);
+  const [chatFontSize, setChatFontSize] = useState(() => {
+    const value = Number(localStorage.getItem("yus-ai-chat-font-size"));
+    return Number.isFinite(value) && value >= 12 && value <= 24 ? value : 16;
+  });
+  const [chatAvatarSize, setChatAvatarSize] = useState(() => {
+    const value = Number(localStorage.getItem("yus-ai-chat-avatar-size"));
+    return Number.isFinite(value) && value >= 40 && value <= 80 ? value : 52;
+  });
   const [atmosphereMotion, setAtmosphereMotion] = useState<AtmosphereMotion>(() => {
     const saved = localStorage.getItem("yus-ai-atmosphere-motion");
     return saved === "off" || saved === "full" ? saved : "light";
@@ -183,13 +194,16 @@ export default function App() {
   const setPanel = useCallback((next: typeof panel) => commitPanel(next), []);
   useLayoutEffect(() => {
     const page = pageMotionRef.current;
-    if (!page || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const animation = page.animate([
-      { opacity:.65, transform:"translateY(6px)" },
+    if (!page || atmosphereMotion === "off" || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const dynamic = theme === "grape" || theme === "tide";
+    const entry = dynamic ? ({ chat:"translateY(14px)", models:"translateX(24px)", plugins:"translateY(24px) scale(.985)", characters:"translateX(-24px)", settings:"translateY(14px) scale(.985)" }[panel]) : "translateY(6px)";
+    const target = page.querySelector<HTMLElement>(":scope > section") ?? page;
+    const animation = target.animate([
+      { opacity:dynamic ? .25 : .65, transform:entry },
       { opacity:1, transform:"translateY(0)" },
-    ], { duration:220, easing:"cubic-bezier(.2,.8,.2,1)" });
+    ], { duration:dynamic ? 400 : 220, easing:"cubic-bezier(.16,1,.3,1)" });
     return () => animation.cancel();
-  }, [panel]);
+  }, [panel, theme, atmosphereMotion]);
   const [settings, setSettings] = useState<Settings>({
     active_model_profile_id: null,
     base_url: "https://api.openai.com/v1",
@@ -264,6 +278,20 @@ export default function App() {
   const desktop = "__TAURI_INTERNALS__" in window;
   const speechEnabled = modelCapabilities.speech;
   const roleplayEnabled = plugins.some((plugin) => plugin.id === "roleplay" && plugin.enabled);
+  const storyOptionsEnabled = plugins.some((plugin) => plugin.id === "story_options" && plugin.enabled);
+  function selectStoryOption(text: string) {
+    if (busy || withdrawingMessage !== null || imageSkillActive) return;
+    const current = inputRef.current?.value ?? inputDraftRef.current;
+    const next = current.trim() ? `${current}\n${text}` : text;
+    inputDraftRef.current = next;
+    if (inputRef.current) {
+      inputRef.current.value = next;
+      inputRef.current.style.height = "0px";
+      inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 144)}px`;
+      inputRef.current.focus();
+      inputRef.current.setSelectionRange(next.length, next.length);
+    }
+  }
   const voice = useSpeech(speechEnabled, `${panel}:${activeCharacter}:${activeConversation}:${busy}`, (text) => {
     const current = inputRef.current?.value ?? inputDraftRef.current;
     const next = current ? `${current}\n${text}` : text;
@@ -435,6 +463,7 @@ export default function App() {
             try {
               const status = await request<{ version: string }>("/diagnostics/status");
               if (!cancelled) await invoke("confirm_update_startup", { backendVersion: status.version });
+              if (!cancelled) await invoke("confirm_ui_update");
             } catch (cause) {
               console.warn("旧更新安装包清理未完成，将在下次启动时重试：", cause);
             }
@@ -1308,7 +1337,8 @@ export default function App() {
           if (!line) continue;
           const data = JSON.parse(line);
           if (data.error) throw new Error(data.error);
-          if (data.phase === "reviewing" || data.phase === "revising") setChatPhase(data.phase);
+          if (data.warning) setError(data.warning);
+          if (data.phase === "reviewing" || data.phase === "revising" || data.phase === "story_options") setChatPhase(data.phase);
           if (typeof data.revision_token === "string") {
             const first = !revisionStarted;
             revisionStarted = true;
@@ -1331,7 +1361,8 @@ export default function App() {
       if (buffer.trim()) {
         const data = JSON.parse(buffer);
         if (data.error) throw new Error(data.error);
-        if (data.phase === "reviewing" || data.phase === "revising") setChatPhase(data.phase);
+        if (data.phase === "reviewing" || data.phase === "revising" || data.phase === "story_options") setChatPhase(data.phase);
+        if (data.warning) setError(data.warning);
         if (typeof data.revision_token === "string") {
           const first = !revisionStarted;
           revisionStarted = true;
@@ -1476,7 +1507,7 @@ export default function App() {
     .filter((group) => group.items.length > 0);
 
   return (
-    <div className={`${mini ? "shell workspace mini" : "shell workspace"}${workspaceBackground ? " has-background" : ""}`} data-theme={theme} style={workspaceBackground ? { "--background-veil": 1 - workspaceBackground.strength } as CSSProperties : undefined}>
+    <div className={`${mini ? "shell workspace mini" : "shell workspace"}${workspaceBackground ? " has-background" : ""}`} data-theme={theme} data-motion={atmosphereMotion} style={{ "--chat-font-size": `${chatFontSize}px`, "--chat-avatar-size": `${chatAvatarSize}px`, ...(workspaceBackground ? { "--background-veil": 1 - workspaceBackground.strength } : {}) } as CSSProperties}>
       {workspaceBackground && <img className="workspace-wallpaper" src={workspaceBackground.image} alt="" aria-hidden="true" draggable={false} />}
       <WorkspaceNavigation panel={panel} onPanel={setPanel} windowActions={desktop ? <>
         <button type="button" className={pinned ? "active" : ""} aria-pressed={pinned} onClick={togglePin} title="切换始终置顶"><WorkspaceIcon name="pin" /><span>置顶</span></button>
@@ -1596,6 +1627,13 @@ export default function App() {
               </div>
             </div>
             <details className="settings-drawer page-disclosure"><summary className="drawer-trigger"><span><strong>自定义背景</strong><small>使用自己的图片，让空间更有个性</small></span><span className="drawer-chevron" aria-hidden="true">⌄</span></summary><div className="drawer-content"><BackgroundSettings value={workspaceBackground} onChange={setWorkspaceBackground} /></div></details>
+            <div className="theme-panel chat-reading-settings">
+              <div className="form-section-title"><strong>对话阅读</strong><small>即时生效，自动保存；仅调整展开界面。</small></div>
+              <label>字体大小 <output>{chatFontSize} px</output><input type="range" min={12} max={24} step={1} value={chatFontSize} onChange={event => { const value = Number(event.target.value); setChatFontSize(value); localStorage.setItem("yus-ai-chat-font-size", String(value)); }} /></label>
+              <label>头像大小 <output>{chatAvatarSize} px</output><input type="range" min={40} max={80} step={2} value={chatAvatarSize} onChange={event => { const value = Number(event.target.value); setChatAvatarSize(value); localStorage.setItem("yus-ai-chat-avatar-size", String(value)); }} /></label>
+              <p className="chat-reading-preview" style={{ fontSize: chatFontSize }}>今天想聊些什么？这是一段阅读预览。</p>
+              <button type="button" onClick={() => { setChatFontSize(16); setChatAvatarSize(52); localStorage.setItem("yus-ai-chat-font-size", "16"); localStorage.setItem("yus-ai-chat-avatar-size", "52"); }}>恢复默认</button>
+            </div>
             <div className="theme-panel">
               <div className="form-section-title"><strong>主题动态效果</strong><small>葡萄夜游与晴光共鸣专属；轻量保留操作反馈，完整增加场景动态。输入时暂停环境动态，尊重系统减少动画设置。</small></div>
               <div className="atmosphere-controls" role="group" aria-label="主题动态效果">{([ ["off", "关闭"], ["light", "轻量"], ["full", "完整"] ] as const).map(([value, label]) => <button type="button" key={value} aria-pressed={atmosphereMotion === value} onClick={() => { setAtmosphereMotion(value); localStorage.setItem("yus-ai-atmosphere-motion", value); }}>{label}</button>)}</div>
@@ -1626,6 +1664,7 @@ export default function App() {
                   <small>从 GitHub 校验更新；备份保留角色、聊天、记忆、设置与上传文档</small>
                 </div>
                 <div className="maintenance-grid">
+                  <UiUpdatePanel disabled={busy || maintenanceBusy !== null} />
                   <section>
                     <div className="maintenance-icon">↻</div>
                     <div><strong>应用内更新</strong><small>{updateInfo ? `当前 ${updateInfo.current_version} · 最新 ${updateInfo.version}` : "手动检查，不会在后台自动下载安装"}</small></div>
@@ -1877,6 +1916,7 @@ export default function App() {
                       </div></details>
                     </>}
                     {selectedPlugin.id === "novel_reply" && <NovelSettingsPanel />}
+                    {selectedPlugin.id === "story_options" && <div className="plugin-review-guide"><h3>让故事，留一个选择</h3><p>普通剧情回复末尾生成 2–4 个分支；点击只填入输入框，不自动发送。</p><dl><div><dt>适用范围</dt><dd>电脑端展开对话的普通剧情，不影响桌宠气泡、主动发言或手机端。</dd></div><div><dt>保留草稿</dt><dd>已有输入时追加选项，你可以编辑后再发送。</dd></div><div><dt>开关效果</dt><dd>关闭后不再请求生成选项，并恢复原文显示。模型仍可能自行生成文字选项。</dd></div><div><dt>自动补全</dt><dd>没有可用选项时使用当前模型流式补生成，最多两次格式尝试，无数据等待上限 30 秒、总等待上限 60 秒，可能增加 API 费用。完整结果校验后才显示，失败保留正文。</dd></div></dl><small>问答、拒绝答复及非普通剧情不补选项；模型与网络异常时不能保证生成成功。</small></div>}
                     {selectedPlugin.id === "roleplay" && <RoleplaySettingsPanel characters={characters} activeCharacter={activeCharacter} activeConversation={activeConversation} />}
                     {selectedPlugin.id === "instruction_review" && <div className="plugin-review-guide"><h3>回复后，再核对一次</h3><p>检查已保存指令与本轮模板，必要时修订一次回复。</p><dl><div><dt>检查范围</dt><dd>当前有效指令、本轮模板；字数先在本地检测。</dd></div><div><dt>等待上限</dt><dd>审核与修订总计最多 30 秒，超时保留原回复。</dd></div><div><dt>使用建议</dt><dd>默认关闭以优先保证速度。开启可能增加模型调用费用。</dd></div></dl><small>关闭仅跳过二次审核，不影响发送前的指令注入。</small></div>}
                     <details className="plugin-options plugin-modal-permissions"><summary>使用权限<span aria-hidden="true">⌄</span></summary><div className="plugin-options-body"><small>{selectedPlugin.permissions.length ? selectedPlugin.permissions.map((permission) => permissionLabels[permission] ?? permission).join("、") : "无额外权限"}</small></div></details>
@@ -2017,7 +2057,7 @@ export default function App() {
                         </div>
                       </div>
                     ) : m.content ? (
-                      <MessageContent content={m.content} mode={m.clientKey ? "raw" : m.role === "assistant" && isPluginEnabled(plugins, "message_display") ? settings.message_display_mode : "raw"} />
+                      <MessageContent content={m.content} mode={m.clientKey ? "raw" : m.role === "assistant" && isPluginEnabled(plugins, "message_display") ? settings.message_display_mode : "raw"} onSelectOption={m.role === "assistant" && !m.clientKey && storyOptionsEnabled ? selectStoryOption : undefined} approvedOptions={m.story_options} optionsDisabled={busy || withdrawingMessage !== null || imageSkillActive} />
                     ) : <p><span className="typing">思考中</span></p>}
                   </div>
                 </article>
@@ -2146,7 +2186,6 @@ export default function App() {
           </section>
         )}
       </main>
-      <footer className="workspace-footer"><span className={backendReady ? "status" : "status starting"}><i />{backendReady ? "本地已连接" : "正在启动本地服务"}</span><span>数据保存在本地</span></footer>
     </div>
   );
 }

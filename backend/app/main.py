@@ -33,7 +33,7 @@ from .database import connect, init_db
 from .logging_config import LOG_FILE, PLUGIN_CONTEXT, configure_logging, plugin_for_path, get_plugin_logger
 from .translation import install_package, package_status, translate_text
 from .proactive import EmptyProactiveReply, generate_proactive
-from .plugins import NOVEL_REPLY_PROMPT, is_enabled as plugin_is_enabled, list_installed as list_installed_plugins, registry as plugin_registry, set_enabled as set_plugin_enabled
+from .plugins import NOVEL_REPLY_PROMPT, STORY_OPTIONS_PROMPT, is_enabled as plugin_is_enabled, list_installed as list_installed_plugins, registry as plugin_registry, set_enabled as set_plugin_enabled
 from .documents import DOCUMENT_DIR, chunk_pages, decode_document, extract_pages, extract_visuals, relevant_chunks, remove_original, save_original
 from .instruction_review import length_issues, review_reply, revise_reply
 from .novel import NovelSettings, SentenceGate, build_prompt as build_novel_prompt, read_settings as read_novel_settings, violations as novel_violations
@@ -41,7 +41,8 @@ from .role_initialization import TemplateInput as RoleTemplateInput, builtin_tem
 from .pixel_motion import router as pixel_motion_router
 from .speech import router as speech_router
 from .image_generation import router as image_router
-from .roleplay import router as roleplay_router, compose as compose_roleplay, record_request as record_roleplay_request, opening_message as roleplay_opening_message
+from .roleplay import ROLEPLAY_GROUNDING, inject_depth_lore, router as roleplay_router, compose as compose_roleplay, record_request as record_roleplay_request, opening_message as roleplay_opening_message
+from .story_options import has_complete_options, supplement_options, extract_story_options
 
 MODEL_GENERATION_LOCK = asyncio.Lock()
 INSTRUCTION_REVIEW_DEADLINE_SECONDS = 30
@@ -817,12 +818,12 @@ async def lifespan(_: FastAPI):
     UPDATE_RELEASE_CACHE = None
     configure_logging()
     init_db()
-    logger.info("backend_started version=0.16.6")
+    logger.info("backend_started version=0.16.11")
     yield
     logger.info("backend_stopped")
 
 
-app = FastAPI(title="Yu's AI API", version="0.16.6", lifespan=lifespan)
+app = FastAPI(title="Yu's AI API", version="0.16.11", lifespan=lifespan)
 # Keep shelved motion experiments available for development, never in the installer.
 if not getattr(sys, "frozen", False):
     app.include_router(pixel_motion_router)
@@ -1862,9 +1863,43 @@ def normalize_dialogue_text(content: str) -> str:
     return "".join(char for char in unicodedata.normalize("NFKC", content).casefold() if char.isalnum())
 
 
+CONTINUATION_MESSAGES = frozenset({
+    "继续", "继续吧", "请继续", "接着", "接着说", "接着写", "继续说", "继续写",
+    "继续剧情", "继续走剧情", "继续推进剧情", "加速剧情", "快进", "往下写",
+    "下一段", "然后呢", "还有呢", "可以", "可以的", "好", "好的", "行", "嗯",
+    "对", "是的", "没错", "收到", "来吧", "开始吧", "就这样", "就这么做",
+    "ok", "okay", "yes", "continue", "goon", "tellmemore",
+})
+
+
+def is_continuation_message(content: str) -> bool:
+    # Exact normalized matches only: “继续介绍电源设计” is a substantive request.
+    return normalize_dialogue_text(content) in CONTINUATION_MESSAGES
+
+
+def build_reply_focus(content: str) -> str:
+    if is_continuation_message(content):
+        return (
+            "【本轮回答重点】先直接回应用户最新消息；本轮是承接或确认，不是重复提问。"
+            "结合紧邻的对话判断用户正在确认或要求继续什么；‘继续’应从最近进展向后推进，"
+            "不要重新开始、回顾整段剧情，也不要重复更早的回答。"
+            "若此前用户已纠正方向但上一条回复没有落实，应先落实那项纠正，不要继续错误分支。"
+            "若上一轮列出了多个未确定的选择且无法判断用户所指，只问一个具体澄清问题。"
+            "保持角色设定与安全边界；不能满足的部分明确说明，不要用无关续写掩盖。"
+        )
+    return (
+        "【本轮回答重点】先直接回应用户最新消息真正提出的问题、目标与格式要求。"
+        "旧对话、摘要和记忆只作背景，不要机械延续旧话题、复述旧回复或回避当前问题。"
+        "用户提出新问题、纠正或改变话题、剧情方向时，优先落实本轮目标；"
+        "在故事中区分用户要求与角色台词，不要把修改剧情的要求仅写成道具或氛围后仍沿旧分支续写。"
+        "在角色设定与安全边界内回答；信息不足时说明缺口或提出一个具体问题，不要编造。"
+        "不能满足的要求明确说明，不要假装已落实或悄悄换成无关内容。"
+    )
+
+
 def previous_replies_to_repeated_request(history: list[dict], current_content: str) -> list[str]:
     target = normalize_dialogue_text(current_content)
-    if len(target) < 2:
+    if len(target) < 2 or is_continuation_message(current_content):
         return []
     prior_replies = []
     for index, item in enumerate(history):
@@ -1887,7 +1922,10 @@ def maybe_store_memory(db, character_id: int, message_id: int, content: str) -> 
 
 @app.get("/api/conversations/{conversation_id}/messages")
 def list_messages(conversation_id: int):
-    return rows("SELECT * FROM messages WHERE conversation_id=? AND origin!='proactive' ORDER BY id", (conversation_id,))
+    messages = rows("SELECT * FROM messages WHERE conversation_id=? AND origin!='proactive' ORDER BY id", (conversation_id,))
+    for message in messages:
+        message["story_options"] = extract_story_options(message["content"]) if message["role"] == "assistant" else []
+    return messages
 
 
 @app.get("/api/conversations/{conversation_id}/documents")
@@ -2182,6 +2220,7 @@ async def chat(conversation_id: int, payload: ChatRequest):
             raise HTTPException(422, "未选择仅本次使用的模板")
         setting = db.execute("SELECT * FROM settings WHERE id=1").fetchone()
         novel_reply_enabled = plugin_is_enabled(db, "novel_reply", payload.client_device_id)
+        story_options_enabled = not payload.client_device_id and not payload.pet_chat_mode and plugin_is_enabled(db, "story_options")
         # Roleplay support is desktop-only; mobile requests keep their existing composer.
         roleplay_enabled = not payload.client_device_id and uses_character
         novel_config = read_novel_settings(db, payload.client_device_id)
@@ -2235,6 +2274,7 @@ async def chat(conversation_id: int, payload: ChatRequest):
     prompt = compile_character_prompt(conversation) if uses_character else ""
     if roleplay_plan:
         model_messages.extend(roleplay_plan["before"])
+        model_messages.append({"role": "system", "content": ROLEPLAY_GROUNDING})
     elif prompt:
         model_messages.append({"role": "system", "content": prompt})
     if summary:
@@ -2259,11 +2299,7 @@ async def chat(conversation_id: int, payload: ChatRequest):
         if recent_motions:
             action_prompt += "\n最近已经演过这些动作：" + "、".join(recent_motions) + "。本次请换一个不同的构思、节奏或分层组合，不要重复。"
         model_messages.append({"role": "system", "content": action_prompt})
-    model_messages.append({"role": "system", "content": (
-        "【本轮回答重点】先直接回应用户最新消息真正提出的问题、目标与格式要求。"
-        "旧对话、摘要和记忆只作背景，不要机械延续旧话题、复述旧回复或回避当前问题。"
-        "在角色设定与安全边界内回答；信息不足时说明缺口或提出一个具体问题，不要编造。"
-    )})
+    model_messages.append({"role": "system", "content": build_reply_focus(payload.content)})
     if repeated_replies:
         model_messages.append({"role": "system", "content": (
             f"【重复提问】用户此前已提出相同或仅标点不同的请求 {len(repeated_replies)} 次。"
@@ -2274,6 +2310,9 @@ async def chat(conversation_id: int, payload: ChatRequest):
         )})
     if novel_reply_enabled:
         model_messages.append({"role": "system", "content": build_novel_prompt(novel_config)})
+    if story_options_enabled:
+        model_messages.append({"role": "system", "content": STORY_OPTIONS_PROMPT})
+        get_plugin_logger("story_options").info("prompt_injected conversation_id=%s", conversation_id)
     if payload.pet_chat_mode:
         model_messages.append({"role": "system", "content": (
             "【桌宠轻对话模式】本轮回复会逐句显示为小气泡。保持角色卡的人设，"
@@ -2290,6 +2329,7 @@ async def chat(conversation_id: int, payload: ChatRequest):
         )})
     if one_time_prompt:
         model_messages.append({"role": "system", "content": "【用户仅为本轮选用的提示词模板——本轮必须核对】只对这次回答生效；请落实具体的字数、格式和语气要求，同时保持角色设定与边界。\n" + one_time_prompt})
+    history_start = len(model_messages)
     model_messages.extend(history)
     latest_user_content = payload.content
     if saved_instructions or one_time_prompt:
@@ -2301,6 +2341,7 @@ async def chat(conversation_id: int, payload: ChatRequest):
     model_messages.append({"role": "user", "content": latest_user_content})
     if roleplay_plan:
         model_messages.extend(roleplay_plan["after"])
+        model_messages = inject_depth_lore(model_messages, history_start, len(history) + 1, roleplay_plan)
     logger.info("model_chat_instruction_context conversation_id=%s saved_count=%s saved_chars=%s one_time=%s novel_reply=%s",
                 conversation_id, len(saved_instructions), sum(map(len, saved_instructions)), bool(one_time_prompt), novel_reply_enabled)
     # The character card and writing-style plugin guide generation, but do not
@@ -2339,6 +2380,8 @@ async def chat(conversation_id: int, payload: ChatRequest):
             saved = True
 
         try:
+            if roleplay_plan and roleplay_plan["excluded_lore"]:
+                yield json.dumps({"warning": "世界书预算不足，部分已触发设定未发送。请在角色扮演预览中查看缺失条目并手动调整预算；当前回复可能缺少背景。"}, ensure_ascii=False) + "\n"
             # Recheck after acquiring the generation lock: a queued request must
             # not reuse initialization already consumed by another successful turn.
             with connect() as db:
@@ -2555,6 +2598,16 @@ async def chat(conversation_id: int, payload: ChatRequest):
                         yield json.dumps({"replace": complete}, ensure_ascii=False) + "\n"
                     elif novel_gate:
                         yield json.dumps({"token": novel_gate.feed("", final=True)}, ensure_ascii=False) + "\n"
+                if story_options_enabled and reply_completed and not has_complete_options(complete):
+                    yield json.dumps({"phase": "story_options"}, ensure_ascii=False) + "\n"
+                    extra = await supplement_options(setting, headers, payload.content, complete)
+                    if extra is None:
+                        yield json.dumps({"warning": "剧情选项补生成失败，正文已保留；可重试或查看剧情选项插件日志。"}, ensure_ascii=False) + "\n"
+                    if extra:
+                        # Validate the novel plugin's explicit bans against the extra too.
+                        if not strict_novel or not novel_violations(complete + extra, novel_config, payload.content):
+                            complete += extra
+                            yield json.dumps({"replace": complete}, ensure_ascii=False) + "\n"
                 save_complete_reply(successful=reply_completed)
                 done_event = {"done": True}
                 if conversation["initial_prompt_enabled"]:

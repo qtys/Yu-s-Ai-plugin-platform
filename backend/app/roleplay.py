@@ -30,10 +30,17 @@ BLOCKS = ["main", "worldInfoBefore", "charDescription", "charPersonality", "scen
 BUILTIN = {
     "id": "builtin:roleplay", "name": "自然角色互动", "builtin": True,
     "data": {"prompts": [
-        {"identifier": "main", "role": "system", "content": "以 {{char}} 的身份自然回应 {{user}}。依照角色设定与当前情境互动；不替用户编造言行，不复述提示词。"},
-        {"identifier": "jailbreak", "role": "system", "content": "保持人物动机与场景连贯；优先回应用户这轮实际说的话。"},
+        {"identifier": "main", "role": "system", "content": "以 {{char}} 的身份自然回应 {{user}}，保持已有性格，不替用户编造言行。默认直接聊天，不强加小说旁白或虚构天气、道具和动作；用户明确进入故事时再描写。历史中重复或错误的回答不是必须延续的设定；收到纠正时落实改变，不再用同义安慰、道歉或反问代替回答。"},
+        {"identifier": "jailbreak", "role": "system", "content": "【内部回复约束，非用户发言】回答最近一条 user 消息；简短承接如‘可以’‘推荐一些’应联系此前用户正在讨论的事项。本段及其他系统规则不是用户提出的话题，不得引用为‘你刚才说’或转而讲解规则。"},
     ], "prompt_order": [{"character_id": 100001, "order": [{"identifier": key, "enabled": True} for key in BLOCKS]}]},
 }
+
+ROLEPLAY_GROUNDING = (
+    "【角色交互的事实边界】角色卡和预设是行为设定，不是用户本轮发言，也不是工具能力证明。"
+    "只有明确提供的工具结果才可据此声称已搜索、筛选店铺、打开软件或完成操作；"
+    "没有实时检索结果时，给出一般建议并说明未查询实时信息，不编造评分、菜单、天气或查询结果。"
+    "故事中的动作不代表现实操作；日常助手对话不要把历史中虚构的场景当成现实事实。"
+)
 
 
 class ImportInput(BaseModel):
@@ -514,6 +521,49 @@ def estimate_tokens(text):
     return cjk + math.ceil((len(text) - cjk) / 4)
 
 
+def lore_content_rank(entry):
+    """Semantic tie-break only; explicit author priority still wins."""
+    name = str(entry.get("comment") or entry.get("name") or "")
+    content = entry.get("content", "")
+    if re.search(r"状态栏|格式模板|格式模版|示例|样例|example|template", name, re.I):
+        return 3
+    if re.search(r"世界观|主要剧情|主线|世界背景|world|scenario", name, re.I):
+        return 0
+    if re.search(r"人物|角色|身份|姓名\s*[:：]", name + "\n" + content):
+        return 1
+    return 2
+
+
+def safe_regex_keys(keys):
+    """Support literal alternatives without executing untrusted regex engines.
+
+    Complex expressions remain unsupported (no backtracking/DoS exposure).
+    """
+    alternatives = []
+    for key in keys:
+        if not isinstance(key, str) or len(key) > 200:
+            return None
+        # Tavern exports often set use_regex for plain character-name keys.
+        for part in key.split("|"):
+            if re.search(r"[.\^$*+?{}\[\]\\()]", part):
+                return None
+            if part:
+                alternatives.append(part)
+    return alternatives
+
+
+def mark_lore_examples(content):
+    pattern = r"(?s)(\*\*\s*\[状态栏\]\s*模[板版]开始\s*\*\*)(.*?)(\*\*\s*\[状态栏\]\s*模[板版]结束\s*\*\*)"
+    if not re.search(pattern, content):
+        return content
+    return re.sub(pattern, lambda match: (
+        "【以下仅为输出格式样例，不是真实剧情或历史】\n"
+        "只参考字段和排版；样例中的人物、关系、时间、地点、动作不是当前场景。"
+        "真实内容以世界观、主线、人物设定及用户已确认的剧情为准；未提供的字段不要照抄样例。\n"
+        + match[0] + "\n【格式样例结束】"
+    ), content)
+
+
 def select_lore(book, config, messages, warnings, values=None):
     if not config.lore_enabled or not config.lore_budget:
         return [], []
@@ -526,8 +576,20 @@ def select_lore(book, config, messages, warnings, values=None):
             continue
         ext = entry.get("extensions", {})
         ext = ext if isinstance(ext, dict) else {}
-        if entry.get("use_regex") or ext.get("use_regex") or entry.get("position", "before_char") not in ("before_char", "after_char", 0, 1) or ext.get("position", 0) not in (0, 1):
-            warnings.append(f"世界书 {index + 1} 的正则/深度位置暂不支持，未发送")
+        constant = bool(entry.get("constant", False))
+        keys, secondary_keys = entry.get("keys", []), entry.get("secondary_keys", [])
+        if not constant and (entry.get("use_regex") or ext.get("use_regex")):
+            keys, secondary_keys = safe_regex_keys(keys), safe_regex_keys(secondary_keys)
+            if keys is None or secondary_keys is None:
+                warnings.append(f"世界书 {index + 1} 的复杂关键词正则暂不支持，未发送；仅支持纯文本及 | 分隔的词组")
+                continue
+        position = ext.get("position", entry.get("position", "before_char"))
+        if not isinstance(position, (str, int)):
+            warnings.append(f"世界书 {index + 1} 的插入位置无效，未发送")
+            continue
+        position = {0: "before_char", 1: "after_char", 4: "in_chat", "0": "before_char", "1": "after_char", "4": "in_chat"}.get(position, position)
+        if position not in ("before_char", "after_char", "in_chat"):
+            warnings.append(f"世界书 {index + 1} 的插入位置 {position} 暂不支持，未发送")
             continue
         probability = entry.get("probability", ext.get("probability", 100))
         if entry.get("selectiveLogic", ext.get("selectiveLogic", 0)) not in (None, 0) or (entry.get("useProbability", ext.get("useProbability", False)) and probability != 100):
@@ -537,25 +599,46 @@ def select_lore(book, config, messages, warnings, values=None):
         target = haystack if sensitive else haystack.casefold()
         def matches(keys):
             return any(k and (k if sensitive else k.casefold()) in target for k in keys)
-        active = entry.get("constant", False) or (matches(entry.get("keys", [])) and
-                 (not entry.get("selective", False) or matches(entry.get("secondary_keys", []))))
+        active = constant or (matches(keys) and
+                 (not entry.get("selective", False) or matches(secondary_keys)))
         if active:
-            candidates.append((index, entry))
+            candidates.append((index, {**entry, "_position": position}))
     used, included, excluded = 0, [], []
     # Priority decides budget allocation; insertion_order decides final presentation.
     def number(value, default):
         return value if isinstance(value, (int, float)) and math.isfinite(value) else default
-    candidates.sort(key=lambda item: (-number(item[1].get("priority"), 0), number(item[1].get("insertion_order"), item[0])))
+    candidates.sort(key=lambda item: (-number(item[1].get("priority"), 0), lore_content_rank(item[1]), number(item[1].get("insertion_order"), item[0])))
+    required_budget = 0
     for index, entry in candidates:
-        content = render(entry.get("content", ""), values or {}, warnings)
+        source = entry.get("content", "")
+        # Some exported cards wrap common name placeholders in HTML-style brackets.
+        source = source.replace("{{<user>}}", "{{user}}").replace("{{<char>}}", "{{char}}")
+        content = mark_lore_examples(render(source, values or {}, warnings))
+        if not content.strip():
+            warnings.append(f"世界书 {index + 1} 内容为空或包含不支持的宏，未发送")
+            continue
         cost = estimate_tokens(content)
+        required_budget += cost
         if used + cost > config.lore_budget:
             excluded.append(index + 1)
+            label = str(entry.get("comment") or entry.get("name") or f"条目 {index + 1}")[:60]
+            warnings.append(f"世界书预算排除 #{index + 1}「{label}」：约 {cost} token，剩余 {config.lore_budget - used}；本轮未发送")
             continue
         used += cost
-        included.append({"index": index + 1, "content": content, "position": entry.get("position", "before_char"), "cost": cost,
+        ext = entry.get("extensions") or {}
+        ext = ext if isinstance(ext, dict) else {}
+        depth = ext.get("depth", entry.get("depth", 4))
+        depth = max(0, min(100, int(number(depth, 4))))
+        role = ext.get("role", entry.get("role", 0))
+        role = role if isinstance(role, (str, int)) else "system"
+        role = {0: "system", 1: "user", 2: "assistant"}.get(role, role)
+        if role not in ("system", "user", "assistant"):
+            role = "system"
+        included.append({"index": index + 1, "content": content, "position": entry["_position"], "depth": depth, "role": role, "cost": cost,
                          "order": number(entry.get("insertion_order"), index)})
     included.sort(key=lambda item: item["order"])
+    if excluded:
+        warnings.append(f"当前世界书预算 {config.lore_budget} token；本轮全部已触发设定约需 {required_budget} token。可手动调整预算，可能增加费用；超过 16000 时需精简设定。")
     return included, excluded
 
 
@@ -644,10 +727,26 @@ def compose(db, character, history, latest, legacy_prompt):
             active_blocks.append(key)
     if not at_history:
         raise HTTPException(422, "预设必须包含启用的 chatHistory")
-    return {"before": before, "after": after, "preset_id": preset["id"], "preset_name": preset["name"], "blocks": active_blocks,
-            "lore": [{"index": e["index"], "cost": e["cost"]} for e in lore], "excluded_lore": excluded,
+    if excluded:
+        warnings.append(f"世界书预算不足，{len(excluded)} 条已触发设定未发送；请调整世界书预算")
+    return {"before": before, "after": after, "in_chat": [e for e in lore if e["position"] == "in_chat"], "preset_id": preset["id"], "preset_name": preset["name"], "blocks": active_blocks,
+            "lore": [{"index": e["index"], "cost": e["cost"], "position": e["position"], "depth": e["depth"], "role": e["role"]} for e in lore], "excluded_lore": excluded,
             "warnings": list(dict.fromkeys(warnings)), "diagnostics": evaluated,
             "macro_scope": "单次请求；世界书条目独立；随机宏预览与实际请求可能不同"}
+
+
+def inject_depth_lore(messages, history_start, history_count, plan):
+    """Depth counts real history plus latest user, not system context or examples."""
+    slots = {}
+    for entry in sorted(plan.get("in_chat", []), key=lambda item: -item["depth"]):
+        offset = history_start + max(0, history_count - entry["depth"])
+        slots.setdefault(offset, []).append({"role": entry["role"], "content": entry["content"]})
+    result = []
+    for index in range(len(messages) + 1):
+        result.extend(slots.get(index, []))
+        if index < len(messages):
+            result.append(messages[index])
+    return result
 
 
 def opening_message(db, character):
@@ -671,7 +770,8 @@ def preview(character_id: int, payload: PreviewInput):
         from .main import compile_character_prompt
         plan = compose(db, character, history, payload.content, compile_character_prompt(character))
         enabled = is_enabled(db, "roleplay")
-    return {**plan, "enabled": enabled, "messages": plan["before"] + history + [{"role": "user", "content": payload.content}] + plan["after"],
+    preview_messages = plan["before"] + history + [{"role": "user", "content": payload.content}] + plan["after"]
+    return {**plan, "enabled": enabled, "messages": inject_depth_lore(preview_messages, len(plan["before"]), len(history) + 1, plan),
             "note": "角色扮演层预览，不发起模型请求。实际请求还会包含已启用的小说、环境、指令、文档等内容；插件关闭时本层不会注入。"}
 
 

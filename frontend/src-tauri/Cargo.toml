@@ -1,6 +1,6 @@
 [package]
 name = "yus-ai"
-version = "0.16.6"
+version = "0.16.11"
 description = "A local-first personal AI desktop companion"
 authors = ["qtys"]
 license = "MIT"
@@ -21,6 +21,12 @@ tauri-build = { version = "2.6.3", features = [] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
+base64 = "0.22"
+ed25519-dalek = "2.2"
+sha2 = "0.10"
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+mime_guess = "2"
 tauri = { version = "2.11.3", features = ["tray-icon"] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2"
@@ -32,4 +38,3 @@ tauri-plugin-dialog = "2"
 clipboard-win = "5.4"
 rdev = "0.5"
 screenshots = "0.8.10"
-base64 = "0.22"

@@ -1,4 +1,4 @@
-export type PluginId = "translation" | "message_display" | "conversation_environment" | "proactive" | "novel_reply" | "instruction_review" | "speech" | "image_generation" | "roleplay";
+export type PluginId = "translation" | "message_display" | "conversation_environment" | "proactive" | "novel_reply" | "instruction_review" | "speech" | "image_generation" | "roleplay" | "story_options";
 
 export type PluginInfo = {
   id: PluginId;

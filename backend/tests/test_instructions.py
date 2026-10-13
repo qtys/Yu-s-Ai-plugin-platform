@@ -2,10 +2,38 @@ import json
 import tempfile
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from app import database
-from app.main import app
+from app.main import app, build_reply_focus, previous_replies_to_repeated_request
+
+
+@pytest.mark.parametrize("content", ["继续", "（继续走剧情）", "继续！", "可以", "好的", "OK", "接着写", "加速剧情"])
+def test_continuations_are_not_duplicate_questions(content):
+    history = [{"role": "user", "content": content}, {"role": "assistant", "content": "旧剧情片段"}] * 2
+    assert previous_replies_to_repeated_request(history, content) == []
+    focus = build_reply_focus(content)
+    assert "不是重复提问" in focus
+    assert "先落实那项纠正" in focus
+
+
+@pytest.mark.parametrize("content", ["继续介绍电源设计", "换个话题，解释电感", "为什么接口返回400？"])
+def test_substantive_repeated_requests_still_detected(content):
+    history = [{"role": "user", "content": content}, {"role": "assistant", "content": "旧回答"}]
+    assert previous_replies_to_repeated_request(history, content) == ["旧回答"]
+    assert "优先落实本轮目标" in build_reply_focus(content)
+
+
+def test_duplicate_detection_stops_at_next_user_and_keeps_latest_two():
+    history = [
+        {"role": "user", "content": "解释电感"},
+        {"role": "user", "content": "解释电容"},
+        {"role": "assistant", "content": "无关回答"},
+    ]
+    for content in ["第一条", "第二条", "第三条"]:
+        history.extend([{"role": "user", "content": "解释电感"}, {"role": "assistant", "content": content}])
+    assert previous_replies_to_repeated_request(history, "解释电感！") == ["第二条", "第三条"]
 
 
 def test_saved_instructions_scopes_management_and_prompt_focus(monkeypatch):
@@ -63,6 +91,17 @@ def test_saved_instructions_scopes_management_and_prompt_focus(monkeypatch):
             assert "这是一条回答。" in repeat_prompt
             assert "本段对话更简洁" not in repeat_prompt
             assert "回答先给结论" in repeat_prompt
+
+            # Exercise the actual composer, not only the duplicate helper.
+            for _ in range(2):
+                assert client.post(f"/api/conversations/{conversation['id']}/chat", json={"content": "继续"}).status_code == 200
+            continuation_prompt = "\n".join(message["content"] for message in [request for request in model_requests if request.get("stream")][-1]["messages"] if message["role"] == "system")
+            assert "【重复提问】" not in continuation_prompt
+            assert "本轮是承接或确认" in continuation_prompt
+            assert "回答先给结论" in continuation_prompt
+            assert client.post(f"/api/conversations/{conversation['id']}/chat", json={"content": "换个话题，解释电感"}).status_code == 200
+            direction_prompt = "\n".join(message["content"] for message in [request for request in model_requests if request.get("stream")][-1]["messages"] if message["role"] == "system")
+            assert "优先落实本轮目标" in direction_prompt
 
             # Unrelated old memories must not crowd out a short current message.
             with database.connect() as db:

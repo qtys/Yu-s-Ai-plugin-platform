@@ -1,0 +1,9 @@
+{
+  "identifier": "com.qtys.yus-ai.dev",
+  "productName": "Yus AI Dev",
+  "bundle": { "active": false, "externalBin": [], "resources": null },
+  "build": {
+    "devUrl": "http://127.0.0.1:5181",
+    "beforeDevCommand": "npm run dev -- --host 127.0.0.1 --port 5181 --strictPort"
+  }
+}

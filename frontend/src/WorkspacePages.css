@@ -276,3 +276,26 @@
   .shell.workspace .workspace-navigation { flex:1 1 auto; overflow-x:auto; scrollbar-width:none; }
   .shell.workspace .workspace-window-actions { gap:0; }
 }
+.shell.workspace .message-avatar { width:var(--chat-avatar-size,52px); height:var(--chat-avatar-size,52px); flex-shrink:0; font-size:16px; }
+.shell.workspace .messages > article { grid-template-columns:var(--chat-avatar-size,52px) minmax(0,1fr); }
+.shell.workspace .messages > article.user { grid-template-columns:minmax(0,1fr); }
+.shell.workspace .message-body > p,
+.shell.workspace .message-body > .markdown-content,
+.shell.workspace .message-editor textarea,
+.shell.workspace .composer .composer-main textarea { font-size:var(--chat-font-size,16px); }
+.chat-reading-settings label { display:grid; grid-template-columns:1fr auto; gap:10px; margin:16px 0; }
+.chat-reading-settings input[type="range"] { grid-column:1 / -1; width:100%; accent-color:var(--accent); }
+.chat-reading-settings output { color:var(--muted); font-variant-numeric:tabular-nums; }
+.chat-reading-preview { padding:16px; border:1px solid var(--line); border-radius:12px; background:var(--surface); line-height:1.75; }
+.shell.workspace .ui-update-card { grid-template-columns:42px minmax(0,1fr); }
+.shell.workspace .ui-update-card > button { grid-column:2; justify-self:start; }
+.shell.workspace .ui-update-card > small { grid-column:2; overflow-wrap:anywhere; }
+.story-options { display:grid; gap:8px; margin-top:14px; }
+.story-options > button { display:flex; align-items:baseline; gap:12px; width:100%; padding:12px 14px; text-align:left; color:var(--text); background:var(--surface); border:1px solid var(--line); border-radius:12px; line-height:1.6; cursor:pointer; transition:border-color .15s, background .15s; }
+.story-options > button:hover:not(:disabled) { border-color:var(--accent); }
+.story-options > button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.story-options > button > span:first-child { color:var(--muted); font-size:.85em; flex-shrink:0; }
+.story-options > button > span:last-child { overflow-wrap:anywhere; }
+.story-options > button:disabled { opacity:.5; cursor:default; }
+.story-options > small { color:var(--muted); font-size:12px; }
+.story-options .story-option-label { flex-shrink:0; padding:1px 7px; border:1px solid var(--line); border-radius:6px; color:var(--muted); font-size:.75em; line-height:1.7; }
